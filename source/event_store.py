@@ -57,6 +57,7 @@ class EventStore:
         conn.executescript('''
             CREATE TABLE IF NOT EXISTS NetworkSettings(guild_id INTEGER PRIMARY KEY,push_id INTEGER);
             CREATE TABLE IF NOT EXISTS NetworkPush(raid_id INTEGER PRIMARY KEY,message_id INTEGER,error TEXT);
+            CREATE TABLE IF NOT EXISTS PendingPublications(guild_id INTEGER,source_id INTEGER,message_id INTEGER,PRIMARY KEY(guild_id,source_id,message_id));
             CREATE TABLE IF NOT EXISTS WatchFailures(guild_id INTEGER,source_id INTEGER,message_id INTEGER,code TEXT,error TEXT,PRIMARY KEY(guild_id,source_id,message_id,code));
             CREATE TABLE IF NOT EXISTS EventBlocks(raid_id INTEGER,guild_id INTEGER,PRIMARY KEY(raid_id,guild_id));
             CREATE TABLE IF NOT EXISTS EventMeeting(raid_id INTEGER PRIMARY KEY,guild_id INTEGER NOT NULL);

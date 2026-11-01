@@ -5,7 +5,7 @@ import time
 import discord
 from discord import app_commands
 from discord.ext import commands
-from event_store import InvalidShare
+from event_store import InvalidShare, mirror_keys
 
 
 class NetworkCog(commands.Cog):
@@ -21,6 +21,24 @@ class NetworkCog(commands.Cog):
 
     async def tick(self):
         async with self.lock:
+            for pending in self.store.rows('SELECT * FROM PendingPublications'):
+                args=(pending['guild_id'],pending['source_id'],pending['message_id'])
+                try:
+                    channel=await self.events.channel(pending['source_id'])
+                    message=await channel.fetch_message(pending['message_id'])
+                    if not message.flags.crossposted:
+                        # Expired or revoked codes no longer need publication polling.
+                        active=[self.store.by_token(code) for code in mirror_keys(message.content)]
+                        if any(e and not self.store.ended(e,time.time()) for e in active):continue
+                    else:
+                        for code in mirror_keys(message.content):
+                            try:await self.events.sync_event(pending['guild_id'],code)
+                            except InvalidShare:pass
+                            except (ValueError,discord.HTTPException) as exc:
+                                self.store.write('INSERT OR REPLACE INTO WatchFailures VALUES (?,?,?,?,?)',(*args,code,str(exc)))
+                except discord.NotFound:pass
+                except discord.HTTPException:continue
+                self.store.write('DELETE FROM PendingPublications WHERE guild_id=? AND source_id=? AND message_id=?',args)
             for row in self.store.rows('SELECT * FROM WatchFailures'):
                 try:
                     await self.events.sync_event(row['guild_id'],row['code'])
@@ -38,6 +56,7 @@ class NetworkCog(commands.Cog):
                 try:
                     code=event['share_token'] or self.store.share(row['raid_id'])
                     channel=await self.events.channel(row['push_id'])
+                    # Intentionally do not call Message.publish(): crossposting is a human decision.
                     message=await channel.send(f"{event['name']} — <t:{event['time']}:F>\nmirrorkey:{code}",allowed_mentions=discord.AllowedMentions.none())
                     self.store.write('INSERT OR REPLACE INTO NetworkPush VALUES (?,?,NULL)',(row['raid_id'],message.id))
                 except discord.HTTPException as exc:
@@ -118,7 +137,8 @@ class NetworkCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         if retry:await self.tick()
         rows=self.store.rows('SELECT source_id,message_id,error FROM WatchFailures WHERE guild_id=?',(interaction.guild_id,))
-        text='\n'.join(str(r) for r in rows) or 'No failed discoveries.'
+        pending=self.store.one('SELECT count(*) AS n FROM PendingPublications WHERE guild_id=?',(interaction.guild_id,))
+        text=('\n'.join(str(r) for r in rows) or 'No failed discoveries.')+f"\nAwaiting manual announcement publication: {pending['n']}"
         await interaction.followup.send(file=discord.File(io.BytesIO(text.encode()),filename='network-status.txt'),ephemeral=True)
 
     @app_commands.command(name='event-unlink',description='Disconnect a mirror and block it from automatically rejoining.')

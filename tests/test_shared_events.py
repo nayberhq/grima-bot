@@ -320,6 +320,39 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         await network.tick()
         self.channels[800].send.assert_awaited_once()
 
+    async def test_announcement_draft_waits_for_manual_publish(self):
+        from network_cog import NetworkCog
+        key=self.cog.store.share(100)
+        self.cog.store.write('INSERT INTO EventWatches VALUES (2,900,0)')
+        message=NS(id=1,content='mirrorkey:'+key,flags=NS(crossposted=False))
+        async def history(**kwargs):
+            if kwargs['after'].id<1:yield message
+        channel=Mock(spec=discord.TextChannel)
+        channel.is_news.return_value=True
+        channel.history=history
+        channel.fetch_message=AsyncMock(return_value=message)
+        self.channels[900]=channel
+        self.cog.sync_event=AsyncMock()
+        await self.cog.scan_watches()
+        self.cog.sync_event.assert_not_awaited()
+        self.assertEqual(len(self.cog.store.rows('SELECT * FROM PendingPublications')),1)
+        await NetworkCog(self.bot).tick()
+        self.cog.sync_event.assert_not_awaited()
+        message.flags.crossposted=True
+        # Fresh cog simulates restart: pending publication lives in the database.
+        await NetworkCog(self.bot).tick()
+        self.cog.sync_event.assert_awaited_once_with(2,key)
+        self.assertEqual(self.cog.store.rows('SELECT * FROM PendingPublications'),[])
+
+    async def test_network_push_never_crossposts(self):
+        from network_cog import NetworkCog
+        message=NS(id=801,publish=AsyncMock())
+        self.channels[800]=NS(send=AsyncMock(return_value=message))
+        self.cog.store.write('INSERT INTO NetworkSettings VALUES (1,800)')
+        await NetworkCog(self.bot).tick()
+        self.channels[800].send.assert_awaited_once()
+        message.publish.assert_not_awaited()
+
     async def test_blocked_server_cannot_resync(self):
         from event_store import InvalidShare
         self.cog.store.write('INSERT INTO EventBlocks VALUES (100,2)')

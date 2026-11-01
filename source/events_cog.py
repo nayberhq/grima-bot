@@ -288,6 +288,12 @@ class EventsCog(commands.Cog):
                     channel = await self.channel(watch['source_channel_id'])
                     async for message in channel.history(limit=100, oldest_first=True,
                             after=discord.Object(id=watch['last_message_id'])):
+                        # Announcement drafts are not discovery authorization until manually published.
+                        if isinstance(channel,discord.TextChannel) and channel.is_news() and not message.flags.crossposted:
+                            if mirror_keys(message.content):
+                                self.store.write('INSERT OR IGNORE INTO PendingPublications VALUES (?,?,?)',(watch['guild_id'],watch['source_channel_id'],message.id))
+                            self.store.write('UPDATE EventWatches SET last_message_id=? WHERE guild_id=? AND source_channel_id=?',(message.id,watch['guild_id'],watch['source_channel_id']))
+                            continue
                         # Only literal message text is parsed; no embeds or quoted URLs.
                         for code in mirror_keys(message.content):
                             try:
@@ -431,6 +437,7 @@ class EventsCog(commands.Cog):
         if not enabled:
             self.store.write('DELETE FROM EventWatches WHERE guild_id=? AND source_channel_id=?', (interaction.guild_id, source_id))
             self.store.write('DELETE FROM WatchFailures WHERE guild_id=? AND source_id=?',(interaction.guild_id,source_id))
+            self.store.write('DELETE FROM PendingPublications WHERE guild_id=? AND source_id=?',(interaction.guild_id,source_id))
             await interaction.response.send_message('Watcher removed. Existing synced events remain.', ephemeral=True)
             return
         if not self.store.settings(interaction.guild_id):

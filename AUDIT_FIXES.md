@@ -29,3 +29,21 @@
 - Existing selected-lineup assignments need explicit migration/import into the planned roster when upgrading a live installation. No existing live database was available here.
 
 Apply `vanguard-pages-bridge.patch` with `git am` in the planner repository based on `5b2e20f727a95466a9555b1eccabb76fea222584`; the patch contains the entire local bridge series. It is intended for `nayberhq/vanguard-raid-planner`, never the original Saruman repository.
+
+## Manual publication of announcement-channel events
+
+Push sends the discovery message to the configured channel but never invokes
+Discord Publish/crosspost. An authorized Discord user chooses which messages
+to publish to follower servers. When Grima watches the source announcement
+channel directly, unpublished mirror-code messages enter a durable pending
+queue and sync only after Discord marks them published. Publication checks
+run on the lifecycle cycle, including after restarts. Deleted messages and
+expired/revoked event codes are retired; fixable sync errors enter the normal
+retry queue. `/network-status` shows the number awaiting publication.
+
+Ordinary text-channel watchers still import new mirror codes automatically;
+use an announcement channel when manual Publish is the desired approval step.
+These rules apply to new discoveries, not mirrors already connected before
+this update. The current suite has 40 passing Python tests, including manual
+publication gating, restart recovery, and verification that push never calls
+Discord's publish method. Live Discord validation remains pending.
