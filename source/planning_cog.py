@@ -19,6 +19,7 @@ class PlanningCog(commands.Cog):
         self.bot = bot
         self.lock = asyncio.Lock()
         bot.conn.executescript('''
+            CREATE TABLE IF NOT EXISTS LegacyMigration(raid_id INTEGER PRIMARY KEY,error TEXT);
             CREATE TABLE IF NOT EXISTS RosterDelivery(thread_id INTEGER PRIMARY KEY,last_success INTEGER,error TEXT);
             CREATE TABLE IF NOT EXISTS EventTemplates (
                 guild_id INTEGER, kind TEXT, body TEXT NOT NULL, PRIMARY KEY(guild_id,kind));
@@ -39,7 +40,29 @@ class PlanningCog(commands.Cog):
         return self.events.store
 
     async def cog_load(self):
+        self.migrate_legacy()
         self.refresh_plans.start()
+
+    def migrate_legacy(self):
+        # Never overwrite an existing plan or delete the legacy source rows.
+        for row in self.store.rows('SELECT raid_id FROM SharedEvents WHERE raid_id NOT IN (SELECT raid_id FROM EventPlans)'):
+            raid_id=row['raid_id'];event=self.store.event(raid_id)
+            assigned=self.store.rows('SELECT * FROM Assignment WHERE raid_id=? AND player_id IS NOT NULL ORDER BY slot_id',(raid_id,))
+            if not assigned:continue
+            try:
+                members=[]
+                for a in assigned:
+                    c=next((c for c in CLASSES if c.replace('-','').lower()==(a['class_name'] or '').replace('-','').lower()),None)
+                    spec={1:'Red',2:'Blue',4:'Yellow'}.get(a['spec'])
+                    role=dict(CLASSES.get(c,[])).get(spec)
+                    if not role:raise ValueError('Legacy assignment has unspecified/ambiguous class or specialization; manual migration required.')
+                    members.append(dict(id=str(a['player_id']),name=a['byname'] or str(a['player_id']),c=c,spec=spec,role=role))
+                ids=[m['id'] for m in members]
+                if len(ids)!=len(set(ids)) or len(ids)>event['size']:raise ValueError('Legacy lineup contains duplicate players or exceeds event size.')
+                self.store.write('INSERT OR IGNORE INTO EventPlans VALUES (?,1,?)',(raid_id,json.dumps([dict(label=event['name'],members=members)])))
+                self.store.write('DELETE FROM LegacyMigration WHERE raid_id=?',(raid_id,))
+            except ValueError as exc:
+                self.store.write('INSERT OR REPLACE INTO LegacyMigration VALUES (?,?)',(raid_id,str(exc)))
 
     async def cog_unload(self):
         self.refresh_plans.cancel()
@@ -239,6 +262,21 @@ class PlanningCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         await self.sync(event['raid_id'])
         await interaction.followup.send('Roster revision 1 created. Add players with /roster-edit.',ephemeral=True)
+
+    async def open_editor(self,interaction):
+        event=await self.events.command_event(interaction)
+        if not event:return
+        if not self.plan(event['raid_id']) and self.store.one('SELECT 1 FROM LegacyMigration WHERE raid_id=?',(event['raid_id'],)):
+            await interaction.response.send_message('Legacy assignments need review before creating a replacement. Use /event-status for details; original Assignment rows are retained.',ephemeral=True);return
+        if not self.plan(event['raid_id']):
+            self.save(event,[dict(label=event['name'],members=[])],0)
+        from roster_editor import RosterEditor
+        await interaction.response.send_message('Choose team, slot, player and class/spec, then Save.',view=RosterEditor(self,event,interaction.user.id),ephemeral=True)
+
+    @app_commands.command(name='roster-manage',description='Edit the roster with player and slot dropdowns.')
+    @app_commands.guild_only()
+    async def manage_command(self,interaction:discord.Interaction):
+        await self.open_editor(interaction)
 
     @app_commands.command(name='roster-show', description='Show the current planned roster and revision.')
     @app_commands.guild_only()

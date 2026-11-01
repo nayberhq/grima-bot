@@ -310,7 +310,7 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_push_publishes_once_and_only_discovery(self):
         from network_cog import NetworkCog
-        self.channels[800]=NS(send=AsyncMock(return_value=NS(id=801)))
+        self.channels[800]=NS(id=800,send=AsyncMock(return_value=NS(id=801)))
         self.cog.store.write('INSERT INTO NetworkSettings VALUES (1,800)')
         network=NetworkCog(self.bot)
         await network.tick();await network.tick()
@@ -347,7 +347,7 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
     async def test_network_push_never_crossposts(self):
         from network_cog import NetworkCog
         message=NS(id=801,publish=AsyncMock())
-        self.channels[800]=NS(send=AsyncMock(return_value=message))
+        self.channels[800]=NS(id=800,send=AsyncMock(return_value=message))
         self.cog.store.write('INSERT INTO NetworkSettings VALUES (1,800)')
         await NetworkCog(self.bot).tick()
         self.channels[800].send.assert_awaited_once()

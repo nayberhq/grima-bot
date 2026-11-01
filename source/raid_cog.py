@@ -785,7 +785,7 @@ class RaidView(discord.ui.View):
     async def select(self, interaction: discord.Interaction, button: discord.ui.Button):
         shared_id = self.raid_cog.resolve_raid_id(interaction.message.id)
         if self.raid_cog.event_store.event(shared_id):
-            await interaction.response.send_message('Shared events use the planned roster: /roster-show, /roster-edit, /roster-swap, or /planner-import.', ephemeral=True)
+            await self.raid_cog.bot.get_cog('PlanningCog').open_editor(interaction)
             return
         if not await self.raid_cog.has_raid_permission(interaction.user, interaction.guild, self.raid_cog.resolve_raid_id(interaction.message.id)):
             perm_msg = _("You do not have permission to change the raid settings.")

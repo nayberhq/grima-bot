@@ -14,6 +14,8 @@ class NetworkCog(commands.Cog):
         self.lock=asyncio.Lock()
         self.panel_tasks={}
         self.invite_check_at=0
+        from durable_send import DurableSender
+        self.sender=DurableSender(bot.conn,bot)
 
     @property
     def events(self): return self.bot.get_cog('EventsCog')
@@ -68,9 +70,9 @@ class NetworkCog(commands.Cog):
                     code=event['share_token'] or self.store.share(row['raid_id'])
                     channel=await self.events.channel(row['push_id'])
                     # Intentionally do not call Message.publish(): crossposting is a human decision.
-                    message=await channel.send(f"{event['name']} — <t:{event['time']}:F>\nmirrorkey:{code}",allowed_mentions=discord.AllowedMentions.none())
+                    message=await self.sender.send(channel,f"discovery:{row['raid_id']}:{row['push_id']}",f"{event['name']} — <t:{event['time']}:F>\nmirrorkey:{code}")
                     self.store.write('INSERT OR REPLACE INTO NetworkPush VALUES (?,?,NULL)',(row['raid_id'],message.id))
-                except discord.HTTPException as exc:
+                except (ValueError,discord.HTTPException) as exc:
                     self.store.write('INSERT OR REPLACE INTO NetworkPush VALUES (?,NULL,?)',(row['raid_id'],str(exc)))
 
     @commands.Cog.listener()
@@ -138,6 +140,8 @@ class NetworkCog(commands.Cog):
         pending=self.store.one('SELECT count(*) AS n FROM AnnouncementDeliveries d JOIN EventAnnouncements a ON a.id=d.announcement_id WHERE a.raid_id=? AND d.sent=0',(event['raid_id'],))
         lines.append(f"Pending announcement deliveries: {pending['n']}")
         if self.bot.get_cog('PlanningCog'):
+            migration=self.store.one('SELECT error FROM LegacyMigration WHERE raid_id=?',(event['raid_id'],))
+            if migration:lines.append('Legacy migration needs review: '+migration['error'])
             for delivery in self.store.rows('SELECT d.* FROM RosterDelivery d JOIN EventCopies c USING(thread_id) WHERE c.raid_id=?',(event['raid_id'],)):
                 lines.append(f"Roster thread {delivery['thread_id']}: last success {delivery['last_success']}; error {delivery['error'] or 'none'}")
         push=self.store.one('SELECT * FROM NetworkPush WHERE raid_id=?',(event['raid_id'],))

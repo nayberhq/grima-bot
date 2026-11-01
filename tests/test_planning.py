@@ -172,3 +172,36 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.channels[1].fetch_message.side_effect=discord.NotFound(NS(status=404,reason='missing'),'missing')
         await self.cog.sync(100)
         self.assertEqual(self.channels[1].send.await_count,2)
+
+    async def test_editor_supports_all_players_and_specs(self):
+        from roster_editor import RosterEditor
+        from planning import CLASSES
+        players=[dict(player_id=n,byname=f'Player {n}',**{c.replace('-',''):1 for c in CLASSES}) for n in range(31)]
+        self.cog.players.return_value=players
+        self.cog.save(self.event,[dict(label='Folly',members=[])],0)
+        editor=RosterEditor(self.cog,self.event,9)
+        editor.player=1;editor.reload()
+        self.assertEqual(len(next(c for c in editor.children if c.row==2).options),25)
+        editor.page=1;editor.spec_page=1;editor.reload()
+        self.assertEqual(len(next(c for c in editor.children if c.row==2).options),6)
+        self.assertGreater(len(next(c for c in editor.children if c.row==3).options),0)
+        self.assertLessEqual(len(editor.children),9)
+
+    async def test_legacy_migration_preserves_source_and_is_idempotent(self):
+        self.conn.execute('CREATE TABLE Assignment(raid_id INTEGER,slot_id INTEGER,player_id INTEGER,byname TEXT,class_name TEXT,spec INTEGER)')
+        self.conn.execute('INSERT INTO SharedEvents(raid_id,duration,lock_delay) VALUES (100,3600,600)')
+        self.conn.execute("INSERT INTO Assignment VALUES(100,0,99,'Alice','Guardian',2)")
+        self.conn.commit()
+        self.cog.migrate_legacy();self.cog.migrate_legacy()
+        plan=self.cog.plan(100)
+        self.assertEqual(plan['revision'],1)
+        self.assertEqual(json.loads(plan['body'])[0]['members'][0]['spec'],'Blue')
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM Assignment').fetchone()[0],1)
+
+    async def test_ambiguous_legacy_is_flagged_without_guessing(self):
+        self.conn.execute('CREATE TABLE Assignment(raid_id INTEGER,slot_id INTEGER,player_id INTEGER,byname TEXT,class_name TEXT,spec INTEGER)')
+        self.conn.execute('INSERT INTO SharedEvents(raid_id,duration,lock_delay) VALUES (100,3600,600)')
+        self.conn.execute("INSERT INTO Assignment VALUES(100,0,99,'Alice','Guardian',0)")
+        self.conn.commit();self.cog.migrate_legacy()
+        self.assertIsNone(self.cog.plan(100))
+        self.assertIsNotNone(self.store.one('SELECT * FROM LegacyMigration WHERE raid_id=100'))

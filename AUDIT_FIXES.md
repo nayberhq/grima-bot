@@ -58,3 +58,30 @@ Discord's publish method. Live Discord validation remains pending.
 - Source invites are checked hourly. Missing/invalid invites are removed and event projections marked stale; ordinary lifecycle processing attempts regeneration. Transient Discord errors retain the current invite.
 
 42 Python tests pass; planner JavaScript syntax and bridge tests pass. Full live browser/Discord verification has not been performed. Remaining work is not complete: organizer dropdown UI, automatic legacy-lineup migration, crash-window reconciliation, deployment, serverless conversion, and a live two-server permissions/recovery rehearsal.
+
+## Organizer UI, legacy migration, and discovery-send recovery
+
+The signup lineup button and `/roster-manage` now open private team, slot,
+player, and offered-class/spec dropdowns. Player and spec lists paginate.
+Save/remove reuse the authoritative roster edit validation; authority and
+revision are checked on every interaction. Swap remains available as a command.
+
+Startup migrates unambiguous shared-event legacy Assignment rows to EventPlans
+without deleting the source rows or overwriting an existing plan. Unknown
+class/spec assignments, duplicate players, and oversized lineups are flagged
+in `/event-status` for manual review rather than guessed. New-editor creation
+is blocked on those flagged records. Explicit replacement through import or
+roster-create remains an organizer action.
+
+Discovery sends now persist an intent before sending. After an interrupted
+attempt, the sender searches subsequent bot-authored channel history for the
+original content before retrying, or uses the already-recorded message ID.
+Unreadable history does not authorize a resend. Recovery refuses to search
+beyond 2,000 messages and reports the error for operator review. This reduces
+crash duplicates; it is not a transactional exactly-once guarantee from Discord.
+This recovery currently covers discovery publication only, not roster messages,
+organizer announcements, panels, or thread creation.
+
+47 Python tests pass. Still outstanding: recovery for those other Discord
+writes; serverless hosting implementation and deployment; real browser/Discord
+validation across two servers. No remote pushes or deployments performed.
