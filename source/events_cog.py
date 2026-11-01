@@ -124,6 +124,14 @@ class EventsCog(commands.Cog):
                 thread = await self.channel(copy['thread_id'])
                 await thread.edit(name=self.title(event, copy['guild_id']), archived=False)
                 local_embed = embed.copy()
+                planning = self.bot.get_cog('PlanningCog')
+                if planning:
+                    template = planning.template(event, 'description')
+                    if template:
+                        try:
+                            local_embed.description = planning.render(event, template['body'], min(4096, 6000-len(local_embed)+(len(local_embed.description or ''))))
+                        except ValueError:
+                            log.warning('Description template exceeds embed budget for event %s', raid_id)
                 if copy['voice_id']:
                     local_embed.add_field(name='Voice channel', value=f"<#{copy['voice_id']}>", inline=False)
                 view = None if ended else (CreepView(self.raids) if event['creep'] else RaidView(self.raids))
@@ -404,13 +412,24 @@ class EventsCog(commands.Cog):
 
     @app_commands.command(name='event-announce', description='Send an announcement to every synchronized event thread.')
     @app_commands.guild_only()
-    async def announce_command(self, interaction: discord.Interaction, message: app_commands.Range[str, 1, 1800]):
+    async def announce_command(self, interaction: discord.Interaction, message: app_commands.Range[str, 1, 1800] | None = None):
         event = await self.command_event(interaction)
         if not event:
             return
         if self.store.lock_due(event, time.time()):
             await interaction.response.send_message('This event is closed.', ephemeral=True)
             return
+        planning = self.bot.get_cog('PlanningCog')
+        if message is None:
+            template = planning.template(event, 'announcement') if planning else None
+            if not template:
+                await interaction.response.send_message('Supply a message or set an announcement template.', ephemeral=True)
+                return
+            try:
+                message = planning.render(event, template['body'])
+            except ValueError as exc:
+                await interaction.response.send_message(str(exc), ephemeral=True)
+                return
         await interaction.response.defer(ephemeral=True)
         self.store.queue_announcement(event['raid_id'], message, interaction.user.id)
         await self.deliver_announcements()

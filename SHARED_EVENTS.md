@@ -5,6 +5,9 @@ panels, event forums, temporary voice channels, a shared cross-server roster,
 announcement delivery, and `mirrorkey:` channel watchers. It is a local
 implementation, not a deployed service. The upstream GPL-3.0 license remains.
 
+See [PLANNING.md](PLANNING.md) for description/announcement templates, Vanguard
+export/import and synchronized planned-roster editing.
+
 ## Installation
 
 Create a separate Discord application named **grima-bot** and use its bot token.
