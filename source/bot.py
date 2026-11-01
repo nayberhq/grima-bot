@@ -139,6 +139,7 @@ class Bot(commands.Bot):
             await self.load_extension('raid_cog')
             await self.load_extension('events_cog')
             await self.load_extension('planning_cog')
+            await self.load_extension('network_cog')
             # Load twitter cog
             #if self.twitter_token:
             #    await self.load_extension('twitter_cog')

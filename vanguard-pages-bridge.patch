@@ -1,8 +1,8 @@
 From 08268eb7d96229492b5343e094c3df75d6985c89 Mon Sep 17 00:00:00 2001
 From: Codex <codex@openai.com>
 Date: Sun, 1 Nov 2026 15:27:02 -0500
-Subject: [PATCH] Add Grima signup snapshot links with clipboard and session
- import
+Subject: [PATCH 1/2] Add Grima signup snapshot links with clipboard and
+ session import
 
 ---
  public/grima-import.js      | 33 +++++++++++++++++++++++++++++++++
@@ -80,6 +80,67 @@ index 0000000..87b357c
 + }
 + console.log('Grima bridge: Unicode/Discord IDs preserved; malformed and oversized payloads rejected.');
 +})().catch(e=>{console.error(e);process.exitCode=1});
+-- 
+2.51.1
+
+
+From 6e945dd49d9f8d20d034593227556d93463b5855 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Sun, 1 Nov 2026 15:36:40 -0500
+Subject: [PATCH 2/2] Preserve fellowship assignments and add Grima return plan
+ codes
+
+---
+ public/app.js          |  2 +-
+ public/grima-import.js | 25 +++++++++++++++++++++++++
+ 2 files changed, 26 insertions(+), 1 deletion(-)
+
+diff --git a/public/app.js b/public/app.js
+index efb2266..0fdd140 100644
+--- a/public/app.js
++++ b/public/app.js
+@@ -479,7 +479,7 @@ function openDiscordExport(compact=false){if(!teams.length){toast('Generate team
+ async function copyDiscordMessage(i){try{await navigator.clipboard.writeText(discordMessages[i].text);toast('Discord message copied')}catch(e){let field=document.getElementById('discordmessage'+i);field.focus();field.select();toast('Select and copy the highlighted message')}}
+ 
+ function sessionSnapshot(){return {format:'vanguard-raid-planner-session',version:6,fellowshipSetup,rolePriorities,constraints,templateLibrary:{constraints:constraintTemplates,comps:compTemplates,roles:roleTemplates},templateName:activeTemplateName,exportedAt:new Date().toISOString(),players,runs,template,settings:{size,duration,fair,suggestSchedule,lockPriority,recommendationRunLimit:Math.max(recommendationRunLimit||0,runSlots().length),configuredRuns:scheduleOverrideBase?JSON.parse(JSON.stringify(scheduleOverrideBase)):undefined},teams,recommendations,hasGenerated,dirty,message,discordEmojis,notes:{healCut:localStorage.getItem('healnotes')||'',defensiveCDs:localStorage.getItem('cdnotes')||''},savedTemplate:localStorage.getItem('vanguard-template')||null}}
+-function compactSessionSnapshot(){ensureRosterCharacters();players.forEach(migratePlayerExperience);let snapshot=sessionSnapshot();snapshot.players=snapshot.players.map(p=>{let copy={...p};delete copy.isNewPlayer;if(!copy.experiencedClasses?.length)delete copy.experiencedClasses;if(!copy.inexperiencedClasses?.length)delete copy.inexperiencedClasses;if(!copy.raidLeader)delete copy.raidLeader;else copy.raidLeader=true;migratePrimary(copy);if(!copy.primary)delete copy.primary;return copy});return {...snapshot,version:7,teams:snapshot.teams.map(t=>{let {fellowships,constraintResults,...raid}=t;return {...raid,members:t.members.map(p=>({id:p.id,name:p.name,c:p.c,spec:p.spec,role:p.role,rank:p.rank,charId:p.charId,repeated:p.repeated}))}})}}
++function compactSessionSnapshot(){ensureRosterCharacters();players.forEach(migratePlayerExperience);let snapshot=sessionSnapshot();snapshot.players=snapshot.players.map(p=>{let copy={...p};delete copy.isNewPlayer;if(!copy.experiencedClasses?.length)delete copy.experiencedClasses;if(!copy.inexperiencedClasses?.length)delete copy.inexperiencedClasses;if(!copy.raidLeader)delete copy.raidLeader;else copy.raidLeader=true;migratePrimary(copy);if(!copy.primary)delete copy.primary;return copy});return {...snapshot,version:7,teams:snapshot.teams.map(t=>{let {fellowships,constraintResults,...raid}=t;return {...raid,grimaFellowships:(t.fellowships?.length?t.fellowships:assignFellowships(t.members)).map(group=>group.map(p=>p.id)),members:t.members.map(p=>({id:p.id,name:p.name,c:p.c,spec:p.spec,role:p.role,rank:p.rank,charId:p.charId,repeated:p.repeated}))}})}}
+ function migrateSessionClassRoles(data){if(!data||typeof data!=='object')return data;let copy=JSON.parse(JSON.stringify(data));let update=p=>{if(p?.c==='Lore-master'&&p.spec==='Blue'&&p.role==='Debuffer')p.role='Buffer'};for(let p of copy.players||[]){for(let c of p.choices||[])update(c);for(let cs of Object.values(p.eventChoices||{}))if(Array.isArray(cs))cs.forEach(update)}for(let t of copy.teams||[]){for(let p of t.members||[])update(p);for(let g of t.fellowships||[])if(Array.isArray(g))g.forEach(update)}return copy}
+ function expandCompactSession(data){data=migrateSessionClassRoles(data);if(data?.version!==7)return data;if(!Array.isArray(data.players)||!Array.isArray(data.teams))throw Error('Invalid compact session.');let roster=new Map(data.players.map(p=>[p.id,p]));return {...data,version:6,teams:data.teams.map(t=>({...t,members:Array.isArray(t.members)?t.members.map(p=>({...roster.get(p.id),...p})):t.members}))}}
+ function exportSession(){let blob=new Blob([JSON.stringify(compactSessionSnapshot())],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=namedJSONFilename(activeTemplateName||runs[0]?.label||'Raid plan','session');a.click();URL.revokeObjectURL(a.href);toast('Session JSON exported')}
+diff --git a/public/grima-import.js b/public/grima-import.js
+index 842d98e..150968c 100644
+--- a/public/grima-import.js
++++ b/public/grima-import.js
+@@ -31,3 +31,28 @@ async function receiveGrimaSnapshot(){
+  }catch(e){status.textContent='Could not read this Grima link. Export the JSON from Grima and import the file instead.'}
+ }
+ if(typeof window!=='undefined')receiveGrimaSnapshot();
++
++async function grimaPlanCode(){
++ const data=compactSessionSnapshot();
++ if(!data.hasGenerated||data.dirty)throw Error('Generate an up-to-date plan first.');
++ const stream=new Blob([JSON.stringify(data)]).stream().pipeThrough(new CompressionStream('deflate'));
++ const packed=new Uint8Array(await new Response(stream).arrayBuffer());
++ let binary='';for(const b of packed)binary+=String.fromCharCode(b);
++ const code='grimaplan:'+btoa(binary).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
++ if(code.length>4000)throw Error('This plan is too large for a paste code. Export Session JSON and use /planner-import.');
++ return code;
++}
++if(typeof window!=='undefined'){
++ const button=document.createElement('button');button.textContent='Return plan to Grima';button.style.cssText='position:fixed;bottom:12px;right:12px;z-index:100';
++ button.onclick=async()=>{
++  try{
++   const code=await grimaPlanCode();
++   const dialog=document.createElement('dialog'),text=document.createElement('p'),area=document.createElement('textarea'),copy=document.createElement('button'),close=document.createElement('button');
++   text.textContent='Copy this code, return to Discord, click Vanguard → Import plan code, and paste it.';
++   area.value=code;area.readOnly=true;area.style.cssText='width:90%;height:120px';copy.textContent='Copy code';close.textContent='Close';
++   copy.onclick=async()=>{try{await navigator.clipboard.writeText(code);text.textContent='Copied. Paste into Grima’s Import plan code dialog.'}catch(e){area.focus();area.select();text.textContent='Use your device’s Copy action on the selected code.'}};
++   close.onclick=()=>dialog.close();dialog.addEventListener('close',()=>dialog.remove());dialog.append(text,area,copy,close);document.body.append(dialog);dialog.showModal();
++  }catch(e){toast(e.message)}
++ };
++ document.body.append(button);
++}
 -- 
 2.51.1
 

@@ -10,7 +10,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from event_store import EventStore, forum_title, mirror_keys
+from event_store import EventStore, forum_title, mirror_keys, InvalidShare
 from time_cog import Time
 
 log = logging.getLogger(__name__)
@@ -134,6 +134,12 @@ class EventsCog(commands.Cog):
                             log.warning('Description template exceeds embed budget for event %s', raid_id)
                 if copy['voice_id']:
                     local_embed.add_field(name='Voice channel', value=f"<#{copy['voice_id']}>", inline=False)
+                meeting = self.store.one('SELECT guild_id FROM EventMeeting WHERE raid_id=?', (raid_id,))
+                meeting_guild = meeting['guild_id'] if meeting else event['guild_id']
+                destination = next((c for c in self.store.copies(raid_id) if c['guild_id']==meeting_guild), None)
+                if destination:
+                    target = destination['voice_id'] or destination['thread_id']
+                    local_embed.add_field(name='Raid meeting point', value=f'https://discord.com/channels/{meeting_guild}/{target} (membership in that server required)', inline=False)
                 view = None if ended else (CreepView(self.raids) if event['creep'] else RaidView(self.raids))
                 await thread.get_partial_message(copy['message_id']).edit(
                     content=None, embed=local_embed, view=view, allowed_mentions=discord.AllowedMentions.none())
@@ -175,7 +181,7 @@ class EventsCog(commands.Cog):
                         thread = await self.channel(copy['thread_id'])
                         if thread.archived and not thread.locked:
                             await thread.edit(archived=False)
-                    if not ended and now >= event['time'] and not copy['voice_id']:
+                    if not ended and not copy['locked'] and now >= event['time'] and not copy['voice_id']:
                         category = await self.channel(copy['voice_category_id'])
                         # A deterministic marker recovers a successful Discord creation
                         # if the process died before saving its ID.
@@ -187,6 +193,7 @@ class EventsCog(commands.Cog):
                         self.store.write('UPDATE EventCopies SET voice_id=?, revision=0 WHERE thread_id=?',
                                          (voice.id, copy['thread_id']))
                         copy['voice_id'] = voice.id
+                        self.store.touch(raid_id)
                     if not ended and now < event['time'] and copy['voice_id']:
                         # A running event may be rescheduled; retire the early channel
                         # when empty, and recreate it at the new start.
@@ -221,22 +228,38 @@ class EventsCog(commands.Cog):
         """One entry point for manual sync and watcher delivery. Idempotent per guild."""
         event = self.store.by_token(code.strip())
         settings = self.store.settings(guild_id)
+        if event and self.store.one('SELECT 1 FROM EventBlocks WHERE raid_id=? AND guild_id=?', (event['raid_id'],guild_id)):
+            raise InvalidShare('This server was disconnected by the organizer.')
         if not event or self.store.ended(event, time.time()):
-            raise ValueError('Invalid sharing code or the event has ended.')
+            raise InvalidShare('Invalid sharing code or the event has ended.')
         if not settings:
             raise ValueError('Run /event-setup in the destination server first.')
         raid_id = event['raid_id']
         async with self.locks[raid_id]:
             event = self.store.by_token(code.strip())
             if not event or self.store.ended(event, time.time()):
-                raise ValueError('This sharing code is no longer active.')
+                raise InvalidShare('This sharing code is no longer active.')
             existing = self.store.one('SELECT * FROM EventCopies WHERE raid_id=? AND guild_id=?', (raid_id, guild_id))
             if existing:
-                return existing['thread_id'], False
+                try:
+                    thread = await self.channel(existing['thread_id'])
+                    await thread.fetch_message(existing['message_id'])
+                    await thread.edit(locked=False,archived=False)
+                    self.store.write('UPDATE EventCopies SET revision=0,locked=0 WHERE raid_id=? AND guild_id=?', (raid_id,guild_id))
+                    await self.refresh_locked(raid_id)
+                    return existing['thread_id'], False
+                except discord.NotFound:
+                    # Preserve the canonical raid and any surviving voice channel.
+                    pass
             forum = await self.validate_destinations(settings)
             result = await forum.create_thread(name=self.title(event, guild_id), content='Preparing shared raid…',
                 auto_archive_duration=10080, allowed_mentions=discord.AllowedMentions.none())
-            self.store.add_copy(raid_id, guild_id, result.thread.id, result.message.id, settings['voice_category_id'])
+            if existing:
+                self.store.write('UPDATE EventCopies SET thread_id=?,message_id=?,revision=0,locked=0 WHERE raid_id=? AND guild_id=?', (result.thread.id,result.message.id,raid_id,guild_id))
+                if guild_id == event['guild_id']:
+                    self.store.write('UPDATE Raids SET channel_id=? WHERE raid_id=?', (result.thread.id,raid_id))
+            else:
+                self.store.add_copy(raid_id, guild_id, result.thread.id, result.message.id, settings['voice_category_id'])
             await self.refresh_locked(raid_id)
         await self.reconcile(raid_id)
         await self.raids.calendar_cog.update_calendar(guild_id)
@@ -254,9 +277,11 @@ class EventsCog(commands.Cog):
                         for code in mirror_keys(message.content):
                             try:
                                 await self.sync_event(watch['guild_id'], code)
-                            except ValueError:
+                            except InvalidShare:
                                 # Invalid/expired markers are permanent failures, not a backlog blocker.
                                 log.info('Ignored invalid mirrorkey in message %s', message.id)
+                            except (ValueError, discord.HTTPException) as exc:
+                                self.store.write('INSERT OR REPLACE INTO WatchFailures VALUES (?,?,?,?,?)', (watch['guild_id'],watch['source_channel_id'],message.id,code,str(exc)))
                         self.store.write('''UPDATE EventWatches SET last_message_id=?
                             WHERE guild_id=? AND source_channel_id=?''',
                             (message.id, watch['guild_id'], watch['source_channel_id']))
@@ -299,6 +324,9 @@ class EventsCog(commands.Cog):
                 log.exception('Event reconciliation failed; continuing other events')
         await self.deliver_announcements()
         await self.scan_watches()
+        network = self.bot.get_cog('NetworkCog')
+        if network:
+            await network.tick()
 
     @lifecycle.before_loop
     async def before_lifecycle(self):
@@ -387,6 +415,7 @@ class EventsCog(commands.Cog):
         source_id = int(source_channel_id)
         if not enabled:
             self.store.write('DELETE FROM EventWatches WHERE guild_id=? AND source_channel_id=?', (interaction.guild_id, source_id))
+            self.store.write('DELETE FROM WatchFailures WHERE guild_id=? AND source_id=?',(interaction.guild_id,source_id))
             await interaction.response.send_message('Watcher removed. Existing synced events remain.', ephemeral=True)
             return
         if not self.store.settings(interaction.guild_id):

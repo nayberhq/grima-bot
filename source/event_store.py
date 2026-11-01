@@ -15,6 +15,10 @@ def mirror_keys(text):
     return list(dict.fromkeys(re.findall(r'(?<![\w-])mirrorkey:([A-Za-z0-9_-]{32})(?![\w-])', text)))
 
 
+class InvalidShare(ValueError):
+    """A permanently invalid discovery code."""
+
+
 class EventStore:
     def __init__(self, conn):
         self.conn = conn
@@ -49,6 +53,13 @@ class EventStore:
                 guild_id INTEGER NOT NULL, source_channel_id INTEGER NOT NULL,
                 last_message_id INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (guild_id,source_channel_id));
+        ''')
+        conn.executescript('''
+            CREATE TABLE IF NOT EXISTS NetworkSettings(guild_id INTEGER PRIMARY KEY,push_id INTEGER);
+            CREATE TABLE IF NOT EXISTS NetworkPush(raid_id INTEGER PRIMARY KEY,message_id INTEGER,error TEXT);
+            CREATE TABLE IF NOT EXISTS WatchFailures(guild_id INTEGER,source_id INTEGER,message_id INTEGER,code TEXT,error TEXT,PRIMARY KEY(guild_id,source_id,message_id,code));
+            CREATE TABLE IF NOT EXISTS EventBlocks(raid_id INTEGER,guild_id INTEGER,PRIMARY KEY(raid_id,guild_id));
+            CREATE TABLE IF NOT EXISTS EventMeeting(raid_id INTEGER PRIMARY KEY,guild_id INTEGER NOT NULL);
         ''')
         columns = {row[1] for row in conn.execute('PRAGMA table_info(EventCopies)')}
         if 'ended_rendered' not in columns:

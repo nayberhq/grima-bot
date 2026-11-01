@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock, Mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'source'))
-from planning import export_session, import_plan, render_template, context_for, planner_link
+from planning import export_session, import_plan, render_template, context_for, planner_link, decode_plan_code
 from planning_cog import PlanningCog
 
 EVENT = dict(raid_id=100, guild_id=1, name='Folly', tier='T2', boss='Win', time=1000, duration=3600, size=12, organizer_id=9)
@@ -23,6 +23,14 @@ class InterchangeTests(unittest.TestCase):
         import random,string
         rng=random.Random(1)
         self.assertIsNone(planner_link({'text': ''.join(rng.choices(string.ascii_letters,k=10000))}))
+
+    def test_plan_paste_code_limits(self):
+        import base64,zlib
+        encode=lambda raw:'grimaplan:'+base64.urlsafe_b64encode(zlib.compress(raw)).decode().rstrip('=')
+        data=dict(format='vanguard-raid-planner-session',version=7,teams=[TEAM])
+        self.assertEqual(decode_plan_code(encode(json.dumps(data).encode())),data)
+        for code in ('bad', 'grimaplan:bad',encode(b'x'*2000001)):
+            with self.assertRaises(ValueError):decode_plan_code(code)
 
     def test_templates(self):
         self.assertEqual(render_template('{title} {{literal}} {description} {signup_count}', context_for(EVENT, 3)), 'Folly {literal} Win 3')
@@ -51,6 +59,13 @@ class InterchangeTests(unittest.TestCase):
         teams = import_plan(data, EVENT, PLAYERS)
         self.assertEqual(teams[0]['members'][0]['id'], '9007199254740993')
         self.assertEqual(teams[0]['members'][0]['c'], 'Guardian')
+
+    def test_explicit_fellowships_are_preserved_and_validated(self):
+        team=copy.deepcopy(TEAM);team['grimaFellowships']=[[str(PLAYERS[0]['player_id'])]]
+        data=dict(format='vanguard-raid-planner-session',version=7,teams=[team])
+        self.assertEqual(import_plan(data,EVENT,PLAYERS)[0]['fellowship_sizes'],[1])
+        team['grimaFellowships']=[['unknown']]
+        with self.assertRaises(ValueError):import_plan(data,EVENT,PLAYERS)
 
     def test_invalid_plans(self):
         base = dict(format='vanguard-raid-planner-session', version=7, teams=[TEAM])
@@ -134,3 +149,9 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.store.event.return_value={**self.event,'cancelled':1}
         with self.assertRaises(ValueError): self.cog.save(self.event,[TEAM],0)
         self.assertIsNone(self.cog.plan(100))
+
+    async def test_withdrawn_class_is_flagged(self):
+        teams=import_plan(dict(format='vanguard-raid-planner-session',version=7,teams=[TEAM]),EVENT,PLAYERS)
+        self.cog.save(self.event,teams,0)
+        self.cog.players.return_value=[dict(player_id=PLAYERS[0]['player_id'],byname='Alice',Guardian=0,Hunter=1)]
+        self.assertIn('CLASS WITHDRAWN',self.cog.pages(self.event,self.cog.plan(100))[0])

@@ -143,7 +143,7 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
     def make_thread(self, thread_id):
         post = NS(edit=AsyncMock())
         thread = NS(id=thread_id, locked=False, archived=False,
-            edit=AsyncMock(), get_partial_message=Mock(return_value=post), send=AsyncMock())
+            edit=AsyncMock(), fetch_message=AsyncMock(), get_partial_message=Mock(return_value=post), send=AsyncMock())
         self.channels[thread_id] = thread
         return thread
 
@@ -190,7 +190,7 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_ended_event_rejects_signup(self):
         self.cog.store.write('UPDATE Raids SET time=?', (int(time.time())-4000,))
-        interaction = NS(message=NS(id=100), response=NS(send_message=AsyncMock()))
+        interaction = NS(message=NS(id=100), guild=NS(id=1), response=NS(send_message=AsyncMock()))
         self.assertFalse(await self.raids.check_signup(interaction))
         interaction.response.send_message.assert_awaited_once()
 
@@ -247,16 +247,74 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
                     yield message
         self.channels[900] = NS(history=history)
         self.cog.sync_event = AsyncMock(side_effect=forbidden())
-        with self.assertLogs('events_cog', level='ERROR'):
-            await self.cog.scan_watches()
-        self.assertEqual(self.cog.store.one('SELECT * FROM EventWatches')['last_message_id'], 1)
+        await self.cog.scan_watches()
+        self.assertEqual(self.cog.store.one('SELECT * FROM EventWatches')['last_message_id'], 2)
+        self.assertEqual(len(self.cog.store.rows('SELECT * FROM WatchFailures')),1)
         self.cog.sync_event.side_effect = None
+        from network_cog import NetworkCog
+        await NetworkCog(self.bot).tick()
+        self.assertEqual(self.cog.store.rows('SELECT * FROM WatchFailures'),[])
         await self.cog.scan_watches()
         self.assertEqual(self.cog.store.one('SELECT * FROM EventWatches')['last_message_id'], 2)
         self.cog.sync_event.assert_awaited_with(2, key)
         count = self.cog.sync_event.await_count
         await self.cog.scan_watches()
         self.assertEqual(self.cog.sync_event.await_count, count)
+
+    async def test_fixable_watch_setup_failure_is_durable(self):
+        key=self.cog.store.share(100)
+        self.cog.store.write('INSERT INTO EventWatches VALUES (2,900,0)')
+        async def history(**kwargs):
+            if kwargs['after'].id<1:yield NS(id=1,content='mirrorkey:'+key)
+        self.channels[900]=NS(history=history)
+        self.cog.sync_event=AsyncMock(side_effect=ValueError('Configure forum'))
+        await self.cog.scan_watches()
+        self.assertEqual(len(self.cog.store.rows('SELECT * FROM WatchFailures')),1)
+        from network_cog import NetworkCog
+        await NetworkCog(self.bot).tick()
+        self.assertEqual(len(self.cog.store.rows('SELECT * FROM WatchFailures')),1)
+        self.cog.sync_event.side_effect=None
+        await NetworkCog(self.bot).tick()
+        self.assertEqual(self.cog.store.rows('SELECT * FROM WatchFailures'),[])
+
+    async def test_push_publishes_once_and_only_discovery(self):
+        from network_cog import NetworkCog
+        self.channels[800]=NS(send=AsyncMock(return_value=NS(id=801)))
+        self.cog.store.write('INSERT INTO NetworkSettings VALUES (1,800)')
+        network=NetworkCog(self.bot)
+        await network.tick();await network.tick()
+        self.channels[800].send.assert_awaited_once()
+        self.assertIn('mirrorkey:',self.channels[800].send.call_args.args[0])
+        self.cog.store.touch(100)
+        await network.tick()
+        self.channels[800].send.assert_awaited_once()
+
+    async def test_blocked_server_cannot_resync(self):
+        from event_store import InvalidShare
+        self.cog.store.write('INSERT INTO EventBlocks VALUES (100,2)')
+        with self.assertRaises(InvalidShare):await self.cog.sync_event(2,self.cog.store.share(100))
+
+    async def test_missing_mirror_is_recreated(self):
+        self.cog.store.add_copy(100,2,200,200,22)
+        old=self.make_thread(200)
+        old.fetch_message.side_effect=discord.NotFound(NS(status=404,reason='Not Found'),'missing')
+        new=self.make_thread(201)
+        forum=NS(create_thread=AsyncMock(return_value=NS(thread=new,message=NS(id=201))))
+        self.cog.validate_destinations=AsyncMock(return_value=forum)
+        thread,created=await self.cog.sync_event(2,self.cog.store.share(100))
+        self.assertEqual(thread,201)
+        self.assertTrue(created)
+        self.assertEqual(len(self.cog.store.copies(100)),2)
+        self.assertEqual(self.cog.store.resolve(201),100)
+
+    async def test_inline_signup_saves_spec_and_canonical_player(self):
+        from signup_picker import SignupPicker
+        picker=SignupPicker(self.raids,100,99,'Warden');picker.spec=2
+        i=NS(user=NS(id=99,display_name='Warden',roles=[]),guild=NS(id=2),channel=self.thread,response=NS(edit_message=AsyncMock(),send_message=AsyncMock()))
+        await picker.submit.callback(i)
+        self.assertEqual(self.cog.store.one('SELECT raid_id,player_id,Warden FROM Players'),dict(raid_id=100,player_id=99,Warden=1))
+        self.assertEqual(self.conn.execute('SELECT Warden FROM Specs WHERE player_id=99').fetchone()[0],2)
+        i.response.edit_message.assert_awaited_once()
 
     async def test_calendar_includes_mirror_and_omits_ended_events(self):
         self.cog.store.add_copy(100, 2, 200, 200, 22)

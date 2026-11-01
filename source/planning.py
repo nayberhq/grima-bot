@@ -111,10 +111,20 @@ def import_plan(data, event, players):
         label = team.get('label')
         if not isinstance(label, str) or len(label) > 100:
             raise ValueError('Team labels must be at most 100 characters.')
+        groups = team.get('grimaFellowships')
+        if groups is not None:
+            ids = [p['id'] for p in members]
+            if not isinstance(groups,list) or any(not isinstance(g,list) or not 1<=len(g)<=6 or any(not isinstance(x,str) for x in g) for g in groups):
+                raise ValueError('Invalid fellowship groups.')
+            flat = [pid for group in groups for pid in group]
+            if sorted(flat)!=sorted(ids):
+                raise ValueError('Fellowships must contain every team member exactly once.')
+            lookup={p['id']:p for p in members}
+            members=[lookup[pid] for pid in flat]
         hour = team.get('time')
         if hour is not None and (type(hour) not in (int, float) or not math.isfinite(hour) or not 0 <= hour < 48):
             raise ValueError('Invalid planner time.')
-        result.append(dict(label=label, members=members, time=hour))
+        result.append(dict(label=label, members=members, time=hour, fellowship_sizes=[len(g) for g in groups] if groups is not None else None))
     return result
 
 
@@ -130,3 +140,19 @@ def planner_link(session):
     token = base64.urlsafe_b64encode(packed).decode().rstrip('=')
     url = PLANNER_URL + '#grima=' + token
     return url if len(url) <= 1650 else None
+
+
+def decode_plan_code(code):
+    import base64, json, zlib
+    if not code.startswith('grimaplan:') or len(code)>4000:
+        raise ValueError('Paste a Grima plan code from Vanguard, or use /planner-import for larger plans.')
+    try:
+        token=code[len('grimaplan:'):].strip()
+        packed=base64.b64decode(token+'='*((-len(token))%4),altchars=b'-_',validate=True)
+        decoder=zlib.decompressobj()
+        raw=decoder.decompress(packed,2_000_001)
+        if len(raw)>2_000_000 or not decoder.eof or decoder.unused_data:
+            raise ValueError('Plan is too large or invalid.')
+        return json.loads(raw)
+    except (ValueError,UnicodeError,zlib.error) as exc:
+        raise ValueError('Invalid plan code; export Session JSON instead.') from exc

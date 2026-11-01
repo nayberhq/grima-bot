@@ -464,6 +464,9 @@ class RaidCog(commands.Cog):
             await interaction.response.send_message('This event no longer exists.', ephemeral=True)
             return False
         event = self.event_store.event(raid_id)
+        if event and self.event_store.one('SELECT 1 FROM EventBlocks WHERE raid_id=? AND guild_id=?',(raid_id,interaction.guild.id)):
+            await interaction.response.send_message('This server is disconnected from the event.',ephemeral=True)
+            return False
         if event and self.event_store.ended(event, time.time()):
             await interaction.response.send_message('This event has ended.', ephemeral=True)
             return False
@@ -526,7 +529,7 @@ class RaidCog(commands.Cog):
             embed_description += _("Aim: {0}").format(boss)
 
         embed = discord.Embed(title=embed_title, colour=discord.Colour(0x3498db), description=embed_description)
-        if roster:
+        if roster and not self.event_store.event(raid_id):
             result = select(self.conn, 'Assignment', ['byname, class_name', 'spec'], ['raid_id'], [raid_id])
             number_of_slots = len(result)
             # Add first half
@@ -780,6 +783,10 @@ class RaidView(discord.ui.View):
 
     @discord.ui.button(emoji="\u26CF\uFE0F", style=discord.ButtonStyle.blurple, custom_id='raid_view:select')
     async def select(self, interaction: discord.Interaction, button: discord.ui.Button):
+        shared_id = self.raid_cog.resolve_raid_id(interaction.message.id)
+        if self.raid_cog.event_store.event(shared_id):
+            await interaction.response.send_message('Shared events use the planned roster: /roster-show, /roster-edit, /roster-swap, or /planner-import.', ephemeral=True)
+            return
         if not await self.raid_cog.has_raid_permission(interaction.user, interaction.guild, self.raid_cog.resolve_raid_id(interaction.message.id)):
             perm_msg = _("You do not have permission to change the raid settings.")
             await interaction.response.send_message(perm_msg, ephemeral=True)
@@ -819,16 +826,19 @@ class RaidView(discord.ui.View):
     async def sign_up_class(self, i, class_name):
         if not await self.raid_cog.check_signup(i):
             return
-        try:
-            role = discord.utils.get(i.guild.roles, name=class_name)
-            if role is None:
-                role = await i.guild.create_role(mentionable=True, name=class_name)
-            if role not in i.user.roles:
-                await i.user.add_roles(role)
-        except discord.Forbidden:
-            msg = _("Error: Missing 'Manage roles' permission to assign the class role.")
+        if self.raid_cog.event_store.event(self.raid_cog.resolve_raid_id(i.message.id)):
+            msg = 'Signed up. Your selection is shared across linked servers.'
         else:
-            msg = _("Your sign up has been received and the raid post will be updated momentarily.")
+            try:
+                role = discord.utils.get(i.guild.roles, name=class_name)
+                if role is None:
+                    role = await i.guild.create_role(mentionable=True, name=class_name)
+                if role not in i.user.roles:
+                    await i.user.add_roles(role)
+            except discord.Forbidden:
+                msg = _("Error: Missing 'Manage roles' permission to assign the class role.")
+            else:
+                msg = _("Your sign up has been received and the raid post will be updated momentarily.")
         raid_id = self.raid_cog.resolve_raid_id(i.message.id)
         timestamp = int(time.time())
         byname = self.raid_cog.process_name(i.guild.id, i.user)
@@ -839,6 +849,10 @@ class RaidView(discord.ui.View):
             # Parse tier to integer (e.g. T2c)
             tier = int(''.join(filter(str.isdigit, tier)))
             if spec is None or not ((spec >> (tier-1)*3) & 0b111):
+                if self.raid_cog.event_store.event(raid_id):
+                    from signup_picker import SignupPicker
+                    await i.response.send_message('Choose your specialization to finish signing up.',view=SignupPicker(self.raid_cog,raid_id,i.user.id,class_name),ephemeral=True)
+                    return
                 err_msg = _("You have not yet set a {0} specialization for tier {1}. Please first use /specs.").format(class_name, tier)
                 await i.response.send_message(err_msg, ephemeral=True)
                 return
@@ -861,6 +875,10 @@ class RaidView(discord.ui.View):
             return
         raid_id = self.raid_cog.resolve_raid_id(i.message.id)
 
+        if self.raid_cog.event_store.event(raid_id):
+            from signup_picker import SignupPicker
+            await i.response.send_message('Choose a class and specialization.', view=SignupPicker(self.raid_cog,raid_id,i.user.id), ephemeral=True)
+            return
         specs = select_one(self.conn, 'Specs', self.raid_cog.role_names, ['player_id'], [i.user.id])
         tier = select_one(self.conn, 'Raids', ['Tier'], ['raid_id'], [raid_id])
 

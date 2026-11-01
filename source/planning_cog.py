@@ -9,7 +9,7 @@ from typing import Literal
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
-from planning import CLASSES, TAGS, context_for, render_template, export_session, import_plan, planner_link, PLANNER_URL
+from planning import CLASSES, TAGS, context_for, render_template, export_session, import_plan, planner_link, PLANNER_URL, decode_plan_code
 
 log = logging.getLogger(__name__)
 
@@ -68,18 +68,26 @@ class PlanningCog(commands.Cog):
 
     def pages(self, event, plan):
         teams = json.loads(plan['body'])
-        signed = {str(p['player_id']) for p in self.players(event['raid_id'])}
+        signed = {str(p['player_id']):p for p in self.players(event['raid_id'])}
         pages = []
         for n, team in enumerate(teams, 1):
             members = team['members']
-            for start in range(0, max(1, len(members)), 6):
+            sizes=team.get('fellowship_sizes')
+            starts=[]
+            if sizes and sum(sizes)==len(members):
+                offset=0
+                for size in sizes:starts.append((offset,size));offset+=size
+            else:starts=[(offset,6) for offset in range(0,max(1,len(members)),6)]
+            for group_index,(start,group_size) in enumerate(starts,1):
                 lines = [f"**Planned roster · revision {plan['revision']} · team {n}**",
                          discord.utils.escape_markdown(team['label']),
-                         f'Group {start//6+1} (list order)']
+                         f'Fellowship {group_index}' if sizes else f'Group {group_index} (list order)']
                 if team.get('time') is not None:
                     lines.append(f"Planner time: {team['time']:g}h")
-                for slot, p in enumerate(members[start:start+6], start+1):
+                for slot, p in enumerate(members[start:start+group_size], start+1):
                     status = '' if p['id'] in signed else ' — LEFT SIGNUPS'
+                    if p['id'] in signed and not any(v for k,v in signed[p['id']].items() if k.replace('-','').lower()==p['c'].replace('-','').lower()):
+                        status = ' — CLASS WITHDRAWN'
                     lines.append(f"{slot}. <@{p['id']}> · {p['c']} / {p['spec']} · {p['role']}{status}")
                 pages.append('\n'.join(lines))
         return pages
@@ -168,7 +176,7 @@ class PlanningCog(commands.Cog):
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
         url = planner_link(data)
-        view = discord.ui.View()
+        view = PlanReturnView(self,event['raid_id'])
         if url and len(url) <= 512:
             view.add_item(discord.ui.Button(label='Open in Vanguard', url=url))
         elif url:
@@ -212,6 +220,16 @@ class PlanningCog(commands.Cog):
         await self.sync(event['raid_id'])
         await interaction.followup.send(f'Roster revision {revision} saved ({len(teams)} teams). Linked threads update directly; failed deliveries retry.', ephemeral=True)
 
+    @app_commands.command(name='roster-create',description='Start the authoritative shared roster without using Vanguard.')
+    @app_commands.guild_only()
+    async def create_roster(self,interaction:discord.Interaction):
+        event=await self.events.command_event(interaction)
+        if not event:return
+        self.save(event,[dict(label=event['name'],members=[])],0)
+        await interaction.response.defer(ephemeral=True)
+        await self.sync(event['raid_id'])
+        await interaction.followup.send('Roster revision 1 created. Add players with /roster-edit.',ephemeral=True)
+
     @app_commands.command(name='roster-show', description='Show the current planned roster and revision.')
     @app_commands.guild_only()
     async def show_command(self, interaction: discord.Interaction):
@@ -232,7 +250,7 @@ class PlanningCog(commands.Cog):
             return
         plan = self.plan(event['raid_id'])
         if not plan:
-            raise ValueError('Import a plan first.')
+            raise ValueError('Use /roster-create to start a plan or import one from Vanguard.')
         teams = json.loads(plan['body'])
         if team > len(teams) or slot > len(teams[team-1]['members'])+1:
             raise ValueError('Choose an existing slot or the next slot to append.')
@@ -241,6 +259,7 @@ class PlanningCog(commands.Cog):
             if slot > len(members):
                 raise ValueError('That slot is empty.')
             members.pop(slot-1)
+            teams[team-1]['fellowship_sizes']=None
         else:
             role = dict(CLASSES.get(class_name, [])).get(specialization)
             if not role:
@@ -251,6 +270,7 @@ class PlanningCog(commands.Cog):
             member = checked[0]['members'][0]
             if slot > len(members):
                 members.append(member)
+                teams[team-1]['fellowship_sizes']=None
             else:
                 members[slot-1] = member
         ids = [m['id'] for m in members]
@@ -269,7 +289,7 @@ class PlanningCog(commands.Cog):
             return
         plan = self.plan(event['raid_id'])
         if not plan:
-            raise ValueError('Import a plan first.')
+            raise ValueError('Use /roster-create to start a plan or import one from Vanguard.')
         teams = json.loads(plan['body'])
         try:
             a, b = teams[team_a-1]['members'], teams[team_b-1]['members']
@@ -292,6 +312,36 @@ class PlanningCog(commands.Cog):
             log.error('Planning command failed', exc_info=error)
         sender = interaction.followup.send if interaction.response.is_done() else interaction.response.send_message
         await sender(message[:1900], ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
+
+class PlanReturnView(discord.ui.View):
+    def __init__(self,cog,raid_id):
+        super().__init__(timeout=900)
+        self.cog,self.raid_id=cog,raid_id
+
+    @discord.ui.button(label='Import plan code',style=discord.ButtonStyle.primary)
+    async def import_code(self,i,button):
+        if not await self.cog.events.can_manage(i,self.raid_id):
+            await i.response.send_message('Only the organizer or source raid leader can import.',ephemeral=True);return
+        plan=self.cog.plan(self.raid_id)
+        await i.response.send_modal(PlanCodeModal(self.cog,self.raid_id,plan['revision'] if plan else 0))
+
+class PlanCodeModal(discord.ui.Modal,title='Import Vanguard plan'):
+    code=discord.ui.TextInput(label='Paste the Grima plan code',style=discord.TextStyle.paragraph,max_length=4000)
+    def __init__(self,cog,raid_id,revision):
+        super().__init__();self.cog,self.raid_id,self.revision=cog,raid_id,revision
+    async def on_submit(self,i):
+        if not await self.cog.events.can_manage(i,self.raid_id):
+            await i.response.send_message('You can no longer edit this event.',ephemeral=True);return
+        try:
+            event=self.cog.store.event(self.raid_id)
+            teams=import_plan(decode_plan_code(str(self.code)),event,self.cog.players(self.raid_id))
+            revision=self.cog.save(event,teams,self.revision)
+        except ValueError as exc:
+            await i.response.send_message(str(exc),ephemeral=True);return
+        await i.response.defer(ephemeral=True)
+        await self.cog.sync(self.raid_id)
+        await i.followup.send(f'Roster revision {revision} synchronized.',ephemeral=True)
 
 
 async def setup(bot):

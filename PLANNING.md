@@ -1,5 +1,7 @@
 # Templates and Vanguard roster planning
 
+See [AUDIT_FIXES.md](AUDIT_FIXES.md) for the latest behavior, new commands, and remaining release limitations. It supersedes older limitations below.
+
 These commands extend the current gateway-based Grima prototype. They do not yet
 convert Grima to serverless or add the discussed push-channel configuration.
 Templates and plans live in the same SQLite database as the canonical event.

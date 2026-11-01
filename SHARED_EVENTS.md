@@ -1,5 +1,7 @@
 # grima-bot shared event forums
 
+See [AUDIT_FIXES.md](AUDIT_FIXES.md) for the latest behavior, new commands, and remaining release limitations. It supersedes older limitations below.
+
 grima-bot forks Baviaan/lotro (base commit `36e97bd`) with persistent creation
 panels, event forums, temporary voice channels, a shared cross-server roster,
 announcement delivery, and `mirrorkey:` channel watchers. It is a local
