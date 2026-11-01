@@ -1,11 +1,20 @@
-# Saruman shared event forums
+# grima-bot shared event forums
 
-This branch extends Baviaan/lotro (base commit `36e97bd`) with persistent creation
+grima-bot forks Baviaan/lotro (base commit `36e97bd`) with persistent creation
 panels, event forums, temporary voice channels, a shared cross-server roster,
 announcement delivery, and `mirrorkey:` channel watchers. It is a local
 implementation, not a deployed service. The upstream GPL-3.0 license remains.
 
 ## Installation
+
+Create a separate Discord application named **grima-bot** and use its bot token.
+The application name is configured in Discord; renaming this repository does not
+rename an existing Discord application.
+
+For GitHub, create your own fork named `grima-bot`. Keep Baviaan/lotro as the
+fetch-only `upstream`; add your fork as `origin`. Push only to your fork. The local
+working repository has upstream pushes disabled and no `origin` remote. These
+local Git settings are not embedded in source archives.
 
 1. Use one bot deployment and one SQLite database for every participating server.
    Invite that bot to the source and destination servers. Separate installations

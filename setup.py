@@ -17,14 +17,14 @@ with open('README.md') as f:
     readme = f.read()
 
 setup(
-    name="Saruman",
+    name="grima-bot",
     version=version,
     author="Baviaan",
-    url="https://github.com/Baviaan/lotro",
+    project_urls={"Upstream Saruman": "https://github.com/Baviaan/lotro"},
     license="GPLv3",
-    description="A discord bot for scheduling raids."
+    description="An independent Saruman fork for shared LOTRO events.",
     long_description=readme,
     include_package_data=True,
     install_requires=requirements,
-    python_requires='>=3.8',
+    python_requires='>=3.12',
 )

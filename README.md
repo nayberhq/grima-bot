@@ -1,3 +1,9 @@
+# grima-bot
+
+An independent fork of [Saruman](https://github.com/Baviaan/lotro), with shared
+event forums and cross-server coordination. Upstream authorship and GPL-3.0
+licensing are preserved. No hosted fork has been created yet.
+
 ## Shared event forum extension
 
 This branch adds persistent creation panels, timed forum/voice channels,
