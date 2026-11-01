@@ -139,6 +139,7 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         insert_raid(self.cog.store)
         self.cog.store.configure(2, 20, 22, 10800, 3600)
         self.thread = self.make_thread(100)
+        self.channels[10]=NS(create_invite=AsyncMock(return_value=NS(url='https://discord.gg/owner')))
 
     def make_thread(self, thread_id):
         post = NS(edit=AsyncMock())
@@ -215,6 +216,36 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         await self.cog.reconcile(100, now+4201)
         voice.delete.assert_awaited_once()
         self.assertIsNone(self.cog.store.copies(100)[0]['voice_id'])
+
+    async def test_mirrors_link_owner_voice_and_invite_without_creating_voice(self):
+        now=int(time.time())
+        self.cog.store.write('UPDATE Raids SET time=?',(now,))
+        self.cog.store.add_copy(100,2,200,200,0)
+        mirror=self.make_thread(200)
+        voice=NS(id=500,members=[],delete=AsyncMock(),edit=AsyncMock())
+        self.channels[500]=voice;self.channels[11]=NS(voice_channels=[])
+        self.guilds[1].create_voice_channel=AsyncMock(return_value=voice)
+        self.guilds[2].create_voice_channel=AsyncMock()
+        await self.cog.reconcile(100,now)
+        self.guilds[1].create_voice_channel.assert_awaited_once()
+        self.guilds[2].create_voice_channel.assert_not_awaited()
+        embed=mirror.get_partial_message.return_value.edit.call_args.kwargs['embed']
+        values=[f.value for f in embed.fields]
+        self.assertIn('https://discord.com/channels/1/500',values)
+        self.assertIn('https://discord.gg/owner',values)
+        self.assertIsNone(self.cog.store.copies(100)[1]['voice_id'])
+
+    async def test_old_mirror_voice_waits_until_empty_then_retires(self):
+        self.cog.store.add_copy(100,2,200,200,22);self.make_thread(200)
+        self.cog.store.write('UPDATE EventCopies SET voice_id=600 WHERE guild_id=2')
+        voice=NS(id=600,members=[NS(id=99)],delete=AsyncMock(),edit=AsyncMock())
+        self.channels[600]=voice
+        await self.cog.reconcile(100)
+        voice.delete.assert_not_awaited()
+        voice.members=[]
+        await self.cog.reconcile(100)
+        voice.delete.assert_awaited_once()
+        self.assertIsNone(self.cog.store.copies(100)[1]['voice_id'])
 
     async def test_restart_after_end_does_not_create_voice(self):
         self.guilds[1].create_voice_channel = AsyncMock()

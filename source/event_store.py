@@ -61,6 +61,9 @@ class EventStore:
             CREATE TABLE IF NOT EXISTS EventBlocks(raid_id INTEGER,guild_id INTEGER,PRIMARY KEY(raid_id,guild_id));
             CREATE TABLE IF NOT EXISTS EventMeeting(raid_id INTEGER PRIMARY KEY,guild_id INTEGER NOT NULL);
         ''')
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='SourceInvites'").fetchone():
+            conn.execute('CREATE TABLE SourceInvites(guild_id INTEGER PRIMARY KEY,url TEXT NOT NULL)')
+            conn.execute('UPDATE SharedEvents SET revision=revision+1')
         columns = {row[1] for row in conn.execute('PRAGMA table_info(EventCopies)')}
         if 'ended_rendered' not in columns:
             conn.execute('ALTER TABLE EventCopies ADD COLUMN ended_rendered INTEGER NOT NULL DEFAULT 0')

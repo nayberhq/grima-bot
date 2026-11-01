@@ -156,18 +156,17 @@ class NetworkCog(commands.Cog):
         except (ValueError,discord.HTTPException) as exc:
             await interaction.followup.send(str(exc)[:1800],ephemeral=True)
 
-    @app_commands.command(name='event-meeting',description='Choose which linked server the raid will meet in for voice.')
+    @app_commands.command(name='event-invite',description='Set a verified invite to this owning server for mirrored events.')
     @app_commands.guild_only()
-    async def meeting(self,interaction:discord.Interaction,guild_id:str):
-        event=await self.events.command_event(interaction)
-        if not event:return
-        if not guild_id.isdecimal() or not self.store.one('SELECT 1 FROM EventCopies WHERE raid_id=? AND guild_id=? AND locked=0',(event['raid_id'],int(guild_id))):
-            await interaction.response.send_message('Choose a connected server ID.',ephemeral=True);return
-        self.store.write('INSERT OR REPLACE INTO EventMeeting VALUES (?,?)',(event['raid_id'],int(guild_id)))
-        self.store.touch(event['raid_id'])
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def invite(self,interaction:discord.Interaction,url:str):
         await interaction.response.defer(ephemeral=True)
-        await self.events.refresh(event['raid_id'])
-        await interaction.followup.send('Meeting location updated across all mirrors.',ephemeral=True)
+        invite=await self.bot.fetch_invite(url)
+        if not invite.guild or invite.guild.id!=interaction.guild_id:
+            await interaction.followup.send('The invite must lead to this server.',ephemeral=True);return
+        self.store.write('INSERT OR REPLACE INTO SourceInvites VALUES (?,?)',(interaction.guild_id,invite.url))
+        self.store.write('UPDATE SharedEvents SET revision=revision+1 WHERE raid_id IN (SELECT raid_id FROM Raids WHERE guild_id=?)',(interaction.guild_id,))
+        await interaction.followup.send('Owner-server invite saved. Mirrors update on the next refresh. Use a non-expiring invite.',ephemeral=True)
 
     async def cog_app_command_error(self,interaction,error):
         send=interaction.followup.send if interaction.response.is_done() else interaction.response.send_message

@@ -73,18 +73,20 @@ class EventsCog(commands.Cog):
             return None
         return event
 
-    async def validate_destinations(self, settings):
+    async def validate_destinations(self, settings, require_voice=True):
         forum = await self.channel(settings['forum_id'])
-        category = await self.channel(settings['voice_category_id'])
-        if not isinstance(forum, discord.ForumChannel) or not isinstance(category, discord.CategoryChannel):
+        if require_voice and not settings['voice_category_id']:
+            raise ValueError('Hosting events requires a voice category. Set it with /event-setup.')
+        category = await self.channel(settings['voice_category_id']) if require_voice else None
+        if not isinstance(forum, discord.ForumChannel) or (require_voice and not isinstance(category, discord.CategoryChannel)):
             raise ValueError('Configure an existing forum and voice category with /event-setup.')
-        if forum.guild.id != settings['guild_id'] or category.guild.id != settings['guild_id']:
+        if forum.guild.id != settings['guild_id'] or (category and category.guild.id != settings['guild_id']):
             raise ValueError('Forum and voice category must belong to this server.')
         perms = forum.permissions_for(forum.guild.me)
         if not all((perms.view_channel, perms.send_messages, perms.send_messages_in_threads,
                     perms.embed_links, perms.read_message_history, perms.manage_threads)):
             raise ValueError('The bot needs View Channel, Send Messages, Send Messages in Threads, Embed Links, Read Message History and Manage Threads in the forum.')
-        if not category.permissions_for(category.guild.me).manage_channels:
+        if category and not category.permissions_for(category.guild.me).manage_channels:
             raise ValueError('The bot needs Manage Channels in the voice category.')
         if forum.flags.require_tag:
             raise ValueError('Disable required tags on the event forum before using it.')
@@ -132,18 +134,18 @@ class EventsCog(commands.Cog):
                             local_embed.description = planning.render(event, template['body'], min(4096, 6000-len(local_embed)+(len(local_embed.description or ''))))
                         except ValueError:
                             log.warning('Description template exceeds embed budget for event %s', raid_id)
-                if copy['voice_id']:
-                    local_embed.add_field(name='Voice channel', value=f"<#{copy['voice_id']}>", inline=False)
-                meeting = self.store.one('SELECT guild_id FROM EventMeeting WHERE raid_id=?', (raid_id,))
-                meeting_guild = meeting['guild_id'] if meeting else event['guild_id']
-                destination = next((c for c in self.store.copies(raid_id) if c['guild_id']==meeting_guild), None)
-                if destination:
-                    target = destination['voice_id'] or destination['thread_id']
-                    local_embed.add_field(name='Raid meeting point', value=f'https://discord.com/channels/{meeting_guild}/{target} (membership in that server required)', inline=False)
+                owner = next((c for c in self.store.copies(raid_id) if c['guild_id']==event['guild_id']), None)
+                if owner and owner['voice_id']:
+                    local_embed.add_field(name='Event voice channel', value=f"https://discord.com/channels/{event['guild_id']}/{owner['voice_id']}", inline=False)
+                elif not ended:
+                    local_embed.add_field(name='Event voice channel', value='Created in the owning server when the event starts.', inline=False)
+                if copy['guild_id'] != event['guild_id']:
+                    invite=self.store.one('SELECT url FROM SourceInvites WHERE guild_id=?',(event['guild_id'],))
+                    local_embed.add_field(name='Join the event server',value=invite['url'] if invite else 'Invite unavailable. Ask the organizer to set /event-invite in the owning server.',inline=False)
                 view = None if ended else (CreepView(self.raids) if event['creep'] else RaidView(self.raids))
                 await thread.get_partial_message(copy['message_id']).edit(
                     content=None, embed=local_embed, view=view, allowed_mentions=discord.AllowedMentions.none())
-                if copy['voice_id']:
+                if copy['voice_id'] and copy['guild_id']==event['guild_id']:
                     try:
                         voice = await self.channel(copy['voice_id'])
                     except discord.NotFound:
@@ -166,6 +168,16 @@ class EventsCog(commands.Cog):
             if not event:
                 return
             ended = self.store.ended(event, now)
+            if not ended and any(c['guild_id']!=event['guild_id'] and not c['locked'] for c in self.store.copies(raid_id)):
+                if not self.store.one('SELECT 1 FROM SourceInvites WHERE guild_id=?',(event['guild_id'],)):
+                    try:
+                        settings=self.store.settings(event['guild_id'])
+                        forum=await self.channel(settings['forum_id'])
+                        invite=await forum.create_invite(max_age=0,max_uses=0,unique=False,reason='Join the owning server for shared events')
+                        self.store.write('INSERT OR REPLACE INTO SourceInvites VALUES (?,?)',(event['guild_id'],str(invite.url)))
+                        self.store.touch(raid_id)
+                    except discord.HTTPException:
+                        log.warning('Cannot create owner-server invite for event %s; set /event-invite or grant Create Invite',raid_id)
             # Update the final embed before locking; the renderer removes controls.
             if ended:
                 for copy in self.store.copies(raid_id):
@@ -181,7 +193,7 @@ class EventsCog(commands.Cog):
                         thread = await self.channel(copy['thread_id'])
                         if thread.archived and not thread.locked:
                             await thread.edit(archived=False)
-                    if not ended and not copy['locked'] and now >= event['time'] and not copy['voice_id']:
+                    if copy['guild_id']==event['guild_id'] and not ended and not copy['locked'] and now >= event['time'] and not copy['voice_id']:
                         category = await self.channel(copy['voice_category_id'])
                         # A deterministic marker recovers a successful Discord creation
                         # if the process died before saving its ID.
@@ -194,7 +206,7 @@ class EventsCog(commands.Cog):
                                          (voice.id, copy['thread_id']))
                         copy['voice_id'] = voice.id
                         self.store.touch(raid_id)
-                    if not ended and now < event['time'] and copy['voice_id']:
+                    if copy['voice_id'] and (copy['guild_id']!=event['guild_id'] or (not ended and now < event['time'])):
                         # A running event may be rescheduled; retire the early channel
                         # when empty, and recreate it at the new start.
                         try:
@@ -203,8 +215,10 @@ class EventsCog(commands.Cog):
                             voice = None
                         if voice is None or not voice.members:
                             if voice:
-                                await voice.delete(reason='Event rescheduled to a later start')
+                                await voice.delete(reason='Voice belongs only to the owning event server, or event was rescheduled')
                             self.store.write('UPDATE EventCopies SET voice_id=NULL, revision=0 WHERE thread_id=?', (copy['thread_id'],))
+                            self.store.touch(raid_id)
+                            copy['voice_id']=None
                     if ended:
                         if copy['voice_id']:
                             try:
@@ -216,6 +230,7 @@ class EventsCog(commands.Cog):
                                     await voice.delete(reason='Event ended and voice channel is empty')
                                 self.store.write('UPDATE EventCopies SET voice_id=NULL, revision=0 WHERE thread_id=?',
                                                  (copy['thread_id'],))
+                                self.store.touch(raid_id)
                     if self.store.lock_due(event, now) and not copy['locked']:
                         thread = await self.channel(copy['thread_id'])
                         await thread.edit(locked=True, archived=True, reason='Event finished')
@@ -251,7 +266,7 @@ class EventsCog(commands.Cog):
                 except discord.NotFound:
                     # Preserve the canonical raid and any surviving voice channel.
                     pass
-            forum = await self.validate_destinations(settings)
+            forum = await self.validate_destinations(settings, require_voice=False)
             result = await forum.create_thread(name=self.title(event, guild_id), content='Preparing shared raid…',
                 auto_archive_duration=10080, allowed_mentions=discord.AllowedMentions.none())
             if existing:
@@ -337,17 +352,17 @@ class EventsCog(commands.Cog):
     @app_commands.checks.has_permissions(manage_guild=True)
     @app_commands.default_permissions(manage_guild=True)
     async def setup_command(self, interaction: discord.Interaction, forum: discord.ForumChannel,
-                            voice_category: discord.CategoryChannel,
+                            voice_category: discord.CategoryChannel | None = None,
                             duration_minutes: app_commands.Range[int, 15, 1440] = 180,
                             lock_delay_minutes: app_commands.Range[int, 0, 10080] = 60):
         await interaction.response.defer(ephemeral=True)
-        settings = dict(guild_id=interaction.guild_id, forum_id=forum.id, voice_category_id=voice_category.id)
+        settings = dict(guild_id=interaction.guild_id, forum_id=forum.id, voice_category_id=voice_category.id if voice_category else 0)
         try:
-            await self.validate_destinations(settings)
+            await self.validate_destinations(settings, require_voice=voice_category is not None)
         except (ValueError, discord.HTTPException) as exc:
             await interaction.followup.send(str(exc), ephemeral=True)
             return
-        self.store.configure(interaction.guild_id, forum.id, voice_category.id,
+        self.store.configure(interaction.guild_id, forum.id, voice_category.id if voice_category else 0,
                              duration_minutes * 60, lock_delay_minutes * 60)
         await interaction.followup.send(f'Events will use {forum.mention}, last {duration_minutes} minutes, and lock {lock_delay_minutes} minutes after ending.', ephemeral=True)
 

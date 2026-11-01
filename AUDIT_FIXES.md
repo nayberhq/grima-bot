@@ -8,7 +8,8 @@
 - `/event-status retry:true` reports mirror revisions, voice IDs, locks, announcement backlog and discovery publication result, and retries refreshes.
 - `/event-repair code` checks the existing starter message and recreates a missing copy. The canonical raid ID, signups and plan survive.
 - `/event-unlink guild_id` disconnects a destination and blocks rediscovery. Source organizers or that destination's administrators may disconnect it. `/event-reconnect guild_id` lets the source organizer allow it again and rotates the share code. Repair with that code reopens the copy.
-- `/event-meeting guild_id` chooses one connected server as the voice rendezvous. Every copy links to it. Source server is the default. Players must already have access to that server; the bot does not grant server membership.
+- Only the owning/source server creates a temporary voice channel. Every mirror displays the owner-server invite and the owner VC link (or a pending notice before start). Grima creates a non-expiring source-forum invite when permitted; `/event-invite url` lets a source-server administrator supply a verified invite instead. Invites do not bypass membership screening or channel permissions. The former `/event-meeting` override is removed.
+- Mirror-only servers may omit voice_category from `/event-setup`. Hosting their own events still requires one. Legacy mirror VCs are retired only when empty.
 - Creation panels repost after human activity (five-second batching), removing the old panel. Bot messages do not trigger bumps. Failed Discord requests are logged; another human message retries the bump. These are now bottom-of-channel panels rather than permanently pinned anchors.
 - Shared green signup opens an inline class/spec picker. A class button without saved tier specs also opens it. Submit saves the spec and signup together. Shared signup no longer needs local class-role creation.
 - Shared events use the planned roster only; legacy lineup controls direct organizers to `/roster-create`, `/roster-edit`, `/roster-swap` and `/planner-import`. Legacy nonshared events retain their controls. Existing legacy assignments are not migrated automatically.
@@ -18,7 +19,7 @@
 
 ## Verification
 
-36 Python tests pass, including canonical signup, mirror deduplication, setup-failure retry, publication deduplication, blocked destinations, deleted-copy repair, inline signup, class withdrawal, fellowship validation, plan-code limits, roster revisions and lifecycle boundaries. Vanguard's JavaScript test suite and bridge syntax checks pass. Discord endpoints in Python tests are mocks; browser clipboard and live multi-server operation have not been verified.
+38 Python tests pass, including canonical signup, mirror deduplication, setup-failure retry, publication deduplication, blocked destinations, deleted-copy repair, inline signup, class withdrawal, fellowship validation, plan-code limits, roster revisions and lifecycle boundaries. Vanguard's JavaScript test suite and bridge syntax checks pass. Discord endpoints in Python tests are mocks; browser clipboard and live multi-server operation have not been verified.
 
 ## Still outstanding — not a completed end-to-end release
 

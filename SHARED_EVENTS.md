@@ -190,3 +190,19 @@ Known boundaries:
 - The in-channel `/calendar` includes mirrored events. Native Discord scheduled
   events remain an optional source-server feature; mirrors use forum posts and
   timed voice creation, not a second native calendar event.
+
+
+## Owner-only voice channels
+
+Temporary VCs are created only in the event's owning server, at event start.
+Mirrored posts display a server invite and a direct link to that VC. Before
+start, mirrors state that the VC will be created when the event begins.
+`/event-setup forum:<forum>` is sufficient for mirror-only servers; provide
+`voice_category` when that server will host its own events.
+
+Grima needs Create Invite permission on the source forum to generate a reusable,
+non-expiring server invite. Otherwise the source administrator uses
+`/event-invite url:<invite>`. Invite destinations are verified against the server.
+Use a non-expiring invite; manually revoked/expired configured invites must be
+replaced by the administrator. Existing mirror VCs from earlier versions are
+removed when empty, never while occupied. No remote deployment was performed.
