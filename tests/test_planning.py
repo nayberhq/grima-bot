@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock, Mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'source'))
-from planning import export_session, import_plan, render_template, context_for
+from planning import export_session, import_plan, render_template, context_for, planner_link
 from planning_cog import PlanningCog
 
 EVENT = dict(raid_id=100, guild_id=1, name='Folly', tier='T2', boss='Win', time=1000, duration=3600, size=12, organizer_id=9)
@@ -14,6 +14,16 @@ PLAYERS = [dict(player_id=9007199254740993, byname='Alice', Guardian=1)]
 TEAM = dict(label='Folly', members=[dict(id=str(PLAYERS[0]['player_id']), c='Guardian', spec='Blue', role='Tank')])
 
 class InterchangeTests(unittest.TestCase):
+    def test_planner_link_roundtrip_and_limit(self):
+        import base64, zlib
+        data=export_session(EVENT, PLAYERS, {})
+        token=planner_link(data).split('#grima=')[1]
+        unpacked=json.loads(zlib.decompress(base64.urlsafe_b64decode(token+'='*((-len(token))%4))))
+        self.assertEqual(unpacked,data)
+        import random,string
+        rng=random.Random(1)
+        self.assertIsNone(planner_link({'text': ''.join(rng.choices(string.ascii_letters,k=10000))}))
+
     def test_templates(self):
         self.assertEqual(render_template('{title} {{literal}} {description} {signup_count}', context_for(EVENT, 3)), 'Folly {literal} Win 3')
         for text in ('{title.__class__}', '{title[0]}', '{title!r}', '{title:>90}', '{}', '{bad}', '{'):

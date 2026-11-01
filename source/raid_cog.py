@@ -808,6 +808,14 @@ class RaidView(discord.ui.View):
     async def green_check(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.sign_up_all(interaction)
 
+    @discord.ui.button(label='Vanguard', style=discord.ButtonStyle.secondary, custom_id='raid_view:vanguard', row=0)
+    async def vanguard(self, interaction: discord.Interaction, button: discord.ui.Button):
+        planning = self.raid_cog.bot.get_cog('PlanningCog')
+        if not planning:
+            await interaction.response.send_message('Planner integration is unavailable.', ephemeral=True)
+            return
+        await planning.open_planner(interaction)
+
     async def sign_up_class(self, i, class_name):
         if not await self.raid_cog.check_signup(i):
             return

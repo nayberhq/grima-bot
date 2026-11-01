@@ -9,7 +9,7 @@ from typing import Literal
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
-from planning import CLASSES, TAGS, context_for, render_template, export_session, import_plan
+from planning import CLASSES, TAGS, context_for, render_template, export_session, import_plan, planner_link, PLANNER_URL
 
 log = logging.getLogger(__name__)
 
@@ -156,6 +156,33 @@ class PlanningCog(commands.Cog):
             return
         self.store.write('UPDATE SharedEvents SET revision=revision+1 WHERE raid_id IN (SELECT raid_id FROM Raids WHERE guild_id=?)', (interaction.guild_id,))
         await interaction.response.send_message('Template saved. Description updates propagate on the next refresh.', ephemeral=True)
+
+    async def open_planner(self, interaction):
+        event = await self.events.command_event(interaction)
+        if not event:
+            return
+        try:
+            specs = {r['player_id']:r for r in self.store.rows('SELECT * FROM Specs')}
+            data = export_session(event, self.players(event['raid_id']), specs)
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        url = planner_link(data)
+        view = discord.ui.View()
+        if url and len(url) <= 512:
+            view.add_item(discord.ui.Button(label='Open in Vanguard', url=url))
+        elif url:
+            # Discord link buttons allow 512 characters; normal message links allow a larger snapshot.
+            pass
+        else:
+            view.add_item(discord.ui.Button(label='Open Vanguard', url=PLANNER_URL))
+        text = 'Current signup snapshot. In Vanguard, choose Copy JSON or Load signups. Loading replaces the open plan. Keep this private link private.'
+        if url and len(url) > 512:
+            text += '\n[Open in Vanguard](' + url + ')'
+        if not url:
+            text = 'This signup list is too large for a link. Open Vanguard and import the attached session JSON.'
+        kwargs = {} if url else dict(file=discord.File(io.BytesIO(json.dumps(data).encode()), filename=f"grima-{event['raid_id']}.json"))
+        await interaction.response.send_message(text, view=view, ephemeral=True, suppress_embeds=True, **kwargs)
 
     @app_commands.command(name='planner-export', description='Export current signups as a Vanguard session JSON.')
     @app_commands.guild_only()

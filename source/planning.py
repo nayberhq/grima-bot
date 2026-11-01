@@ -116,3 +116,17 @@ def import_plan(data, event, players):
             raise ValueError('Invalid planner time.')
         result.append(dict(label=label, members=members, time=hour))
     return result
+
+
+PLANNER_URL = 'https://nayberhq.github.io/vanguard-raid-planner/'
+
+
+def planner_link(session):
+    """Snapshot carried in a URL fragment; never in the Pages HTTP request."""
+    import base64
+    import json
+    import zlib
+    packed = zlib.compress(json.dumps(session, separators=(',', ':'), ensure_ascii=False).encode())
+    token = base64.urlsafe_b64encode(packed).decode().rstrip('=')
+    url = PLANNER_URL + '#grima=' + token
+    return url if len(url) <= 1650 else None

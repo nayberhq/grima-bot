@@ -98,3 +98,34 @@ messages are recreated when their content next changes; unchanged deleted
 messages are not proactively detected. Closed threads are not reopened to
 update plans. Preserve the database across restarts. Live Discord deployment
 and permission checks are still required; tests use mocked Discord endpoints.
+
+## Signup button → Vanguard Pages
+
+The persistent **Vanguard** button on free-people signup messages uses the same
+organizer/source raid-leader authorization as `/planner-export`. It sends a
+private, fresh signup snapshot link to
+https://nayberhq.github.io/vanguard-raid-planner/ . Small snapshots get a link
+button; longer ones get a clickable text link because Discord limits button
+URLs to 512 characters. Oversized snapshots fall back to the existing session
+attachment and a plain site link.
+
+The Pages bridge opens a dialog with **Copy JSON**, **Download JSON**, and
+**Load signups**. Discord itself cannot write to the clipboard or automatically
+open the browser after a bot callback, so the user follows the private link,
+then chooses the action on the site. Load signups imports directly without
+copy/paste and replaces the current plan only after that explicit click.
+Clipboard denial has a download fallback.
+
+The compressed snapshot is carried in the URL fragment, which the Pages HTTP
+request does not send to the host. The bridge clears it from the address bar
+immediately. The link still contains signup names and IDs: keep it private.
+It is a point-in-time export, not a live connection and not a secret-free URL.
+This bridge needs no bot API or persistent web server.
+
+**Deployment prerequisite:** `vanguard-pages-bridge.patch` contains the matching
+change for `nayberhq/vanguard-raid-planner` based on commit
+`5b2e20f727a95466a9555b1eccabb76fea222584`. Apply with `git am` in that repository,
+run its tests, and deploy its Pages site before enabling this Grima version.
+The bridge and bot changes have been committed locally only; neither has been
+pushed or deployed. Without the bridge deployment, the site opens but does not
+read the snapshot. A live Discord/browser clipboard check remains pending.

@@ -1,0 +1,85 @@
+From 08268eb7d96229492b5343e094c3df75d6985c89 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Sun, 1 Nov 2026 15:27:02 -0500
+Subject: [PATCH] Add Grima signup snapshot links with clipboard and session
+ import
+
+---
+ public/grima-import.js      | 33 +++++++++++++++++++++++++++++++++
+ public/index.html           |  2 +-
+ tests/grima-import.test.cjs | 13 +++++++++++++
+ 3 files changed, 47 insertions(+), 1 deletion(-)
+ create mode 100644 public/grima-import.js
+ create mode 100644 tests/grima-import.test.cjs
+
+diff --git a/public/grima-import.js b/public/grima-import.js
+new file mode 100644
+index 0000000..842d98e
+--- /dev/null
++++ b/public/grima-import.js
+@@ -0,0 +1,33 @@
++// Grima snapshots are carried in the fragment, not sent to the Pages host.
++async function decodeGrimaSnapshot(token){
++ if(!/^[A-Za-z0-9_-]+$/.test(token)||token.length>20000)throw Error('Invalid Grima link.');
++ let base=token.replace(/-/g,'+').replace(/_/g,'/');base+='='.repeat((4-base.length%4)%4);
++ let bytes=Uint8Array.from(atob(base),c=>c.charCodeAt(0));
++ let reader=new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate')).getReader();
++ let chunks=[],length=0;
++ try{while(true){let {done,value}=await reader.read();if(done)break;length+=value.length;if(length>2000000)throw Error('Grima snapshot is too large.');chunks.push(value)}}finally{await reader.cancel()}
++ let all=new Uint8Array(length),offset=0;for(let chunk of chunks){all.set(chunk,offset);offset+=chunk.length}
++ let data=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(all));validateSession(data);return data;
++}
++async function receiveGrimaSnapshot(){
++ if(!location.hash.startsWith('#grima='))return;
++ let token=location.hash.slice(7);
++ history.replaceState(null,'',location.pathname+location.search);
++ let dialog=document.createElement('dialog');
++ let title=document.createElement('h2');title.textContent='Grima signup snapshot';dialog.append(title);
++ let status=document.createElement('p');status.textContent='Reading signups…';status.setAttribute('role','status');dialog.append(status);
++ let close=document.createElement('button');close.textContent='Cancel';close.onclick=()=>dialog.close();dialog.append(close);
++ dialog.addEventListener('close',()=>dialog.remove());document.body.append(dialog);dialog.showModal();
++ try{
++  let data=await decodeGrimaSnapshot(token);if(!dialog.isConnected)return;
++  status.textContent=`${data.players.length} signups. Loading replaces the open plan. Export your current plan first if you want to keep it.`;
++  let copy=document.createElement('button');copy.textContent='Copy JSON';
++  copy.onclick=async()=>{try{await navigator.clipboard.writeText(JSON.stringify(data));status.textContent='JSON copied to clipboard.'}catch(e){status.textContent='Clipboard access was denied. Use Download JSON instead.'}};
++  let download=document.createElement('button');download.textContent='Download JSON';
++  download.onclick=()=>{let url=URL.createObjectURL(new Blob([JSON.stringify(data)],{type:'application/json'}));let a=document.createElement('a');a.href=url;a.download='grima-signups.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)};
++  let load=document.createElement('button');load.textContent='Load signups';load.className='primary';
++  load.onclick=()=>{try{restoreSession(data);dialog.close()}catch(e){status.textContent='Could not load this session: '+e.message}};
++  dialog.insertBefore(copy,close);dialog.insertBefore(download,close);dialog.insertBefore(load,close);
++ }catch(e){status.textContent='Could not read this Grima link. Export the JSON from Grima and import the file instead.'}
++}
++if(typeof window!=='undefined')receiveGrimaSnapshot();
+diff --git a/public/index.html b/public/index.html
+index 7004b7e..e34ec33 100644
+--- a/public/index.html
++++ b/public/index.html
+@@ -32,4 +32,4 @@ body{padding-bottom:calc(88px + env(safe-area-inset-bottom))}
+ .footerstatus{font-size:12px;color:var(--muted);min-width:0}.footerstatus.pending{color:var(--gold)}
+ .plannerfooter .lastaction{padding:0;margin:0;font-size:12px;max-width:240px}.plannerfooter button{white-space:nowrap}
+ @media(max-width:600px){.plannerfooter{gap:8px;padding-left:10px;padding-right:10px}.plannerfooter .lastaction{display:none}.footerstatus{max-width:70px;font-size:11px}}
+-</style></head><body><header><div><div class="eyebrow">Vanguard / Sting</div><h1>Raid Planner</h1></div></header><nav id="nav"></nav><main id="main"></main><div id="toast" role="status"></div><dialog id="discordexport" aria-labelledby="discordexporttitle"><div id="discordexportcontent"></div></dialog><script src="app.js"></script><script src="role-priorities.js"></script><script src="fellowship.js"></script><script src="constraints.js"></script><script src="builtin-templates.js"></script><script src="search.js"></script><script src="allocation.js"></script><script src="background.js"></script><script src="session-recovery.js"></script></body></html>
++</style></head><body><header><div><div class="eyebrow">Vanguard / Sting</div><h1>Raid Planner</h1></div></header><nav id="nav"></nav><main id="main"></main><div id="toast" role="status"></div><dialog id="discordexport" aria-labelledby="discordexporttitle"><div id="discordexportcontent"></div></dialog><script src="app.js"></script><script src="role-priorities.js"></script><script src="fellowship.js"></script><script src="constraints.js"></script><script src="builtin-templates.js"></script><script src="search.js"></script><script src="allocation.js"></script><script src="background.js"></script><script src="session-recovery.js"></script><script src="grima-import.js"></script></body></html>
+diff --git a/tests/grima-import.test.cjs b/tests/grima-import.test.cjs
+new file mode 100644
+index 0000000..87b357c
+--- /dev/null
++++ b/tests/grima-import.test.cjs
+@@ -0,0 +1,13 @@
++const fs=require('fs'),vm=require('vm'),assert=require('assert'),zlib=require('zlib');
++const context=vm.createContext({Blob,DecompressionStream,TextDecoder,Uint8Array,atob,validateSession(data){assert.equal(data.format,'vanguard-raid-planner-session')}});
++vm.runInContext(fs.readFileSync('public/grima-import.js','utf8'),context);
++(async()=>{
++ const data={format:'vanguard-raid-planner-session',players:[{id:'9007199254740993',name:'Éowyn'}]};
++ context.token=zlib.deflateSync(JSON.stringify(data)).toString('base64url');
++ const decoded=await vm.runInContext('decodeGrimaSnapshot(token)',context);
++ assert.equal(JSON.stringify(decoded),JSON.stringify(data));
++ for(const token of ['bad!','a',zlib.deflateSync('not json').toString('base64url'),zlib.deflateSync('x'.repeat(2000001)).toString('base64url')]){
++  context.token=token;await assert.rejects(vm.runInContext('decodeGrimaSnapshot(token)',context));
++ }
++ console.log('Grima bridge: Unicode/Discord IDs preserved; malformed and oversized payloads rejected.');
++})().catch(e=>{console.error(e);process.exitCode=1});
+-- 
+2.51.1
+
