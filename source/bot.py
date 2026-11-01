@@ -94,6 +94,9 @@ class Bot(commands.Bot):
         intents.guilds = True
         intents.emojis = True
         intents.dm_messages = True
+        intents.voice_states = True  # Do not remove temporary channels while occupied.
+        intents.guild_messages = True
+        intents.message_content = True  # mirrorkey watchers; enable in Developer Portal.
 
         super().__init__(command_prefix=self.prefix_manager, case_insensitive=True, intents=intents,
                          activity=discord.Game(name=self.version))
@@ -134,6 +137,7 @@ class Bot(commands.Bot):
             await self.load_extension('calendar_cog')
             # Load after calendar_cog
             await self.load_extension('raid_cog')
+            await self.load_extension('events_cog')
             # Load twitter cog
             #if self.twitter_token:
             #    await self.load_extension('twitter_cog')

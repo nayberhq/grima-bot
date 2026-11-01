@@ -1,3 +1,16 @@
+## Shared event forum extension
+
+This branch adds persistent creation panels, timed forum/voice channels,
+cross-server shared rosters and announcements, and automatic `mirrorkey:` channel
+watchers. See [SHARED_EVENTS.md](SHARED_EVENTS.md) for setup, permissions,
+commands, tests, and deployment boundaries. This is an independent modification
+of Saruman; it does not change the public bot operated by the upstream author.
+
+**Retention change:** shared forum events and their roster records are retained
+after closing, and the roster is shared with linked servers. The upstream policy
+below describes the original service and ordinary events; operators of this
+branch must provide their own deployment-specific notice.
+
 ## Introduction
 This is a discord bot aimed at making it easy to schedule raids in a discord server. It is developed for LotRO but could work for any game if you edit the class names in the config file.
 

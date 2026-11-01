@@ -1,0 +1,21 @@
+{
+  "cluster": {
+    "title": "160 Instance Cluster",
+    "description": "Create an event for level 160 content",
+    "buttons": [
+      {"label": "Folly", "name": "The Folly of Nagakhêdi", "size": 12},
+      {"label": "Wailing Hold", "name": "Kôth Rau, the Wailing Hold", "size": 6},
+      {"label": "Palace", "name": "Ekal-nêbi, the Fallen Palace", "size": 6},
+      {"label": "Garden", "name": "Pagru-kirít, the Garden of Corpses", "size": 6},
+      {"label": "Hunter Dailies", "name": "Hunter Dailies", "size": 6}
+    ]
+  },
+  "misc": {
+    "title": "Miscellaneous Content",
+    "description": "Create an event for untemplated content",
+    "buttons": [
+      {"label": "12 man", "name": "12-player event", "size": 12},
+      {"label": "6 man", "name": "6-player event", "size": 6}
+    ]
+  }
+}

@@ -139,13 +139,16 @@ class ConfigCog(commands.Cog):
     async def privacy_respond(self, interaction: discord.Interaction):
         privacy = _("**Summary:**\n"
                      "When you sign up for a raid the bot stores the time, your discord id, discord nickname and the class("
-                    "es) you sign up with. This information is automatically deleted 2 hours after the scheduled "
-                    "raid time or immediately when you cancel your sign up.\n"
+                    "es) you sign up with. Ordinary text-channel events are deleted 2 hours after the scheduled "
+                    "raid time. Shared forum events retain their roster and discussion after closing, and their "
+                    "roster is visible in every server that mirrors the event. Cancelling your signup removes "
+                    "your current signup record, but does not delete previously posted Discord messages.\n"
+                    "Configured channel watchers read message text to find mirrorkey sharing codes. They store "
+                    "channel/message IDs and event links, not a copy of the channel's conversation.\n"
                     "If you set a default time zone for yourself, the bot will additionally store your time zone "
                     "along with your discord id such that it can parse times provided in your commands in your "
                     "preferred time zone.\n"
-                    "**Please find the full privacy policy here:**\n"
-                    "https://github.com/Baviaan/lotro#privacy-policy")
+                    "Ask the administrators hosting this bot about retention and deletion for this deployment.")
         await interaction.response.send_message(privacy)
 
 

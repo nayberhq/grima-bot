@@ -18,6 +18,7 @@ from typing import Optional
 from database import create_table, count, delete, read_config_key, select, select_le, select_one, select_order, upsert
 from time_cog import Time
 from utils import get_match
+from event_store import EventStore
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -49,6 +50,7 @@ class RaidCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.conn = bot.conn
+        self.event_store = EventStore(self.conn)
         self.role_names = bot.role_names
         self.creep_names = bot.creep_names
         self.slots_class_names = bot.slots_class_names
@@ -345,9 +347,10 @@ class RaidCog(commands.Cog):
             size = 12
         return size
 
-    async def post_raid(self, name, tier, boss, timestamp, roster, guild_id, channel, author_id, creep=False):
-        full_name = self.get_raid_name(name)
-        raid_size = self.get_raid_size(full_name)
+    async def post_raid(self, name, tier, boss, timestamp, roster, guild_id, channel, author_id, creep=False,
+                        size=None, duration=None):
+        full_name = name[:256] if size is not None else self.get_raid_name(name)
+        raid_size = size or self.get_raid_size(full_name)
         raid_time = datetime.datetime.utcfromtimestamp(timestamp)
         tag_name = name[:96]
         tag = f'{tag_name}{raid_time.day}{raid_time.hour}'
@@ -367,12 +370,22 @@ class RaidCog(commands.Cog):
             error_message = _("Please check the date <@{0}>. You are posting a raid for: {1} UTC.").format(
                 author_id, raid_time)
             await channel.send(error_message, delete_after=30)
-        post = await channel.send('\u200B')
+        events = self.bot.get_cog('EventsCog')
+        origin = await events.create_origin(guild_id, full_name, tier, timestamp) if events else None
+        if origin:
+            channel, post, settings = origin
+            tag = None  # Shared events use user IDs; guild roles cannot span servers.
+        else:
+            post = await channel.send('\u200B')
         raid_id = post.id
         raid_columns = ['channel_id', 'guild_id', 'organizer_id', 'name', 'tier', 'boss', 'time', 'roster', 'tag', 'size']
         raid_values = [channel.id, guild_id, author_id, full_name, tier, boss, timestamp, roster, tag, raid_size]
         upsert(self.conn, 'Raids', raid_columns, raid_values, ['raid_id'], [raid_id])
-        await channel.guild.create_role(mentionable=True, name=tag)
+        if origin:
+            events.store.add_event(raid_id, settings, creep, duration)
+            events.store.add_copy(raid_id, guild_id, channel.id, post.id, settings['voice_category_id'])
+        else:
+            await channel.guild.create_role(mentionable=True, name=tag)
         if not creep:
             self.roster_init(raid_id, raid_size)
             embed = self.build_raid_message(raid_id, "\u200B", None)
@@ -385,6 +398,9 @@ class RaidCog(commands.Cog):
         self.conn.commit()
         logger.info("Created new raid: {0} at {1} for guild {2}.".format(full_name, raid_time, guild_id))
         await self.calendar_cog.update_calendar(guild_id)
+        if origin:
+            await events.refresh(raid_id)
+        return raid_id
 
     async def create_guild_event(self, channel, raid_id):
         event_id = await self.calendar_cog.create_guild_event(channel.guild, raid_id)
@@ -405,6 +421,23 @@ class RaidCog(commands.Cog):
             upsert(self.conn, 'Assignment', assignment_columns, assignment_values, ['raid_id', 'slot_id'], [raid_id, i])
 
     async def has_raid_permission(self, user, guild, raid_id, channel=None):
+        raid_id = self.resolve_raid_id(raid_id)
+        if not select_one(self.conn, 'Raids', ['raid_id'], ['raid_id'], [raid_id]):
+            return False
+        event = self.event_store.event(raid_id)
+        if event:
+            if self.event_store.ended(event, time.time()):
+                return False
+            if user.id == event['organizer_id']:
+                return True
+            origin = self.bot.get_guild(event['guild_id'])
+            if not origin:
+                return False
+            try:
+                member = origin.get_member(user.id) or await origin.fetch_member(user.id)
+            except (discord.NotFound, discord.Forbidden):
+                return False
+            return self.calendar_cog.is_raid_leader(member, origin)
         if user.guild_permissions.administrator:
             return True
 
@@ -422,7 +455,27 @@ class RaidCog(commands.Cog):
             await channel.send(perm_msg, delete_after=15)
         return False
 
+    def resolve_raid_id(self, message_id):
+        return self.event_store.resolve(message_id)
+
+    async def check_signup(self, interaction):
+        raid_id = self.resolve_raid_id(interaction.message.id)
+        if not select_one(self.conn, 'Raids', ['raid_id'], ['raid_id'], [raid_id]):
+            await interaction.response.send_message('This event no longer exists.', ephemeral=True)
+            return False
+        event = self.event_store.event(raid_id)
+        if event and self.event_store.ended(event, time.time()):
+            await interaction.response.send_message('This event has ended.', ephemeral=True)
+            return False
+        return True
+
     async def update_raid_post(self, raid_id, channel, delay=assign_delay):
+        raid_id = self.resolve_raid_id(raid_id)
+        events = self.bot.get_cog('EventsCog')
+        if events and self.event_store.event(raid_id):
+            self.event_store.touch(raid_id)
+            await events.refresh(raid_id)
+            return
         try:
             self.update_call[raid_id] += 1
         except KeyError:
@@ -636,6 +689,8 @@ class RaidCog(commands.Cog):
         ]
         for raid in raids:
             raid_id = int(raid[0])
+            if self.event_store.event(raid_id):
+                continue  # Forum events have durable end/lock/voice cleanup instead.
             channel_id = int(raid[1])
             timestamp = int(raid[2])
             roster = int(raid[3])
@@ -716,20 +771,20 @@ class RaidView(discord.ui.View):
 
     @discord.ui.button(emoji="\U0001F6E0\uFE0F", style=discord.ButtonStyle.blurple, custom_id='raid_view:settings')
     async def settings(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await self.raid_cog.has_raid_permission(interaction.user, interaction.guild, interaction.message.id):
+        if not await self.raid_cog.has_raid_permission(interaction.user, interaction.guild, self.raid_cog.resolve_raid_id(interaction.message.id)):
             perm_msg = _("You do not have permission to change the raid settings.")
             await interaction.response.send_message(perm_msg, ephemeral=True)
             return
-        modal = ConfigureModal(self.raid_cog, interaction.message.id)
+        modal = ConfigureModal(self.raid_cog, self.raid_cog.resolve_raid_id(interaction.message.id))
         await interaction.response.send_modal(modal)
 
     @discord.ui.button(emoji="\u26CF\uFE0F", style=discord.ButtonStyle.blurple, custom_id='raid_view:select')
     async def select(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await self.raid_cog.has_raid_permission(interaction.user, interaction.guild, interaction.message.id):
+        if not await self.raid_cog.has_raid_permission(interaction.user, interaction.guild, self.raid_cog.resolve_raid_id(interaction.message.id)):
             perm_msg = _("You do not have permission to change the raid settings.")
             await interaction.response.send_message(perm_msg, ephemeral=True)
             return
-        raid_id = interaction.message.id
+        raid_id = self.raid_cog.resolve_raid_id(interaction.message.id)
         available = select(self.conn, 'Players', ['player_id, byname'], ['raid_id', 'unavailable'],
                            [raid_id, False])
         if not available:
@@ -754,6 +809,8 @@ class RaidView(discord.ui.View):
         await self.sign_up_all(interaction)
 
     async def sign_up_class(self, i, class_name):
+        if not await self.raid_cog.check_signup(i):
+            return
         try:
             role = discord.utils.get(i.guild.roles, name=class_name)
             if role is None:
@@ -764,7 +821,7 @@ class RaidView(discord.ui.View):
             msg = _("Error: Missing 'Manage roles' permission to assign the class role.")
         else:
             msg = _("Your sign up has been received and the raid post will be updated momentarily.")
-        raid_id = i.message.id
+        raid_id = self.raid_cog.resolve_raid_id(i.message.id)
         timestamp = int(time.time())
         byname = self.raid_cog.process_name(i.guild.id, i.user)
 
@@ -792,7 +849,9 @@ class RaidView(discord.ui.View):
         await self.raid_cog.update_raid_post(raid_id, i.channel, delay=sign_up_delay)
 
     async def sign_up_all(self, i):
-        raid_id = i.message.id
+        if not await self.raid_cog.check_signup(i):
+            return
+        raid_id = self.raid_cog.resolve_raid_id(i.message.id)
 
         specs = select_one(self.conn, 'Specs', self.raid_cog.role_names, ['player_id'], [i.user.id])
         tier = select_one(self.conn, 'Raids', ['Tier'], ['raid_id'], [raid_id])
@@ -822,8 +881,10 @@ class RaidView(discord.ui.View):
         await self.raid_cog.update_raid_post(raid_id, i.channel, delay=0)
 
     async def sign_up_cancel(self, i):
+        if not await self.raid_cog.check_signup(i):
+            return
         await i.response.defer()
-        raid_id = i.message.id
+        raid_id = self.raid_cog.resolve_raid_id(i.message.id)
         timestamp = int(time.time())
         assigned_slot = select_one(self.conn, 'Assignment', ['slot_id'], ['player_id', 'raid_id'],
                                    [i.user.id, raid_id])
@@ -866,7 +927,9 @@ class CreepView(discord.ui.View):
             self.add_item(EmojiButton(emoji, (index+2)//3))
 
     async def sign_up_class(self, i, creep_name):
-        raid_id = i.message.id
+        if not await self.raid_cog.check_signup(i):
+            return
+        raid_id = self.raid_cog.resolve_raid_id(i.message.id)
         timestamp = int(time.time())
         byname = self.raid_cog.process_name(i.guild.id, i.user)
         upsert(self.conn, 'Players', ['byname', 'timestamp', 'unavailable', creep_name],
@@ -877,8 +940,10 @@ class CreepView(discord.ui.View):
         await self.raid_cog.update_raid_post(raid_id, i.channel, delay=sign_up_delay)
 
     async def sign_up_cancel(self, i):
+        if not await self.raid_cog.check_signup(i):
+            return
         await i.response.defer()
-        raid_id = i.message.id
+        raid_id = self.raid_cog.resolve_raid_id(i.message.id)
         timestamp = int(time.time())
         r = select_one(self.conn, 'Players', ['byname'], ['player_id', 'raid_id'], [i.user.id, raid_id])
         if r:
@@ -892,11 +957,11 @@ class CreepView(discord.ui.View):
 
     @discord.ui.button(emoji="\U0001F6E0\uFE0F", style=discord.ButtonStyle.blurple, custom_id='creep_view:settings')
     async def settings(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await self.raid_cog.has_raid_permission(interaction.user, interaction.guild, interaction.message.id):
+        if not await self.raid_cog.has_raid_permission(interaction.user, interaction.guild, self.raid_cog.resolve_raid_id(interaction.message.id)):
             perm_msg = _("You do not have permission to change the raid settings.")
             await interaction.response.send_message(perm_msg, ephemeral=True)
             return
-        modal = ConfigureModal(self.raid_cog, interaction.message.id)
+        modal = ConfigureModal(self.raid_cog, self.raid_cog.resolve_raid_id(interaction.message.id))
         await interaction.response.send_modal(modal)
 
     @discord.ui.button(emoji="\u274C", style=discord.ButtonStyle.red, custom_id='creep_view:cancel')
@@ -989,13 +1054,19 @@ class ClassSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         raid_id = self.view.raid_id
+        if not await self.view.raid_cog.has_raid_permission(interaction.user, interaction.guild, raid_id):
+            await interaction.response.send_message('You can no longer edit this event.', ephemeral=True)
+            return
         if self.view.player is None:
             msg = _("Please select a player first.")
             await interaction.response.send_message(msg, ephemeral=True)
             return
 
         #no members intent so fetch
-        member = await interaction.guild.fetch_member(self.view.player)
+        try:
+            member = await interaction.guild.fetch_member(int(self.view.player))
+        except discord.NotFound:
+            member = None  # A shared-roster player may belong only to a partner server.
         tag, tier = select_one(self.view.conn, 'Raids', ['tag', 'tier'], ['raid_id'], [self.view.raid_id])
         role = discord.utils.get(interaction.guild.roles, name=tag)
 
@@ -1003,7 +1074,7 @@ class ClassSelect(discord.ui.Select):
             byname = select_one(self.view.conn, 'Players', ['byname'], ['player_id', 'raid_id'],
                             [self.view.player, raid_id])
             self.clear_assignment()
-            if role:
+            if role and member:
                 await member.remove_roles(role)
             msg = _("Removed {0} from the selected line up.").format(byname)
             await interaction.response.send_message(msg, ephemeral=True, delete_after=assign_delay)
@@ -1013,8 +1084,8 @@ class ClassSelect(discord.ui.Select):
         signup = select_one(self.view.conn, 'Players', [self.values[0], 'byname'], ['player_id', 'raid_id'],
                             [self.view.player, raid_id])
 
-        if not signup[0]:
-            msg = _("{0} did not sign up with {1}.").format(signup[1], self.values[0])
+        if not signup or not signup[0]:
+            msg = _("{0} did not sign up with {1}.").format(signup[1] if signup else 'This player', self.values[0])
             await interaction.response.send_message(msg, ephemeral=True)
             return
 
@@ -1026,7 +1097,7 @@ class ClassSelect(discord.ui.Select):
                 tier = int(''.join(filter(str.isdigit, tier)))
                 spec = select_one(self.view.conn, 'Specs', self.values, ['player_id'], [self.view.player])
                 chosen_spec = self.view.raid_cog.specs[self.view.spec]
-                if not (spec >> (tier-1)*3) & self.view.spec:
+                if not ((spec or 0) >> (tier-1)*3) & self.view.spec:
                     msg = _("{0} does not specialize in {1}.").format(signup[1], chosen_spec)
                     await interaction.response.send_message(msg, ephemeral=True)
                     return
@@ -1049,9 +1120,12 @@ class ClassSelect(discord.ui.Select):
             return
 
         player_id = select_one(self.view.conn, 'Assignment', ['player_id'], ['slot_id', 'raid_id'], [slot_id, raid_id])
-        if player_id:
-            old_member = await interaction.guild.fetch_member(player_id)
-            if role:
+        if player_id and role:
+            try:
+                old_member = await interaction.guild.fetch_member(player_id)
+            except discord.NotFound:
+                old_member = None
+            if old_member:
                 await old_member.remove_roles(role)
 
         self.clear_assignment()
@@ -1065,7 +1139,8 @@ class ClassSelect(discord.ui.Select):
         msg = _("Assigned {0} to {2}{1}.").format(signup[1], self.values[0], chosen_spec)
         await interaction.response.send_message(msg, ephemeral=True, delete_after=assign_delay)
 
-        if role:
+        self.view.conn.commit()
+        if role and member:
             try:
                 await member.add_roles(role)
             except discord.Forbidden:
@@ -1115,6 +1190,9 @@ class ConfigureModal(discord.ui.Modal):
         self.add_item(delete_field)
 
     async def on_submit(self, interaction: discord.Interaction):
+        if not await self.raid_cog.has_raid_permission(interaction.user, interaction.guild, self.raid_id):
+            await interaction.response.send_message('You can no longer edit this event.', ephemeral=True)
+            return
         text_fields = interaction.data['components']
         raid_columns = [field['components'][0]['custom_id'] for field in text_fields]
         raid_values = [field['components'][0]['value'] for field in text_fields]
@@ -1127,6 +1205,10 @@ class ConfigureModal(discord.ui.Modal):
             return
         raid_columns.pop(delete_index)
         raid_values.pop(delete_index)
+        tier_value = raid_values[raid_columns.index('tier')].upper()
+        if tier_value and tier_value not in ('T1', 'T2', 'T2C', 'T3', 'T4', 'T5'):
+            await interaction.response.send_message('Choose tier T1–T5, T2c, or leave it blank.', ephemeral=True)
+            return
         # default response
         resp_msg = _("The raid settings have been successfully updated! Changes will be reflected momentarily.")
         # time parsing
@@ -1141,7 +1223,7 @@ class ConfigureModal(discord.ui.Modal):
                 raid_values.pop(time_index)
             else:
                 current_time = int(time.time())
-                if current_time + 31536000 < timestamp:
+                if timestamp <= current_time or current_time + 31536000 < timestamp:
                     raid_time = datetime.datetime.utcfromtimestamp(timestamp)
                     resp_msg = _("Events must start within 1 year. Your edit to {0} UTC will not be saved.").format(raid_time)
                     raid_columns.pop(time_index)
@@ -1158,12 +1240,23 @@ class ConfigureModal(discord.ui.Modal):
         await interaction.response.send_message(resp_msg, ephemeral=True, delete_after=assign_delay)
         # Update corresponding discord posts and events
         await self.raid_cog.update_raid_post(self.raid_id, interaction.channel)
-        await self.calendar_cog.update_calendar(interaction.guild.id)
-        await self.calendar_cog.modify_guild_event(interaction.guild, self.raid_id)
+        source_guild_id = select_one(self.conn, 'Raids', ['guild_id'], ['raid_id'], [self.raid_id])
+        source_guild = self.raid_cog.bot.get_guild(source_guild_id)
+        await self.calendar_cog.update_calendar(source_guild_id)
+        if source_guild:
+            await self.calendar_cog.modify_guild_event(source_guild, self.raid_id)
         self.stop()
 
     async def delete_raid(self, interaction: discord.Interaction):
         await interaction.response.defer()
+        events = self.raid_cog.bot.get_cog('EventsCog')
+        if events and events.store.event(self.raid_id):
+            event = events.store.event(self.raid_id)
+            await events.cancel(self.raid_id)
+            guild = self.raid_cog.bot.get_guild(event['guild_id'])
+            if guild:
+                await self.calendar_cog.delete_guild_event(guild, self.raid_id)
+            return
         # Delete the guild event
         await self.calendar_cog.delete_guild_event(interaction.guild, self.raid_id)
         # remove from memory first

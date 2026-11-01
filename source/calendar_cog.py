@@ -10,6 +10,7 @@ from discord.ext import commands
 
 from database import select_one, select_order, upsert
 from utils import chunks
+from event_store import EventStore
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -25,6 +26,7 @@ class CalendarCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.conn = bot.conn
+        EventStore(self.conn)
         self.time_cog = bot.get_cog('TimeCog')
         self.upcoming_events = None
         self.cached_events_at = None
@@ -82,8 +84,13 @@ class CalendarCog(commands.Cog):
 
     def calendar_embed(self, guild_id):
         conn = self.bot.conn
-        raids = select_order(conn, 'Raids', ['channel_id', 'raid_id', 'name', 'tier', 'time'], 'time', ['guild_id'],
-                             [guild_id])
+        raids = conn.execute('''SELECT r.channel_id,r.raid_id,r.name,r.tier,r.time FROM Raids r
+            LEFT JOIN SharedEvents e USING (raid_id) WHERE r.guild_id=?
+            AND (e.raid_id IS NULL OR (e.cancelled=0 AND r.time+e.duration>CAST(strftime('%s','now') AS INTEGER)))
+            UNION ALL SELECT c.thread_id,c.message_id,r.name,r.tier,r.time
+            FROM EventCopies c JOIN Raids r USING (raid_id) JOIN SharedEvents e USING (raid_id)
+            WHERE c.guild_id=? AND r.guild_id!=? AND e.cancelled=0
+            AND r.time+e.duration>CAST(strftime('%s','now') AS INTEGER) ORDER BY 5''', (guild_id,guild_id,guild_id)).fetchall()
 
         title = _("Scheduled runs:")
         desc = _("Click the link to sign up!")
@@ -111,7 +118,8 @@ class CalendarCog(commands.Cog):
 
         location = f"https://discord.com/channels/{guild.id}/{channel_id}/{raid_id}"
         start_time = datetime.fromtimestamp(timestamp, tz=timezone.utc)
-        end_time = datetime.fromtimestamp(timestamp+7200, tz=timezone.utc)
+        shared = EventStore(conn).event(raid_id)
+        end_time = datetime.fromtimestamp(timestamp+(shared['duration'] if shared else 7200), tz=timezone.utc)
         if tier:
             event_name = " ".join([name, tier])
         else:
@@ -138,7 +146,8 @@ class CalendarCog(commands.Cog):
         # discord.py does not have partial event
         event = await guild.fetch_scheduled_event(event_id, with_counts=False)
         start_time = datetime.fromtimestamp(timestamp, tz=timezone.utc)
-        end_time = datetime.fromtimestamp(timestamp+7200, tz=timezone.utc)
+        shared = EventStore(conn).event(raid_id)
+        end_time = datetime.fromtimestamp(timestamp+(shared['duration'] if shared else 7200), tz=timezone.utc)
         if tier:
             event_name = " ".join([name, tier])
         else:
