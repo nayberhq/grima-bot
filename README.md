@@ -4,6 +4,10 @@ An independent fork of [Saruman](https://github.com/Baviaan/lotro), with shared
 event forums and cross-server coordination. Upstream authorship and GPL-3.0
 licensing are preserved. No hosted fork has been created yet.
 
+See [UPSTREAM.md](UPSTREAM.md) for restoring the full-history fork, connecting
+your own GitHub repository, and preparing tested upstream updates in an isolated
+branch with `python scripts/upstream_update.py`.
+
 ## Shared event forum extension
 
 This branch adds persistent creation panels, timed forum/voice channels,
