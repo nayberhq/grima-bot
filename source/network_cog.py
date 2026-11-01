@@ -13,6 +13,7 @@ class NetworkCog(commands.Cog):
         self.bot=bot
         self.lock=asyncio.Lock()
         self.panel_tasks={}
+        self.invite_check_at=0
 
     @property
     def events(self): return self.bot.get_cog('EventsCog')
@@ -21,6 +22,16 @@ class NetworkCog(commands.Cog):
 
     async def tick(self):
         async with self.lock:
+            if time.time()>=self.invite_check_at:
+                self.invite_check_at=time.time()+3600
+                for row in self.store.rows('SELECT * FROM SourceInvites'):
+                    try:
+                        invite=await self.bot.fetch_invite(row['url'])
+                        if invite.guild and invite.guild.id==row['guild_id']:continue
+                    except discord.NotFound:pass
+                    except discord.HTTPException:continue
+                    self.store.write('DELETE FROM SourceInvites WHERE guild_id=?',(row['guild_id'],))
+                    self.store.write('UPDATE SharedEvents SET revision=revision+1 WHERE raid_id IN (SELECT raid_id FROM Raids WHERE guild_id=?)',(row['guild_id'],))
             for pending in self.store.rows('SELECT * FROM PendingPublications'):
                 args=(pending['guild_id'],pending['source_id'],pending['message_id'])
                 try:
@@ -94,7 +105,7 @@ class NetworkCog(commands.Cog):
         if not guild_id.isdecimal():
             await interaction.response.send_message('Use a numeric server ID.',ephemeral=True);return
         self.store.write('DELETE FROM EventBlocks WHERE raid_id=? AND guild_id=?',(event['raid_id'],int(guild_id)))
-        code=self.store.share(event['raid_id'])
+        code=event['share_token'] or self.store.share(event['raid_id'])
         await interaction.response.send_message(f'Allowed reconnection. Destination administrator: /event-repair code:{code}',ephemeral=True)
 
     @app_commands.command(name='network-push',description='Set the channel for automatic event discovery announcements, or disable publishing.')
@@ -126,6 +137,9 @@ class NetworkCog(commands.Cog):
             lines.append(f"Server {c['guild_id']}: thread {c['thread_id']}; revision {c['revision']}; locked {bool(c['locked'])}; voice {c['voice_id']}")
         pending=self.store.one('SELECT count(*) AS n FROM AnnouncementDeliveries d JOIN EventAnnouncements a ON a.id=d.announcement_id WHERE a.raid_id=? AND d.sent=0',(event['raid_id'],))
         lines.append(f"Pending announcement deliveries: {pending['n']}")
+        if self.bot.get_cog('PlanningCog'):
+            for delivery in self.store.rows('SELECT d.* FROM RosterDelivery d JOIN EventCopies c USING(thread_id) WHERE c.raid_id=?',(event['raid_id'],)):
+                lines.append(f"Roster thread {delivery['thread_id']}: last success {delivery['last_success']}; error {delivery['error'] or 'none'}")
         push=self.store.one('SELECT * FROM NetworkPush WHERE raid_id=?',(event['raid_id'],))
         lines.append('Discovery publication: '+str(push or 'not published'))
         await interaction.followup.send(file=discord.File(io.BytesIO('\n'.join(lines).encode()),filename='event-status.txt'),ephemeral=True)
@@ -156,13 +170,17 @@ class NetworkCog(commands.Cog):
             await interaction.response.send_message('Cannot disconnect the source server.',ephemeral=True);return
         await interaction.response.defer(ephemeral=True)
         c=self.store.one('SELECT * FROM EventCopies WHERE raid_id=? AND guild_id=?',(event['raid_id'],target))
+        # Commit disconnection before best-effort Discord cleanup.
+        with self.bot.conn:
+            self.bot.conn.execute('INSERT OR IGNORE INTO EventBlocks VALUES (?,?)',(event['raid_id'],target))
+            self.bot.conn.execute('UPDATE EventCopies SET locked=1 WHERE raid_id=? AND guild_id=?',(event['raid_id'],target))
         if c:
-            # Retain locked bookkeeping so normal lifecycle safely removes occupied VCs later.
-            thread=await self.events.channel(c['thread_id'])
-            await thread.get_partial_message(c['message_id']).edit(content='Disconnected from shared event.',embed=None,view=None)
-            await thread.edit(locked=True,archived=True)
-            self.store.write('UPDATE EventCopies SET locked=1 WHERE raid_id=? AND guild_id=?',(event['raid_id'],target))
-        self.store.write('INSERT OR IGNORE INTO EventBlocks VALUES (?,?)',(event['raid_id'],target))
+            try:
+                thread=await self.events.channel(c['thread_id'])
+                await thread.get_partial_message(c['message_id']).edit(content='Disconnected from shared event.',embed=None,view=None)
+                await thread.edit(locked=True,archived=True)
+            except discord.HTTPException:
+                pass
         await interaction.followup.send('Server disconnected and blocked from rejoining this event.',ephemeral=True)
 
     @app_commands.command(name='event-repair',description='Repair or reconnect a server’s event copy using its sharing code.')

@@ -19,6 +19,7 @@ class PlanningCog(commands.Cog):
         self.bot = bot
         self.lock = asyncio.Lock()
         bot.conn.executescript('''
+            CREATE TABLE IF NOT EXISTS RosterDelivery(thread_id INTEGER PRIMARY KEY,last_success INTEGER,error TEXT);
             CREATE TABLE IF NOT EXISTS EventTemplates (
                 guild_id INTEGER, kind TEXT, body TEXT NOT NULL, PRIMARY KEY(guild_id,kind));
             CREATE TABLE IF NOT EXISTS EventPlans (
@@ -45,6 +46,9 @@ class PlanningCog(commands.Cog):
 
     def players(self, raid_id):
         return self.store.rows('SELECT * FROM Players WHERE raid_id=? AND unavailable=0 ORDER BY timestamp,player_id', (raid_id,))
+
+    def specs(self):
+        return {r['player_id']:r for r in self.store.rows('SELECT * FROM Specs')}
 
     def template(self, event, kind):
         return self.store.one('SELECT body FROM EventTemplates WHERE guild_id=? AND kind=?', (event['guild_id'], kind))
@@ -111,7 +115,11 @@ class PlanningCog(commands.Cog):
                     for index, body in enumerate(pages):
                         row = old.pop(index, None)
                         if row and row['body'] == body:
-                            continue
+                            try:
+                                await thread.fetch_message(row['message_id'])
+                                continue
+                            except discord.NotFound:
+                                row=None
                         message = None
                         if row:
                             try:
@@ -129,7 +137,9 @@ class PlanningCog(commands.Cog):
                         except discord.NotFound:
                             pass
                         self.store.write('DELETE FROM PlanMessages WHERE thread_id=? AND page=?', (copy['thread_id'], index))
-                except discord.HTTPException:
+                    self.store.write('INSERT OR REPLACE INTO RosterDelivery VALUES (?,?,NULL)',(copy['thread_id'],int(time.time())))
+                except discord.HTTPException as exc:
+                    self.store.write('INSERT INTO RosterDelivery VALUES (?,NULL,?) ON CONFLICT(thread_id) DO UPDATE SET error=excluded.error',(copy['thread_id'],str(exc)))
                     log.exception('Roster delivery failed; retrying next cycle')
 
     @tasks.loop(seconds=30)
@@ -215,7 +225,7 @@ class PlanningCog(commands.Cog):
             data = json.loads(await session.read())
         except (ValueError, UnicodeError) as exc:
             raise ValueError('Upload valid session JSON.') from exc
-        teams = import_plan(data, event, self.players(event['raid_id']))
+        teams = import_plan(data, event, self.players(event['raid_id']),self.specs(),require_identity=True)
         revision = self.save(event, teams, expected_revision)
         await self.sync(event['raid_id'])
         await interaction.followup.send(f'Roster revision {revision} saved ({len(teams)} teams). Linked threads update directly; failed deliveries retry.', ephemeral=True)
@@ -266,7 +276,7 @@ class PlanningCog(commands.Cog):
                 raise ValueError('Supply a Vanguard class name and supported specialization.')
             member = dict(id=player_id, c=class_name, spec=specialization, role=role)
             checked = import_plan(dict(format='vanguard-raid-planner-session', version=6,
-                teams=[dict(label='', members=[member])]), event, self.players(event['raid_id']))
+                teams=[dict(label='', members=[member])]), event, self.players(event['raid_id']),self.specs())
             member = checked[0]['members'][0]
             if slot > len(members):
                 members.append(member)
@@ -335,7 +345,7 @@ class PlanCodeModal(discord.ui.Modal,title='Import Vanguard plan'):
             await i.response.send_message('You can no longer edit this event.',ephemeral=True);return
         try:
             event=self.cog.store.event(self.raid_id)
-            teams=import_plan(decode_plan_code(str(self.code)),event,self.cog.players(self.raid_id))
+            teams=import_plan(decode_plan_code(str(self.code)),event,self.cog.players(self.raid_id),self.cog.specs(),require_identity=True)
             revision=self.cog.save(event,teams,self.revision)
         except ValueError as exc:
             await i.response.send_message(str(exc),ephemeral=True);return

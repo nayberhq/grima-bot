@@ -32,6 +32,13 @@ class InterchangeTests(unittest.TestCase):
         for code in ('bad', 'grimaplan:bad',encode(b'x'*2000001)):
             with self.assertRaises(ValueError):decode_plan_code(code)
 
+    def test_identity_and_offered_spec_validation(self):
+        data=dict(format='vanguard-raid-planner-session',version=7,teams=[TEAM])
+        with self.assertRaises(ValueError):import_plan(data,EVENT,PLAYERS,{},require_identity=True)
+        data['grimaEventId']=str(EVENT['raid_id'])
+        self.assertTrue(import_plan(data,EVENT,PLAYERS,{},require_identity=True))
+        with self.assertRaises(ValueError):import_plan(data,EVENT,PLAYERS,{PLAYERS[0]['player_id']:{'Guardian':1<<3}},require_identity=True)
+
     def test_templates(self):
         self.assertEqual(render_template('{title} {{literal}} {description} {signup_count}', context_for(EVENT, 3)), 'Folly {literal} Win 3')
         for text in ('{title.__class__}', '{title[0]}', '{title!r}', '{title:>90}', '{}', '{bad}', '{'):
@@ -87,10 +94,11 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.store=EventStore(self.conn)
         self.store.event=Mock(return_value={**EVENT, 'cancelled':0, 'lock_delay':600, 'time':9999999999})
         self.store.copies=Mock(return_value=[dict(thread_id=1,locked=0),dict(thread_id=2,locked=0),dict(thread_id=3,locked=1)])
-        self.channels={i:NS(archived=False,send=AsyncMock(return_value=NS(id=i*10)),get_partial_message=Mock(return_value=NS(edit=AsyncMock(),delete=AsyncMock()))) for i in (1,2,3)}
+        self.channels={i:NS(archived=False,fetch_message=AsyncMock(),send=AsyncMock(return_value=NS(id=i*10)),get_partial_message=Mock(return_value=NS(edit=AsyncMock(),delete=AsyncMock()))) for i in (1,2,3)}
         events=NS(store=self.store,channel=AsyncMock(side_effect=lambda i:self.channels[i]))
         self.cog=PlanningCog(NS(conn=self.conn,get_cog=lambda _:events))
         self.cog.players=Mock(return_value=PLAYERS)
+        self.cog.specs=Mock(return_value={})
         self.event=self.store.event(100)
 
     async def asyncTearDown(self):
@@ -155,3 +163,12 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.cog.save(self.event,teams,0)
         self.cog.players.return_value=[dict(player_id=PLAYERS[0]['player_id'],byname='Alice',Guardian=0,Hunter=1)]
         self.assertIn('CLASS WITHDRAWN',self.cog.pages(self.event,self.cog.plan(100))[0])
+
+    async def test_deleted_unchanged_roster_is_recreated(self):
+        import discord
+        teams=import_plan(dict(format='vanguard-raid-planner-session',version=7,teams=[TEAM]),EVENT,PLAYERS)
+        self.cog.save(self.event,teams,0)
+        await self.cog.sync(100)
+        self.channels[1].fetch_message.side_effect=discord.NotFound(NS(status=404,reason='missing'),'missing')
+        await self.cog.sync(100)
+        self.assertEqual(self.channels[1].send.await_count,2)

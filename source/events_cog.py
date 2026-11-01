@@ -407,8 +407,8 @@ class EventsCog(commands.Cog):
             self.store.write('UPDATE SharedEvents SET share_token=NULL WHERE raid_id=?', (event['raid_id'],))
             message = 'Sharing code revoked. Existing synchronized servers remain connected.'
         else:
-            token = self.store.share(event['raid_id'])
-            message = f'Give this code to a partner server’s raid leader: `/event-sync code:{token}`\nOr post this keyword in a watched channel: `mirrorkey:{token}`\nIt grants access to this event’s roster and announcements. Previous codes are invalidated.'
+            token = event['share_token'] or self.store.share(event['raid_id'])
+            message = f'Give this code to a partner server’s raid leader: `/event-sync code:{token}`\nOr post this keyword in a watched channel: `mirrorkey:{token}`\nIt grants access to this event’s roster and announcements. This code stays valid until explicitly revoked.'
         await interaction.response.send_message(message, ephemeral=True)
 
     @app_commands.command(name='event-sync', description='Sync a shared raid into this server’s event forum.')

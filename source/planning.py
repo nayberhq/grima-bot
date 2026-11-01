@@ -76,9 +76,11 @@ def export_session(event, players, specs):
                 message='', grimaEventId=str(event['raid_id']))
 
 
-def import_plan(data, event, players):
+def import_plan(data, event, players, specs=None, require_identity=False):
     if not isinstance(data, dict) or data.get('format') != 'vanguard-raid-planner-session' or data.get('version') not in (6,7):
         raise ValueError('Upload a Vanguard session JSON (version 6 or 7).')
+    if require_identity and data.get('grimaEventId') != str(event['raid_id']):
+        raise ValueError('This plan lacks the matching Grima event identity. Export fresh signups and load them in the updated planner.')
     if data.get('grimaEventId', str(event['raid_id'])) != str(event['raid_id']):
         raise ValueError('This export belongs to another event.')
     if data.get('dirty') or data.get('hasGenerated') is False:
@@ -106,6 +108,11 @@ def import_plan(data, event, players):
             p = known[pid]
             if not any(v for k,v in p.items() if k.replace('-', '').lower() == c.replace('-', '').lower()):
                 raise ValueError(f"{p['byname']} did not sign up for {c}.")
+            if specs is not None:
+                tier=int(''.join(re.findall(r'\d',event.get('tier') or '')) or 1)
+                offered=signup_choices(p,specs.get(p['player_id'],{}),tier)
+                if not any(o['c']==c and o['spec']==spec for o in offered):
+                    raise ValueError(f"{p['byname']} did not offer {c} {spec} for this tier.")
             seen.add(pid)
             members.append(dict(id=pid, name=p['byname'], c=c, spec=spec, role=role))
         label = team.get('label')

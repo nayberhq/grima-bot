@@ -47,3 +47,14 @@ These rules apply to new discoveries, not mirrors already connected before
 this update. The current suite has 40 passing Python tests, including manual
 publication gating, restart recovery, and verification that push never calls
 Discord's publish method. Live Discord validation remains pending.
+
+## Second-audit hardening
+
+- `/event-share` and reconnect reuse the current code. Explicit revocation is still supported. Existing discovery messages are not silently invalidated by requesting the code again.
+- Unlink commits the block and locked mirror state transactionally before best-effort Discord cleanup. Missing messages or denied cleanup permissions cannot prevent disconnection.
+- Planner sessions preserve `grimaEventId`. File/code imports now require a matching identity; older exports without it must be regenerated from a fresh Grima export using the updated planner.
+- Imports and manual assignment edits validate the selected specialization against saved tier choices (unspecified specs retain the existing all-supported-specs policy).
+- Unchanged roster messages are checked for existence and recreated if deleted. Roster delivery status records last successful synchronization and the latest Discord error, exposed in `/event-status`.
+- Source invites are checked hourly. Missing/invalid invites are removed and event projections marked stale; ordinary lifecycle processing attempts regeneration. Transient Discord errors retain the current invite.
+
+42 Python tests pass; planner JavaScript syntax and bridge tests pass. Full live browser/Discord verification has not been performed. Remaining work is not complete: organizer dropdown UI, automatic legacy-lineup migration, crash-window reconciliation, deployment, serverless conversion, and a live two-server permissions/recovery rehearsal.
