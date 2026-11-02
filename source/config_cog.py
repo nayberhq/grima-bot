@@ -89,8 +89,7 @@ class ConfigCog(commands.Cog):
     @staticmethod
     def welcome_msg(guild_name):
         msg = _("Greetings {0}! I am here to coordinate your LOTRO raids and cross-server events.\n\n"
-                "Administrators can configure the entire server and run a permission smoke test with a single command:\n"
-                "`/setup raid_forum:#raids announcement_channel:#raid-network-push panel_channel:#create-raid voice_category:Raid Voice`\n\n"
+                "Administrators can configure the entire server and run a permission smoke test with `/setup` (a private paged editor).\n\n"
                 "Once configured, `/setup` posts sticky raid creation panels grouped chronologically by LOTRO release cluster "
                 "(newest clusters at the bottom) in your panel channel so raid leaders can schedule any raid with a single click.\n\n"
                 "Run `/help` anytime for the complete step-by-step server setup guide (raid forum, push/pull announcement sync, and roles channel).\n"
@@ -119,9 +118,9 @@ class ConfigCog(commands.Cog):
                     "• **Instance + Raid:** ≤6-player instances use `instance_forum`; ≥12-player raids use `raid_forum`.\n"
                     "• **Tiers:** 1 forum per tier (`t1_forum`, `t2_forum`, `t3_forum`, `t4_forum`, `t5_forum`; untiered events use `raid_forum`).\n\n"
                     "**Step C — Run `/setup` (Includes Permission Smoke Test)**\n"
-                    "`/setup raid_forum:#raids announcement_channel:#raid-network-push panel_channel:#create-raid voice_category:Raid Voice [forum_mode:...] [instance_forum:#instances] [t1_forum..t5_forum] [watch_channel:#pull] [leader_role:@Raid Leader]`\n"
+                    "Run `/setup` to open a private **paged editor** (core channels, forum routing, watch channel, roles, calendar/RSS, and text options). Use **Save** when finished.\n"
                     "• If any permission or channel flag is missing, `/setup` halts and displays an exact checklist of what to fix.\n"
-                    "• Once all checks pass, `/setup` posts all **8 LOTRO Cluster Panels** (with LOTRO Wiki artwork) in chronological release order (Level 50 Angmar at the top → Level 160 Cluster & Custom/PvMP at the bottom) and keeps them sticky at the bottom of `panel_channel`."
+                    "• On first setup (or when the panel channel changes), Gríma posts all **8 LOTRO Cluster Panels** (with LOTRO Wiki artwork) in chronological release order and keeps them sticky at the bottom of the panel channel. Re-running `/setup` with the same panel channel leaves existing panels in place."
                 ),
             )
             embeds.append(forum_embed)

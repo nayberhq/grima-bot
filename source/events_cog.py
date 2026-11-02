@@ -15,7 +15,7 @@ from discord.ext import commands, tasks
 
 from database import upsert
 from event_store import EventStore, forum_title, mirror_keys, extract_origin_badge, InvalidShare
-from time_cog import Time, time_zone_autocomplete
+from time_cog import Time
 
 log = logging.getLogger(__name__)
 PRESETS = json.loads(Path(__file__).with_name('event_panels.json').read_text())
@@ -510,6 +510,105 @@ class EventsCog(commands.Cog):
                     pass
         return None
 
+    def _should_redeploy_panels(self, guild_id, panel_channel_id):
+        existing = self.store.rows('SELECT * FROM CreationPanels WHERE guild_id=?', (guild_id,))
+        if not existing:
+            return True
+        if existing[0]['channel_id'] != panel_channel_id:
+            return True
+        if len(existing) < len(PRESETS):
+            return True
+        return False
+
+    async def resolve_setup_draft(self, guild, draft):
+        async def channel(cid, label, types=()):
+            if not cid:
+                raise ValueError(f'Choose **{label}** on the setup editor (page 1).')
+            ch = guild.get_channel(cid) or await self.bot.fetch_channel(cid)
+            if not ch or (getattr(ch, 'guild', None) and ch.guild.id != guild.id):
+                raise ValueError(f'**{label}** must belong to this server.')
+            if types and ch.type not in types:
+                raise ValueError(f'**{label}** must be a {types[0].name.replace("_", " ")} channel.')
+            return ch
+
+        async def optional_channel(cid, label, types=()):
+            if not cid:
+                return None
+            ch = await channel(cid, label, types)
+            return ch
+
+        async def optional_forum(cid, label):
+            if not cid:
+                return None
+            ch = await optional_channel(cid, label, (discord.ChannelType.forum,))
+            if ch and not isinstance(ch, discord.ForumChannel):
+                raise ValueError(f'**{label}** must be a forum channel.')
+            return ch
+
+        async def optional_role(rid):
+            if not rid:
+                return None
+            role = guild.get_role(rid)
+            if role is None:
+                role = await guild.fetch_role(rid)
+            return role
+
+        raid_forum = await channel(draft.raid_forum_id, 'Raid forum', (discord.ChannelType.forum,))
+        if not isinstance(raid_forum, discord.ForumChannel):
+            raise ValueError('Raid forum must be a forum channel.')
+        announcement = await channel(draft.announcement_id, 'Announcement push channel', (discord.ChannelType.text, discord.ChannelType.news))
+        if not isinstance(announcement, discord.TextChannel):
+            raise ValueError('Announcement channel must be a text channel.')
+        panel = await channel(draft.panel_id, 'Event panel channel', (discord.ChannelType.text, discord.ChannelType.news))
+        if not isinstance(panel, discord.TextChannel):
+            raise ValueError('Event panel channel must be a text channel.')
+        voice = await channel(draft.voice_category_id, 'Voice category', (discord.ChannelType.category,))
+        if not isinstance(voice, discord.CategoryChannel):
+            raise ValueError('Voice category must be a category.')
+
+        watch = None
+        if draft.watch_channel_id:
+            watch = await optional_channel(
+                draft.watch_channel_id,
+                'Watch channel',
+                (discord.ChannelType.text, discord.ChannelType.news, discord.ChannelType.public_thread),
+            )
+            if watch and not isinstance(watch, (discord.TextChannel, discord.Thread)):
+                raise ValueError('Watch channel must be a text channel or thread.')
+
+        calendar = await optional_channel(draft.calendar_id, 'Calendar channel', (discord.ChannelType.text, discord.ChannelType.news)) if draft.calendar_id else None
+        if calendar and not isinstance(calendar, discord.TextChannel):
+            raise ValueError('Calendar channel must be a text channel.')
+        rss = await optional_channel(draft.rss_id, 'RSS channel', (discord.ChannelType.text, discord.ChannelType.news)) if draft.rss_id else None
+        if rss and not isinstance(rss, discord.TextChannel):
+            raise ValueError('RSS channel must be a text channel.')
+
+        t1_id = draft.t1_forum_id or (draft.raid_forum_id if draft.forum_mode == 'tiers' else 0)
+        return dict(
+            raid_forum=raid_forum,
+            announcement_channel=announcement,
+            panel_channel=panel,
+            voice_category=voice,
+            forum_mode=draft.forum_mode,
+            instance_forum=await optional_forum(draft.instance_forum_id, 'Instance forum'),
+            t1_forum=await optional_forum(t1_id, 'T1 forum') if t1_id else None,
+            t2_forum=await optional_forum(draft.t2_forum_id, 'T2 forum'),
+            t3_forum=await optional_forum(draft.t3_forum_id, 'T3 forum'),
+            t4_forum=await optional_forum(draft.t4_forum_id, 'T4 forum'),
+            t5_forum=await optional_forum(draft.t5_forum_id, 'T5 forum'),
+            watch_channel=watch,
+            leader_role=await optional_role(draft.leader_role_id),
+            kin_role=await optional_role(draft.kin_role_id),
+            kin_icon=draft.kin_icon.strip() or None,
+            calendar_channel=calendar,
+            discord_events=draft.discord_events,
+            rss_channel=rss,
+            server_timezone=draft.server_timezone.strip() or None,
+            server_invite_url=draft.server_invite_url.strip() or None,
+            duration_minutes=draft.duration_minutes,
+            lock_delay_minutes=draft.lock_delay_minutes,
+        )
+
     async def smoke_test_and_apply_setup(
         self,
         interaction: discord.Interaction,
@@ -775,7 +874,12 @@ class EventsCog(commands.Cog):
         )
         self.store.write('INSERT OR REPLACE INTO NetworkSettings VALUES (?,?)', (guild.id, announcement_channel.id))
 
-        if watch_target is not None:
+        prev_watch = self.store.one('SELECT source_channel_id, last_message_id FROM EventWatches WHERE guild_id=?', (guild.id,))
+        if watch_target is None:
+            self.store.write('DELETE FROM EventWatches WHERE guild_id=?', (guild.id,))
+        elif prev_watch and prev_watch['source_channel_id'] == watch_target.id:
+            checks.append(f"**Event Watch (Pull) Channel:** {watch_target.mention} (unchanged cursor)")
+        else:
             latest = [m async for m in watch_target.history(limit=1)]
             cursor = latest[0].id if latest else discord.utils.time_snowflake(discord.utils.utcnow())
             self.store.write('DELETE FROM EventWatches WHERE guild_id=?', (guild.id,))
@@ -800,21 +904,34 @@ class EventsCog(commands.Cog):
                     upsert(self.bot.conn, 'Settings', ['icon'], [ident['emoji']], ['guild_id'], [guild.id])
         if rss_channel is not None:
             upsert(self.bot.conn, 'Settings', ['rss'], [rss_channel.id], ['guild_id'], [guild.id])
+        else:
+            upsert(self.bot.conn, 'Settings', ['rss'], [None], ['guild_id'], [guild.id])
         if resolved_tz is not None:
             upsert(self.bot.conn, 'Settings', ['server'], [resolved_tz], ['guild_id'], [guild.id])
-        if discord_events:
-            upsert(self.bot.conn, 'Settings', ['guild_events'], [True], ['guild_id'], [guild.id])
+        upsert(self.bot.conn, 'Settings', ['guild_events'], [discord_events], ['guild_id'], [guild.id])
         if verified_invite_url is not None:
             self.store.write('INSERT OR REPLACE INTO SourceInvites VALUES (?,?)', (guild.id, verified_invite_url))
             self.store.write('UPDATE SharedEvents SET revision=revision+1 WHERE raid_id IN (SELECT raid_id FROM Raids WHERE guild_id=?)', (guild.id,))
         self.bot.conn.commit()
 
         network = self.bot.get_cog('NetworkCog')
-        if network:
+        if network and self._should_redeploy_panels(guild.id, panel_channel.id):
             await network.deploy_all_panels(guild.id, panel_channel.id)
+        elif network:
+            checks.append(f"**Event Panel Channel:** {panel_channel.mention} (panels unchanged)")
 
-        if calendar_channel is not None and self.raids and self.raids.calendar_cog:
-            await self.raids.calendar_cog.post_calendar(guild.id, calendar_channel)
+        prev_cal = self.store.one('SELECT calendar FROM Settings WHERE guild_id=?', (guild.id,))
+        old_cal_channel = None
+        if prev_cal and prev_cal.get('calendar') and '/' in str(prev_cal['calendar']):
+            old_cal_channel = int(str(prev_cal['calendar']).split('/')[0])
+        if calendar_channel is None:
+            if old_cal_channel:
+                upsert(self.bot.conn, 'Settings', ['calendar'], [None], ['guild_id'], [guild.id])
+        elif self.raids and self.raids.calendar_cog:
+            if old_cal_channel != calendar_channel.id:
+                await self.raids.calendar_cog.post_calendar(guild.id, calendar_channel)
+            else:
+                checks.append(f"**Calendar Channel:** {calendar_channel.mention} (unchanged)")
 
         checks.append(f"**Event Timings:** {duration_minutes}m default duration, {lock_delay_minutes}m post-event lock delay")
         embed = discord.Embed(
@@ -826,95 +943,15 @@ class EventsCog(commands.Cog):
             embed.add_field(name='Notes', value='\n'.join(f"• {w}" for w in warnings)[:1024], inline=False)
         return True, embed
 
-    @app_commands.command(name='setup', description='Configure raid forums (single, instance+raid, or tiers), push/pull channels, panels, and roles.')
+    @app_commands.command(name='setup', description='Open the paged server setup editor (forums, panels, roles, and sync).')
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_guild=True)
     @app_commands.default_permissions(manage_guild=True)
-    @app_commands.autocomplete(server_timezone=time_zone_autocomplete)
-    @app_commands.choices(forum_mode=[
-        app_commands.Choice(name='Single Channel (all raids & instances in one forum)', value='single'),
-        app_commands.Choice(name='Instance + Raid (≤6-man in instance_forum, ≥12-man in raid_forum)', value='instance_raid'),
-        app_commands.Choice(name='Tiers (1 forum per tier: t1_forum through t5_forum)', value='tiers'),
-    ])
-    @app_commands.describe(
-        raid_forum='Mandatory: Primary raid forum (all events in Single mode, 12m+ in Instance+Raid, T1/untiered in Tiers).',
-        announcement_channel='Mandatory: Outgoing channel where mirrorkey discovery codes are posted.',
-        panel_channel='Mandatory: Channel where sticky cluster raid creation panels are posted.',
-        voice_category='Mandatory: Category where temporary raid voice channels are created at start time.',
-        forum_mode='Optional: Forum routing layout ("Single Channel", "Instance + Raid", or "Tiers"; default Single).',
-        instance_forum='For "Instance + Raid" mode: Forum channel for 6-man and 3-man instances.',
-        t1_forum='For "Tiers" mode: Forum channel for Tier 1 events (defaults to raid_forum if omitted).',
-        t2_forum='For "Tiers" mode: Forum channel for Tier 2 / T2c events.',
-        t3_forum='For "Tiers" mode: Forum channel for Tier 3 events.',
-        t4_forum='For "Tiers" mode: Forum channel for Tier 4 events.',
-        t5_forum='For "Tiers" mode: Forum channel for Tier 5 events.',
-        watch_channel='Optional: Channel to watch for incoming mirrorkey codes (e.g. a channel following partner announcements).',
-        leader_role='Optional: Role permitted to create events, edit raids, and manage rosters.',
-        kin_role='Optional: Role used to distinguish kinship members on raid signups.',
-        kin_icon='Optional: Emoji badge displayed next to kinship members on raid signups.',
-        calendar_channel='Optional: Channel where the live auto-updating raid calendar embed is posted.',
-        discord_events='Optional: Also create native Discord Scheduled Events for hosted raids.',
-        rss_channel='Optional: Channel where official LOTRO forum RSS announcements are posted.',
-        server_timezone='Optional: Default server timezone (e.g. America/New_York).',
-        server_invite_url='Optional: Non-expiring invite URL to this server for cross-server voice links.',
-        duration_minutes='Optional: Default raid duration in minutes (15–1440, default 180).',
-        lock_delay_minutes='Optional: Minutes after event end before locking forum threads (0–10080, default 60).',
-    )
-    async def setup_command(
-        self,
-        interaction: discord.Interaction,
-        raid_forum: discord.ForumChannel,
-        announcement_channel: discord.TextChannel,
-        panel_channel: discord.TextChannel,
-        voice_category: discord.CategoryChannel,
-        forum_mode: app_commands.Choice[str] | None = None,
-        instance_forum: discord.ForumChannel | None = None,
-        t1_forum: discord.ForumChannel | None = None,
-        t2_forum: discord.ForumChannel | None = None,
-        t3_forum: discord.ForumChannel | None = None,
-        t4_forum: discord.ForumChannel | None = None,
-        t5_forum: discord.ForumChannel | None = None,
-        watch_channel: discord.TextChannel | discord.Thread | None = None,
-        leader_role: discord.Role | None = None,
-        kin_role: discord.Role | None = None,
-        kin_icon: str | None = None,
-        calendar_channel: discord.TextChannel | None = None,
-        discord_events: bool = False,
-        rss_channel: discord.TextChannel | None = None,
-        server_timezone: str | None = None,
-        server_invite_url: str | None = None,
-        duration_minutes: app_commands.Range[int, 15, 1440] = 180,
-        lock_delay_minutes: app_commands.Range[int, 0, 10080] = 60,
-    ):
-        await interaction.response.defer(ephemeral=True)
-        selected_mode = forum_mode.value if forum_mode else 'single'
-        effective_t1 = t1_forum or (raid_forum if selected_mode == 'tiers' else None)
-        _, embed = await self.smoke_test_and_apply_setup(
-            interaction=interaction,
-            raid_forum=raid_forum,
-            announcement_channel=announcement_channel,
-            panel_channel=panel_channel,
-            voice_category=voice_category,
-            forum_mode=selected_mode,
-            instance_forum=instance_forum,
-            t1_forum=effective_t1,
-            t2_forum=t2_forum,
-            t3_forum=t3_forum,
-            t4_forum=t4_forum,
-            t5_forum=t5_forum,
-            watch_channel=watch_channel,
-            leader_role=leader_role,
-            kin_role=kin_role,
-            kin_icon=kin_icon,
-            calendar_channel=calendar_channel,
-            discord_events=discord_events,
-            rss_channel=rss_channel,
-            server_timezone=server_timezone,
-            server_invite_url=server_invite_url,
-            duration_minutes=duration_minutes,
-            lock_delay_minutes=lock_delay_minutes,
-        )
-        await interaction.followup.send(embed=embed, ephemeral=True)
+    async def setup_command(self, interaction: discord.Interaction):
+        from setup_editor import SetupEditorView, load_setup_draft
+        draft = load_setup_draft(self.store, self.bot.conn, interaction.guild_id)
+        view = SetupEditorView(self, interaction.user.id, draft)
+        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
 
     @app_commands.command(name='event-share', description='Create or revoke the code other servers use to sync this raid.')
     @app_commands.guild_only()

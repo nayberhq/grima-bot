@@ -584,6 +584,109 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.conn.execute('SELECT raid_leader, priority, server FROM Settings WHERE guild_id=1').fetchone(), (55, 66, 'America/New_York'))
         self.assertEqual(len(self.cog.store.rows('SELECT * FROM CreationPanels WHERE guild_id=1')), 8)
 
+    async def test_setup_skips_panel_redeploy_when_unchanged(self):
+        from events_cog import PRESETS
+        from network_cog import NetworkCog
+        network = NetworkCog(self.bot)
+        network.deploy_all_panels = AsyncMock()
+        self.bot.get_cog = lambda name: {'RaidCog': self.raids, 'EventsCog': self.cog, 'NetworkCog': network}.get(name)
+        for index, preset in enumerate(PRESETS.keys()):
+            self.cog.store.write(
+                'INSERT INTO CreationPanels VALUES (?,?,?,?)',
+                (9100 + index, 13, 1, preset),
+            )
+        guild = NS(id=1, me=NS(guild_permissions=NS(manage_events=True)))
+        interaction = NS(guild=guild, user=NS(id=9))
+        forum = Mock(spec=discord.ForumChannel)
+        forum.id = 10
+        forum.guild = guild
+        forum.mention = '<#10>'
+        forum.flags = NS(require_tag=False)
+        forum.permissions_for = lambda _: NS(
+            view_channel=True, send_messages=True, send_messages_in_threads=True,
+            embed_links=True, read_message_history=True, manage_threads=True,
+            create_instant_invite=True,
+        )
+        ann = Mock(spec=discord.TextChannel)
+        ann.id = 12
+        ann.guild = guild
+        ann.mention = '<#12>'
+        ann.permissions_for = lambda _: NS(view_channel=True, send_messages=True, read_message_history=True)
+        panel_ch = Mock(spec=discord.TextChannel)
+        panel_ch.id = 13
+        panel_ch.guild = guild
+        panel_ch.mention = '<#13>'
+        panel_ch.permissions_for = lambda _: NS(view_channel=True, send_messages=True, embed_links=True, read_message_history=True)
+        voice_cat = Mock(spec=discord.CategoryChannel)
+        voice_cat.id = 11
+        voice_cat.guild = guild
+        voice_cat.name = 'Raid Voice'
+        voice_cat.permissions_for = lambda _: NS(view_channel=True, manage_channels=True)
+        ok, embed = await self.cog.smoke_test_and_apply_setup(
+            interaction=interaction,
+            raid_forum=forum,
+            announcement_channel=ann,
+            panel_channel=panel_ch,
+            voice_category=voice_cat,
+        )
+        self.assertTrue(ok)
+        network.deploy_all_panels.assert_not_awaited()
+        self.assertIn('panels unchanged', embed.description)
+
+    async def test_setup_preserves_watch_cursor(self):
+        from network_cog import NetworkCog
+        network = NetworkCog(self.bot)
+        network.deploy_all_panels = AsyncMock()
+        self.bot.get_cog = lambda name: {'RaidCog': self.raids, 'EventsCog': self.cog, 'NetworkCog': network}.get(name)
+        self.cog.store.write('INSERT INTO EventWatches VALUES (1,14,999)')
+        guild = NS(id=1, me=NS(guild_permissions=NS(manage_events=True)))
+        interaction = NS(guild=guild, user=NS(id=9))
+        forum = Mock(spec=discord.ForumChannel)
+        forum.id = 10
+        forum.guild = guild
+        forum.mention = '<#10>'
+        forum.flags = NS(require_tag=False)
+        forum.permissions_for = lambda _: NS(
+            view_channel=True, send_messages=True, send_messages_in_threads=True,
+            embed_links=True, read_message_history=True, manage_threads=True,
+            create_instant_invite=True,
+        )
+        ann = Mock(spec=discord.TextChannel)
+        ann.id = 12
+        ann.guild = guild
+        ann.mention = '<#12>'
+        ann.permissions_for = lambda _: NS(view_channel=True, send_messages=True, read_message_history=True)
+        panel_ch = Mock(spec=discord.TextChannel)
+        panel_ch.id = 13
+        panel_ch.guild = guild
+        panel_ch.mention = '<#13>'
+        panel_ch.permissions_for = lambda _: NS(view_channel=True, send_messages=True, embed_links=True, read_message_history=True)
+        voice_cat = Mock(spec=discord.CategoryChannel)
+        voice_cat.id = 11
+        voice_cat.guild = guild
+        voice_cat.name = 'Raid Voice'
+        voice_cat.permissions_for = lambda _: NS(view_channel=True, manage_channels=True)
+        watch_ch = Mock(spec=discord.TextChannel)
+        watch_ch.id = 14
+        watch_ch.guild = guild
+        watch_ch.mention = '<#14>'
+        watch_ch.permissions_for = lambda _: NS(view_channel=True, read_message_history=True)
+        async def empty_history(**kwargs):
+            if False:
+                yield
+        watch_ch.history = empty_history
+        ok, embed = await self.cog.smoke_test_and_apply_setup(
+            interaction=interaction,
+            raid_forum=forum,
+            announcement_channel=ann,
+            panel_channel=panel_ch,
+            voice_category=voice_cat,
+            watch_channel=watch_ch,
+        )
+        self.assertTrue(ok)
+        self.assertEqual(self.cog.store.one('SELECT last_message_id FROM EventWatches WHERE guild_id=1')['last_message_id'], 999)
+        self.assertIn('unchanged cursor', embed.description)
+
     async def test_forum_mode_routing_single_instance_raid_and_tiers(self):
         # 1. Single mode
         self.cog.store.configure(1, 10, 11, 3600, 600, forum_mode='single')
