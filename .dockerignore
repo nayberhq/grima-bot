@@ -1,4 +1,8 @@
 .git
+.github
+.cursor
+.agents
+.claude
 **/__pycache__
 **/config.json
 **/.env*
@@ -7,4 +11,8 @@
 *.zip
 *.bundle
 *.patch
+*.md
+!LICENSE.md
+announcement.txt
+description.txt
 .deploy-venv

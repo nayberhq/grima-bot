@@ -1,8 +1,32 @@
+# Secrets, runtime data, and local environment
 config.json
+**/config.json
+.env
+.env.*
+**/.env*
 raid_db
-raid_bot.log
-__pycache__
+raid_db*
+*.log
 bot-env
+.deploy-venv/
+__pycache__/
+*.py[cod]
 messages.mo
 
-.deploy-venv/
+# Archives, bundles, and scratch template files
+*.zip
+*.bundle
+*.patch
+announcement.txt
+description.txt
+
+# Agentic / AI editor metadata and scratch files
+.cursor/
+.agents/
+.claude/
+AGENTS.md
+CLAUDE.md
+AUDIT_FIXES.md
+PLANNING.md
+SHARED_EVENTS.md
+UPSTREAM.md

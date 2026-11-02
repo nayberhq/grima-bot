@@ -1,20 +1,16 @@
 # grima-bot
 
-An independent fork of [Saruman](https://github.com/Baviaan/lotro), with shared
-event forums and cross-server coordination. Upstream authorship and GPL-3.0
-licensing are preserved. No hosted fork has been created yet.
+An independent fork of [Saruman](https://github.com/Baviaan/lotro), adding shared
+event forums, chronological cluster creation panels, cross-server `mirrorkey:`
+synchronization, and Vanguard Raid Planner integration. Upstream authorship and
+GPL-3.0 licensing are preserved.
 
-See [UPSTREAM.md](UPSTREAM.md) for restoring the full-history fork, connecting
-your own GitHub repository, and preparing tested upstream updates in an isolated
-branch with `python scripts/upstream_update.py`.
+## Quick Setup & Operations
 
-## Shared event forum extension
-
-This branch adds persistent creation panels, timed forum/voice channels,
-cross-server shared rosters and announcements, and automatic `mirrorkey:` channel
-watchers. See [SHARED_EVENTS.md](SHARED_EVENTS.md) for setup, permissions,
-commands, tests, and deployment boundaries. This is an independent modification
-of Saruman; it does not change the public bot operated by the upstream author.
+- **Unified Server Setup (`/setup`)**: Configures your raid forum(s) (`Single Channel`, `Instance + Raid`, or `Tiers`), outgoing announcement push channel, incoming watch channel, sticky LOTRO cluster creation panels, temporary voice category, roles, and runs a complete permission smoke test.
+- **Default Event Footer (`/description`)**: Copy any Discord message link into `/description message_link:<url>` to set your server's reusable event description footer.
+- **In-Discord Setup Guide (`/help`)**: Displays step-by-step instructions for setting up raid forums, announcement push/pull sync, and class/role channels.
+- **Pi Deployment (`./deploy.sh`)**: See [DEPLOYMENT.md](DEPLOYMENT.md) for testing, building, and deploying container releases to a 64-bit Raspberry Pi.
 
 **Retention change:** shared forum events and their roster records are retained
 after closing, and the roster is shared with linked servers. The upstream policy
