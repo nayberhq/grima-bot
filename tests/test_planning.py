@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock, Mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'source'))
-from planning import export_session, import_plan, render_template, context_for, planner_link, decode_plan_code
+from planning import export_session, import_plan, render_template, context_for, planner_link, decode_plan_code, compact_signup_bytes
 from planning_cog import PlanningCog
 
 EVENT = dict(raid_id=100, guild_id=1, name='Folly', tier='T2', boss='Win', time=1000, duration=3600, size=12, organizer_id=9)
@@ -18,8 +18,9 @@ class InterchangeTests(unittest.TestCase):
         import base64, zlib
         data=export_session(EVENT, PLAYERS, {})
         token=planner_link(data).split('#grima=')[1]
-        unpacked=json.loads(zlib.decompress(base64.urlsafe_b64decode(token+'='*((-len(token))%4))))
-        self.assertEqual(unpacked,data)
+        unpacked=zlib.decompress(base64.urlsafe_b64decode(token+'='*((-len(token))%4)))
+        self.assertEqual(unpacked,compact_signup_bytes(data))
+        self.assertTrue(unpacked.startswith(b'GS1'))
         import random,string
         rng=random.Random(1)
         self.assertIsNone(planner_link({'text': ''.join(rng.choices(string.ascii_letters,k=10000))}))
@@ -302,3 +303,18 @@ class KinMarkerExportTests(unittest.TestCase):
                 self.assertEqual(exported['name'], name)
                 self.assertEqual(exported['primary'], primary)
                 self.assertEqual(player['byname'], raw)
+
+class LargePlannerLinkDeliveryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_long_url_attached_with_json_without_oversized_discord_link(self):
+        from unittest.mock import patch
+        interaction=NS(response=NS(send_message=AsyncMock()))
+        cog=NS(events=NS(command_event=AsyncMock(return_value=EVENT)),store=NS(rows=Mock(return_value=[])),players=Mock(return_value=PLAYERS))
+        long_url='https://nayberhq.github.io/vanguard-raid-planner/#grima='+'x'*6000
+        with patch('planning_cog.planner_link',side_effect=[None,long_url]):
+            await PlanningCog.open_planner(cog,interaction)
+        args,kwargs=interaction.response.send_message.call_args
+        self.assertLess(len(args[0]),2000)
+        self.assertTrue(kwargs['ephemeral'])
+        self.assertEqual([f.filename for f in kwargs['files']],['grima-100.json','planner-link.txt'])
+        self.assertEqual(kwargs['files'][1].fp.getvalue().decode(),long_url)
+        self.assertEqual(json.loads(kwargs['files'][0].fp.getvalue())['grimaEventId'],'100')

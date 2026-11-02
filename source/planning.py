@@ -147,25 +147,66 @@ def import_plan(data, event, players, specs=None, require_identity=False):
 PLANNER_URL = 'https://nayberhq.github.io/vanguard-raid-planner/'
 
 
+# GS1 bit positions are a wire contract: append/change only under a new version.
+SIGNUP_CHOICES = [('Beorning', 'Blue', 'Tank'), ('Beorning', 'Yellow', 'Healer'), ('Beorning', 'Red', 'DPS'), ('Brawler', 'Blue', 'Tank'), ('Brawler', 'Red', 'DPS'), ('Burglar', 'Yellow', 'Debuffer'), ('Burglar', 'Red', 'DPS'), ('Burglar', 'Blue', 'DPS'), ('Captain', 'Yellow', 'Tank'), ('Captain', 'Blue', 'Healer'), ('Captain', 'Red', 'Buffer'), ('Champion', 'Blue', 'Tank'), ('Champion', 'Red', 'DPS'), ('Champion', 'Yellow', 'DPS'), ('Guardian', 'Blue', 'Tank'), ('Guardian', 'Red', 'DPS'), ('Hunter', 'Blue', 'DPS'), ('Hunter', 'Red', 'DPS'), ('Hunter', 'Yellow', 'Debuffer'), ('Lore-master', 'Blue', 'Buffer'), ('Lore-master', 'Red', 'DPS'), ('Lore-master', 'Yellow', 'Debuffer'), ('Mariner', 'Blue', 'Buffer'), ('Mariner', 'Yellow', 'Debuffer'), ('Mariner', 'Red', 'DPS'), ('Minstrel', 'Blue', 'Healer'), ('Minstrel', 'Red', 'DPS'), ('Rune-keeper', 'Blue', 'Healer'), ('Rune-keeper', 'Red', 'DPS'), ('Rune-keeper', 'Yellow', 'DPS'), ('Warden', 'Blue', 'Tank'), ('Warden', 'Red', 'DPS')]
+
+
+def compact_signup_bytes(session):
+    """Lossless transport for fresh, single-run Grima signup exports only."""
+    import struct
+    if not isinstance(session, dict) or session.get('format') != 'vanguard-raid-planner-session' or session.get('version') != 6 or session.get('hasGenerated') is not False or session.get('teams') or len(session.get('runs', [])) != 1:
+        return None
+    # Do not compact arbitrary saved planner sessions or discard their settings.
+    allowed = {'format','version','players','runs','template','settings','teams','recommendations','hasGenerated','dirty','message','grimaEventId'}
+    if set(session) - allowed or session.get('dirty') or session.get('recommendations') or session.get('message'):
+        return None
+    event = session['runs'][0]
+    settings = session['settings']
+    if event != dict(id=1, time=0, label=event['label'], source=0) or session['template'] != {r:[0,0] for r in ('Tank','Healer','Debuffer','Buffer')}:
+        return None
+    if settings != dict(size=settings['size'], duration=settings['duration'], fair=True, suggestSchedule=False, lockPriority='gearing', recommendationRunLimit=1):
+        return None
+    rows=session['players']
+    if len(rows)>2000:
+        raise ValueError('At most 2000 signups are supported.')
+    out=bytearray(b'GS1')
+    def uint(n):
+        if n<0: raise ValueError('Invalid unsigned value.')
+        while n>=128:
+            out.append((n & 127)|128);n >>= 7
+        out.append(n)
+    def string(value):
+        raw=value.encode('utf-8');uint(len(raw));out.extend(raw)
+    try:
+        out.extend(struct.pack('<Q',int(session['grimaEventId'])))
+        uint(settings['size'])
+        seconds=round(settings['duration']*3600)
+        if seconds/3600 != settings['duration']: return None
+        uint(seconds);string(event['label']);uint(len(rows))
+        for p in rows:
+            if set(p)-{'id','name','choices','available','max','primary'} or p['available'] != [True] or p['max'] != 1:
+                return None
+            mask=0
+            for choice in p['choices']:
+                if set(choice)!={'c','spec','role'}:return None
+                mask |= 1 << SIGNUP_CHOICES.index((choice['c'],choice['spec'],choice['role']))
+            out.extend(struct.pack('<Q',int(p['id'])))
+            string(p['name']);uint(mask);out.append(1 if p.get('primary',False) else 0)
+    except (ValueError,KeyError,TypeError,OverflowError,struct.error):
+        return None
+    return bytes(out)
+
+
 def planner_link(session, max_length=1650):
-    """Snapshot carried in a URL fragment; never in the Pages HTTP request."""
-    import base64
-    import json
-    import zlib
-    packed = zlib.compress(json.dumps(session, separators=(',', ':'), ensure_ascii=False).encode(), 9)
-    token = base64.urlsafe_b64encode(packed).decode().rstrip('=')
-    url = PLANNER_URL + '#grima=' + token
-    if len(url) <= max_length:
-        return url
-    if max_length < 1650 and isinstance(session, dict) and 'settings' in session:
-        compact = {k: v for k, v in session.items() if k not in ('recommendations', 'message')}
-        compact['settings'] = {k: v for k, v in session['settings'].items() if k not in ('lockPriority', 'recommendationRunLimit')}
-        packed = zlib.compress(json.dumps(compact, separators=(',', ':'), ensure_ascii=False).encode(), 9)
-        token = base64.urlsafe_b64encode(packed).decode().rstrip('=')
-        url = PLANNER_URL + '#grima=' + token
-        if len(url) <= max_length:
-            return url
-    return None
+    """GS1 binary + zlib + base64url. Full JSON remains the compatibility fallback."""
+    import base64,json,zlib
+    raw=compact_signup_bytes(session)
+    if raw is None:
+        raw=json.dumps(session,separators=(',', ':'),ensure_ascii=False).encode()
+    token=base64.urlsafe_b64encode(zlib.compress(raw,9)).decode().rstrip('=')
+    url=PLANNER_URL+'#grima='+token
+    # Vanguard bounds the encoded token independently of the chosen transport.
+    return url if len(url)<=max_length and len(token)<=20000 else None
 
 
 def decode_plan_code(code):

@@ -309,9 +309,15 @@ class PlanningCog(commands.Cog):
         if url:
             await interaction.response.send_message(f"[📋 Open Raid Planner]({url})", ephemeral=True, suppress_embeds=True)
         else:
+            files = [discord.File(io.BytesIO(json.dumps(data).encode()), filename=f"grima-{event['raid_id']}.json")]
+            long_url = planner_link(data, max_length=20000)
+            instructions = 'Import the attached session JSON.'
+            if long_url:
+                files.append(discord.File(io.BytesIO(long_url.encode()), filename='planner-link.txt'))
+                instructions = 'This roster exceeds Discord’s link limit. Open the URL in planner-link.txt, paste it into the planner URL field, or import the attached JSON.'
             await interaction.response.send_message(
-                f"[📋 Open Raid Planner]({PLANNER_URL}) — import the attached session JSON.",
-                file=discord.File(io.BytesIO(json.dumps(data).encode()), filename=f"grima-{event['raid_id']}.json"),
+                f"[📋 Open Raid Planner]({PLANNER_URL}) — {instructions}",
+                files=files,
                 ephemeral=True,
                 suppress_embeds=True,
             )

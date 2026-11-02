@@ -210,3 +210,22 @@ groups. It runs on pushes and pull requests to `main` and before release images
 are built. Locally, set `VANGUARD_PLANNER_PATH=/path/to/vanguard-raid-planner`
 when running `python3 -m unittest discover -s tests`. Without that checkout the
 integration test explicitly skips locally; missing CI configuration fails.
+
+### Compact signup links (GS1)
+
+Fresh Grima exports use a versioned binary payload, compressed with zlib and
+encoded as base64url in `#grima=`. IDs use unsigned 64-bit little-endian bytes;
+UTF-8 strings have unsigned LEB128 byte lengths. The payload is `GS1`, event ID,
+raid size (LEB128), duration in seconds (LEB128), title, player count (LEB128),
+then each player's ID, clean name, class/spec mask (LEB128), and a priority byte
+(0 or 1). Bit positions are frozen in SIGNUP_CHOICES / grimaSignupChoices; changes
+require a new protocol version. Roles and fresh-session defaults are reconstructed.
+Names never include custom Discord emoji; network kin markers become priority.
+
+The decoder retains support for older compressed JSON URLs. Saved plans with
+custom settings continue using full JSON; compact encoding is only for fresh
+signups. Tests exercise 200 signups with every supported class/spec. Random
+12-character names produced 5,488-character links; 32-character names produced
+9,707 characters. Browser decoder limit: 20,000 token characters, 2 MB inflated.
+Discord links retain their smaller transport limits; oversized rosters receive
+Session JSON plus planner-link.txt containing the complete URL when it fits.

@@ -43,3 +43,42 @@ class VanguardIntegrationTests(unittest.TestCase):
                     self.assertEqual(sum(teams[0]['fellowship_sizes']),6)
                 for member in teams[0]['members']:
                     self.assertIn('Éowyn', member['name'])
+
+
+    def test_200_signups_compact_url_preserves_every_choice_and_priority(self):
+        import random,string,base64,zlib
+        from planning import CLASSES, PLANNER_URL
+        checkout=os.environ.get('VANGUARD_PLANNER_PATH')
+        if not checkout:
+            if os.environ.get('CI'):self.fail('VANGUARD_PLANNER_PATH is required in CI')
+            self.skipTest('Set VANGUARD_PLANNER_PATH')
+        rng=random.Random(200)
+        event=dict(raid_id=1566673606899933224,name='Large roster — 压力测试',tier='T2',duration=10800,size=24)
+        for name_length in (12,32):
+            with self.subTest(name_length=name_length):
+                players=[]
+                for i in range(200):
+                    name=''.join(rng.choices(string.ascii_letters,k=name_length-1))+'é'
+                    if i%2==0:name='<:net_vanguard_591528:1566670178362589284> '+name
+                    players.append(dict(player_id=rng.randrange(10**17,10**18),byname=name,**{c:1 for c in CLASSES}))
+                session=export_session(event,players,{})
+                url=planner_link(session,max_length=20000)
+                self.assertIsNotNone(url)
+                legacy=len(PLANNER_URL+'#grima='+base64.urlsafe_b64encode(zlib.compress(json.dumps(session,separators=(',',':'),ensure_ascii=False).encode(),9)).decode().rstrip('='))
+                self.assertLess(len(url),legacy)
+                result=subprocess.run(['node',str(Path(__file__).with_name('vanguard-roundtrip.cjs')),str(Path(checkout).resolve())],input=json.dumps(dict(session=session,url=url,decodeOnly=True)),text=True,capture_output=True,timeout=120)
+                self.assertEqual(result.returncode,0,result.stderr)
+                decoded=json.loads(result.stdout)
+                for actual, expected in zip(decoded['players'], session['players']):
+                    for key in ('id','name','available','max','primary'):
+                        self.assertEqual(actual[key],expected[key])
+                    self.assertEqual([{k:c[k] for k in ('c','spec','role')} for c in actual['choices']],expected['choices'])
+                self.assertEqual(len(decoded['players']),200)
+                self.assertEqual(decoded['runs'],session['runs'])
+                self.assertEqual(decoded['settings'],session['settings'])
+                self.assertEqual(decoded['grimaEventId'],session['grimaEventId'])
+                self.assertNotIn('<:', ''.join(p['name'] for p in decoded['players']))
+                self.assertEqual(sum(p['primary'] for p in decoded['players']),100)
+                self.assertIsNone(planner_link(session,max_length=512))
+                self.assertIsNone(planner_link(session))
+                print(f'200 signups, {name_length}-character names, ALL class/specs: {len(url)} URL characters vs {legacy} legacy')
