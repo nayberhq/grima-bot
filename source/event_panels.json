@@ -1,6 +1,69 @@
 {
+  "angmar": {
+    "title": "Level 50: Shadows of Angmar",
+    "description": "Create an event for Shadows of Angmar content",
+    "buttons": [
+      {"label": "Helegrod: Drake", "name": "Helegrod: Drake Wing", "size": 12},
+      {"label": "Helegrod: Spider", "name": "Helegrod: Spider Wing", "size": 12},
+      {"label": "Helegrod: Giant", "name": "Helegrod: Giant Wing", "size": 12},
+      {"label": "Thorog (24m)", "name": "Helegrod: Dragon Wing", "size": 24},
+      {"label": "The Rift", "name": "The Rift of Nûrz Ghâshu", "size": 12}
+    ]
+  },
+  "moria_mirkwood": {
+    "title": "Level 60–65: Moria, Mirkwood & Enedwaith",
+    "description": "Create an event for Moria, Mirkwood, or In Their Absence content",
+    "buttons": [
+      {"label": "The Watcher", "name": "The Vile Maw", "size": 12},
+      {"label": "Filikul (Turtle)", "name": "Filikul", "size": 12},
+      {"label": "Dâr Narbugud", "name": "Dâr Narbugud", "size": 12},
+      {"label": "Barad Guldur", "name": "Barad Guldur", "size": 12},
+      {"label": "Ost Dunhoth", "name": "Ost Dunhoth", "size": 12}
+    ]
+  },
+  "isengard_rohan": {
+    "title": "Level 75–85: Isengard & Erebor",
+    "description": "Create an event for Rise of Isengard or Road to Erebor content",
+    "buttons": [
+      {"label": "Draigoch's Lair", "name": "Draigoch's Lair", "size": 12},
+      {"label": "Tower of Orthanc", "name": "Tower of Orthanc", "size": 12},
+      {"label": "Flight to Lonely Mtn", "name": "Flight to the Lonely Mountain", "size": 12},
+      {"label": "Fires of Smaug", "name": "The Fires of Smaug", "size": 12},
+      {"label": "Battle for Erebor", "name": "The Battle for Erebor", "size": 12}
+    ]
+  },
+  "helms_mordor": {
+    "title": "Level 95–115: Helm's Deep, Gondor & Mordor",
+    "description": "Create an event for Helm's Deep, Pelennor, or Mordor content",
+    "buttons": [
+      {"label": "Deeping Wall", "name": "Deeping Wall", "size": 12},
+      {"label": "Throne of Dread Terror", "name": "Throne of the Dread Terror", "size": 12},
+      {"label": "Abyss of Mordath", "name": "The Abyss of Mordath", "size": 12}
+    ]
+  },
+  "morgul_gundabad": {
+    "title": "Level 120–140: Ered Mithrin, Minas Morgul & Gundabad",
+    "description": "Create an event for Grey Mountains, Minas Morgul, War of Three Peaks, or Gundabad content",
+    "buttons": [
+      {"label": "Anvil of Winterstith", "name": "The Anvil of Winterstith", "size": 12},
+      {"label": "Remmorchant", "name": "Remmorchant, the Net of Darkness", "size": 12},
+      {"label": "Amdân Dammul", "name": "Amdân Dammul, the Bloody Threshold", "size": 12},
+      {"label": "Fall of Khazad-dûm", "name": "The Fall of Khazad-dûm", "size": 12},
+      {"label": "Hiddenhoard", "name": "The Hiddenhoard of Abnankâra", "size": 12},
+      {"label": "Gwathrenost", "name": "Gwathrenost, The Witch-king's Citadel", "size": 12}
+    ]
+  },
+  "umbar_morgoth": {
+    "title": "Level 150: Umbar & Legacy of Morgoth",
+    "description": "Create an event for Corsairs of Umbar or Legacy of Morgoth content",
+    "buttons": [
+      {"label": "Depths of Mâkhda Khorbo", "name": "Depths of Mâkhda Khorbo", "size": 12},
+      {"label": "Temple of Utug-bûr", "name": "Temple of Utug-bûr", "size": 12},
+      {"label": "Treasure Caves (3m)", "name": "The Treasure Caves of Hurum Kâna", "size": 3}
+    ]
+  },
   "cluster": {
-    "title": "160 Instance Cluster",
+    "title": "Level 160: 160 Instance Cluster",
     "description": "Create an event for level 160 content",
     "buttons": [
       {"label": "Folly", "name": "The Folly of Nagakhêdi", "size": 12},
@@ -11,11 +74,18 @@
     ]
   },
   "misc": {
-    "title": "Miscellaneous Content",
-    "description": "Create an event for untemplated content",
+    "title": "Custom, Seasonal & PvMP Content",
+    "description": "Create a custom event, PvMP creep raid, skirmish, or seasonal boss run",
     "buttons": [
       {"label": "12 man", "name": "12-player event", "size": 12},
-      {"label": "6 man", "name": "6-player event", "size": 6}
+      {"label": "6 man", "name": "6-player event", "size": 6},
+      {"label": "3 man", "name": "3-player event", "size": 3},
+      {"label": "Creep / Ettenmoors", "name": "Ettenmoors", "size": 24, "creep": true},
+      {"label": "Skirmish Raid", "name": "Skirmish Raid", "size": 12},
+      {"label": "Featured Instance", "name": "Featured Instance", "size": 12},
+      {"label": "Storvâgûn", "name": "Storvâgûn", "size": 6},
+      {"label": "Naruhel", "name": "Naruhel the Red-maid", "size": 6},
+      {"label": "Thrâng", "name": "Thrâng", "size": 6}
     ]
   }
 }

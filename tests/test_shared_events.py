@@ -389,6 +389,99 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         self.cog.store.write('UPDATE Raids SET time=?', (int(time.time())-5000,))
         self.assertEqual(len(calendar.calendar_embed(2).fields), 0)
 
+    async def test_all_cluster_presets_build_views_and_deploy_in_release_order(self):
+        from events_cog import PRESETS
+        from network_cog import NetworkCog
+        expected_order = ['angmar', 'moria_mirkwood', 'isengard_rohan', 'helms_mordor', 'morgul_gundabad', 'umbar_morgoth', 'cluster', 'misc']
+        self.assertEqual(list(PRESETS.keys()), expected_order)
+        for key in expected_order:
+            view = CreationView(self.cog, key)
+            self.assertTrue(view.is_persistent())
+            self.assertGreater(len(view.children), 0)
+            for idx, btn in enumerate(view.children):
+                self.assertEqual(btn.row, idx // 5)
+        sent_titles = []
+        async def send(*args, **kwargs):
+            sent_titles.append(kwargs['embed'].title)
+            return NS(id=5000 + len(sent_titles))
+        self.channels[777] = NS(id=777, send=AsyncMock(side_effect=send), get_partial_message=Mock(return_value=NS(delete=AsyncMock())))
+        network = NetworkCog(self.bot)
+        await network.deploy_all_panels(1, 777)
+        self.assertEqual(sent_titles, [PRESETS[k]['title'] for k in expected_order])
+
+    async def test_setup_smoke_test_validates_permissions_and_applies_settings(self):
+        from network_cog import NetworkCog
+        network = NetworkCog(self.bot)
+        self.bot.get_cog = lambda name: {'RaidCog': self.raids, 'EventsCog': self.cog, 'NetworkCog': network}.get(name)
+        guild = NS(id=1, me=NS(guild_permissions=NS(manage_events=True)))
+        interaction = NS(guild=guild, user=NS(id=9))
+
+        forum = Mock(spec=discord.ForumChannel)
+        forum.id = 10
+        forum.guild = guild
+        forum.mention = '<#10>'
+        forum.flags = NS(require_tag=True)
+        forum.permissions_for = lambda _: NS(
+            view_channel=True, send_messages=True, send_messages_in_threads=False,
+            embed_links=True, read_message_history=True, manage_threads=True,
+            create_public_threads=True, create_instant_invite=True,
+        )
+
+        ann = Mock(spec=discord.TextChannel)
+        ann.id = 12
+        ann.guild = guild
+        ann.mention = '<#12>'
+        ann.permissions_for = lambda _: NS(view_channel=True, send_messages=False, read_message_history=True)
+
+        panel_ch = Mock(spec=discord.TextChannel)
+        panel_ch.id = 13
+        panel_ch.guild = guild
+        panel_ch.mention = '<#13>'
+        panel_ch.permissions_for = lambda _: NS(view_channel=True, send_messages=True, embed_links=True, read_message_history=True)
+        panel_ch.send = AsyncMock(side_effect=lambda *a, **kw: NS(id=9000 + panel_ch.send.await_count))
+        panel_ch.get_partial_message = Mock(return_value=NS(delete=AsyncMock()))
+        self.channels[13] = panel_ch
+
+        ok, fail_embed = await self.cog.smoke_test_and_apply_setup(
+            interaction=interaction,
+            raid_forum=forum,
+            announcement_channel=ann,
+            panel_channel=panel_ch,
+        )
+        self.assertFalse(ok)
+        self.assertIn('Send Messages in Threads', fail_embed.description)
+        self.assertIn('Require people to select tags', fail_embed.description)
+        self.assertIn('Send Messages', fail_embed.description)
+
+        # Now fix permissions and verify setup succeeds
+        forum.flags = NS(require_tag=False)
+        forum.permissions_for = lambda _: NS(
+            view_channel=True, send_messages=True, send_messages_in_threads=True,
+            embed_links=True, read_message_history=True, manage_threads=True,
+            create_public_threads=True, create_instant_invite=True,
+        )
+        ann.permissions_for = lambda _: NS(view_channel=True, send_messages=True, read_message_history=True)
+        leader_role = NS(id=55, mention='<@&55>')
+        kin_role = NS(id=66, mention='<@&66>')
+
+        ok2, ok_embed = await self.cog.smoke_test_and_apply_setup(
+            interaction=interaction,
+            raid_forum=forum,
+            announcement_channel=ann,
+            panel_channel=panel_ch,
+            leader_role=leader_role,
+            kin_role=kin_role,
+            kin_icon='🛡️',
+            server_timezone='America/New_York',
+        )
+        self.assertTrue(ok2)
+        self.assertIn('Server Setup Complete', ok_embed.title)
+        self.assertEqual(self.cog.store.settings(1)['forum_id'], 10)
+        self.assertEqual(self.cog.store.one('SELECT push_id FROM NetworkSettings WHERE guild_id=1')['push_id'], 12)
+        self.assertEqual(self.conn.execute('SELECT raid_leader, priority, server FROM Settings WHERE guild_id=1').fetchone(), (55, 66, 'America/New_York'))
+        self.assertEqual(len(self.cog.store.rows('SELECT * FROM CreationPanels WHERE guild_id=1')), 8)
+
+
 
 if __name__ == '__main__':
     unittest.main()

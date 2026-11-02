@@ -93,25 +93,6 @@ class RaidCog(commands.Cog):
         self.bot.add_view(RaidView(self))
         self.bot.add_view(CreepView(self))
 
-        # Add raid commands to tree
-        @app_commands.guild_only()
-        @app_commands.choices(tier=[
-            app_commands.Choice(name='1', value='T1'),
-            app_commands.Choice(name='2', value='T2'),
-            app_commands.Choice(name='2c', value='T2c'),
-            app_commands.Choice(name='3', value='T3'),
-            app_commands.Choice(name='4', value='T4'),
-            app_commands.Choice(name='5', value='T5'),
-        ])
-        @app_commands.describe(tier=_("The raid tier."), time=_("When the raid should be scheduled."), aim=_("A short description of your objective."))
-        async def raid_respond(interaction: discord.Interaction, tier: app_commands.Choice[str], time: str, aim: Optional[str]):
-            await self.handle_raid_command(interaction, interaction.command.name, tier.value, time, aim)
-
-        for key, full_name in self.raid_lookup.items():
-            description = _("Schedule {0}.").format(full_name)
-            command = app_commands.Command(name=key, description=description, callback=raid_respond)
-            self.bot.tree.add_command(command)
-
     async def cog_load(self):
         self.background_task.start()
 
@@ -140,82 +121,6 @@ class RaidCog(commands.Cog):
                 else:
                     roster = False
                 await self.post_raid(name, tier, aim, timestamp, roster, guild.id, channel, interaction.user.id, creep)
-
-    @app_commands.command(name=_("custom"), description=_("Schedule a custom raid or meetup."))
-    @app_commands.describe(name=_("The name of the raid or meetup."), tier=_("The raid tier."), time=_("When the raid should be scheduled."), aim=_("A short description of your objective."))
-    @app_commands.choices(tier=[
-        app_commands.Choice(name='1', value='T1'),
-        app_commands.Choice(name='2', value='T2'),
-        app_commands.Choice(name='2c', value='T2c'),
-        app_commands.Choice(name='3', value='T3'),
-        app_commands.Choice(name='4', value='T4'),
-        app_commands.Choice(name='5', value='T5'),
-    ])
-    @app_commands.guild_only()
-    async def custom_respond(self, interaction: discord.Interaction, name: str, time: str, tier: Optional[app_commands.Choice[str]], aim: Optional[str]):
-        if tier:
-            tier = tier.value
-        await self.handle_raid_command(interaction, name, tier, time, aim)
-
-    @app_commands.command(name=_("creep"), description=_("Schedule a creep raid or meetup."))
-    @app_commands.describe(time=_("When the raid should be scheduled."), aim=_("A short description of your objective."))
-    @app_commands.guild_only()
-    async def creep_respond(self, interaction: discord.Interaction, time: str, aim: Optional[str]):
-        await self.handle_raid_command(interaction, "Ettenmoors", "", time, aim, True)
-
-    @app_commands.command(name=_("leader"), description=_("Specify the role which is permitted to edit raids."))
-    @app_commands.describe(role=_("Discord role."))
-    @app_commands.guild_only()
-    async def leader_respond(self, interaction: discord.Interaction, role: Optional[discord.Role]):
-        if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message(_("You must be an admin to change the raid leader role."), ephemeral=True)
-        else:
-            if role:
-                role_id = role.id
-            else:
-                role_id = None
-            res = upsert(self.conn, 'Settings', ['raid_leader'], [role_id], ['guild_id'], [interaction.guild_id])
-            self.conn.commit()
-            if role:
-                await interaction.response.send_message(_("Set the raid leader role to {0}.").format(role.mention), allowed_mentions=discord.AllowedMentions.none())
-            else:
-                await interaction.response.send_message(_("Deleted the raid leader role."))
-
-    @app_commands.command(name=_("kin"), description=_("Set your kin role to distinguish kin sign ups from non-kin."))
-    @app_commands.describe(role=_("Discord role."))
-    @app_commands.describe(icon=_("Emoji representing the kinship."))
-    @app_commands.guild_only()
-    async def priority_respond(self, interaction: discord.Interaction, role: Optional[discord.Role], icon: Optional[str]):
-        if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message(_("You must be an admin to change the kin role."), ephemeral=True)
-            return
-        if icon:
-            is_unicode_emoji = Emoji.is_emoji(icon)
-            partial_emoji = discord.PartialEmoji.from_str(icon)
-            is_custom_emoji = partial_emoji.is_custom_emoji()
-            if not (is_unicode_emoji or is_custom_emoji):
-                await interaction.response.send_message(_("\"{0}\" is not a valid emoji.").format(icon), ephemeral=True)
-                return
-        if role:
-            role_id = role.id
-        else:
-            role_id = None
-        #Do not reset role if only updating the icon
-        if role_id or icon is None:
-            res = upsert(self.conn, 'Settings', ['priority'], [role_id], ['guild_id'], [interaction.guild_id])
-        #Do not reset icon if only updating the role
-        if icon or role_id is None:
-            res = upsert(self.conn, 'Settings', ['icon'], [icon], ['guild_id'], [interaction.guild_id])
-        self.conn.commit()
-
-        if role and icon:
-            await interaction.response.send_message(_("Set the kin role to {0} and icon to {1}.").format(role.mention, icon), allowed_mentions=discord.AllowedMentions.none())
-        elif role:
-            await interaction.response.send_message(_("Set the kin role to {0}.").format(role.mention), allowed_mentions=discord.AllowedMentions.none())
-        elif icon:
-            await interaction.response.send_message(_("Set the kin icon to {0}.").format(icon), allowed_mentions=discord.AllowedMentions.none())
-        else:
-            await interaction.response.send_message(_("Deleted the kin role and icon."))
 
     @app_commands.command(name=_("remove_roles"), description=_("Deletes your class roles (used when signing up)."))
     @app_commands.guild_only()

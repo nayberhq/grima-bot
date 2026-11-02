@@ -15,8 +15,7 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
-@app_commands.guild_only()
-class RSSCog(commands.GroupCog, name=_("rss"), description=_("Manage RSS settings.")):
+class RSSCog(commands.Cog):
 
     def __init__(self, bot):
         self.bot = bot
@@ -80,30 +79,6 @@ class RSSCog(commands.GroupCog, name=_("rss"), description=_("Manage RSS setting
         else:
             logger.warning("RSS channel not found for guild {0}.".format(guild_id))
             upsert(self.conn, 'Settings', ['rss'], [None], ['guild_id'], [guild_id])
-
-    @app_commands.command(name=_("on"), description=_("Turn on RSS in this channel."))
-    async def rss_on(self, interaction: discord.Interaction):
-        if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message(_("You must be an admin to set up RSS."), ephemeral=True)
-            return
-        channel = interaction.channel
-        guild = interaction.guild
-        perms = channel.permissions_for(guild.me)
-        if not (perms.send_messages and perms.embed_links):
-            await interaction.response.send_message(_("Missing permissions to access this channel."))
-            return
-        upsert(self.conn, 'Settings', ['rss'], [channel.id], ['guild_id'], [guild.id])
-        await interaction.response.send_message(_("Forum announcements will be posted to this channel."))
-        self.conn.commit()
-
-    @app_commands.command(name=_("off"), description=_("Turn off RSS in this channel."))
-    async def rss_off(self, interaction: discord.Interaction):
-        if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message(_("You must be an admin to turn off RSS."), ephemeral=True)
-            return
-        upsert(self.conn, 'Settings', ['rss'], [None], ['guild_id'], [interaction.guild_id])
-        await interaction.response.send_message(_("Forum announcements will no longer be posted to this channel."))
-        self.conn.commit()
 
     @tasks.loop(seconds=300)
     async def rss_task(self):

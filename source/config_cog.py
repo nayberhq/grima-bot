@@ -88,18 +88,13 @@ class ConfigCog(commands.Cog):
 
     @staticmethod
     def welcome_msg(guild_name):
-        msg = _("Greetings {0}! I am confined to Orthanc and here to spend my days doing your raid admin.\n\n"
-                "You can quickly schedule a raid or instance with the slash commands. Examples:\n"
-                "`/temple t2 Friday 8pm`\n"
-                "`/folly t3 26 July 1pm`\n"
-                "`/garden t1 in two hours`\n"
-                "Use `/custom` to schedule a custom raid or meetup.\n\n"
-                "With `/calendar` you can get an (automatically updated) overview of all scheduled raids. "
-                "It is recommended you use a separate discord channel to display the calendar in.\n"
-                "Use `/time_zones` to change the default time settings and "
-                "you can designate a raid leader role with `/leader`, which allows non-admins to edit raids.\n\n"
-                "Run `/help` anytime for the full step-by-step server setup guide (raid forum, push/pull announcement sync, and roles channel).\n"
-                "Full command overview: <https://github.com/nayberhq/grima-bot>"
+        msg = _("Greetings {0}! I am here to coordinate your LOTRO raids and cross-server events.\n\n"
+                "Administrators can configure the entire server and run a permission smoke test with a single command:\n"
+                "`/setup raid_forum:#raids announcement_channel:#raid-network-push panel_channel:#create-raid`\n\n"
+                "Once configured, `/setup` posts sticky raid creation panels grouped chronologically by LOTRO release cluster "
+                "(newest clusters at the bottom) in your panel channel so raid leaders can schedule any raid with a single click.\n\n"
+                "Run `/help` anytime for the complete step-by-step server setup guide (raid forum, push/pull announcement sync, and roles channel).\n"
+                "Repository & docs: <https://github.com/nayberhq/grima-bot>"
                 ).format(guild_name)
         return msg
 
@@ -110,24 +105,19 @@ class ConfigCog(commands.Cog):
 
         if topic in ('all', 'forum'):
             forum_embed = discord.Embed(
-                title="1. Raid Forum Channel & Creation Panels Setup",
+                title="1. Unified /setup, Raid Forum & Sticky Cluster Panels",
                 colour=colour,
                 description=(
-                    "Gríma uses a Discord **Forum Channel** so every raid gets its own discussion thread and live-synced signup roster.\n\n"
-                    "**Step A — Create the Discord Channels**\n"
-                    "• **Raid Forum (`#raids`):** Create a **Forum Channel**. In its channel settings, turn **OFF** *\"Require people to select tags when posting\"*.\n"
-                    "• **Bot Permissions on `#raids`:** `View Channel`, `Send Messages`, `Send Messages in Threads`, `Create Public Threads`, `Manage Threads`, `Embed Links`, `Read Message History`, and `Create Invite`.\n"
-                    "• **Voice Category (`Raid Voice`):** *(Required if hosting events)* Create a **Category** and grant the bot `View Channel` + `Manage Channels`. Temporary raid voice channels are created here when an event starts and removed after it ends (once empty).\n\n"
-                    "**Step B — Configure Gríma (`/event-setup`)**\n"
-                    "• **Hosting & Mirroring Server:**\n"
-                    "  `/event-setup forum:#raids voice_category:Raid Voice duration_minutes:180 lock_delay_minutes:60`\n"
-                    "• **Mirror-Only Server** *(only pulls events hosted by other servers)*:\n"
-                    "  `/event-setup forum:#raids`\n"
-                    "• **Optional Voice Server Invite (`/event-invite`):** If the bot lacks `Create Invite`, set a non-expiring server invite with `/event-invite url:<invite>` so mirrored servers get a link to join your voice channel.\n\n"
-                    "**Step C — Post Persistent Creation Panels (`/event-panel`)**\n"
-                    "• Create a raid-leader channel (e.g. `#create-raid`) where the bot has `View Channel`, `Send Messages`, and `Embed Links`.\n"
-                    "• Run `/event-panel preset:Cluster Events` and/or `/event-panel preset:Miscellaneous Events`.\n"
-                    "• Raid leaders can click any panel button to open a scheduling modal (panels automatically stay at the bottom of the channel)."
+                    "Gríma configures your entire server and runs a **permission smoke test** in a single `/setup` command.\n\n"
+                    "**Step A — Create the Mandatory Channels**\n"
+                    "• **Raid Forum (`#raids`):** Create a **Forum Channel**. In its settings, turn **OFF** *\"Require people to select tags when posting\"*. Grant the bot `View Channel`, `Send Messages`, `Send Messages in Threads`, `Create Public Threads`, `Manage Threads`, `Embed Links`, `Read Message History`, and `Create Invite`.\n"
+                    "• **Announcement Push Channel (`#raid-network-push`):** Create a Text or Announcement Channel and grant the bot `View Channel`, `Send Messages`, and `Read Message History`.\n"
+                    "• **Event Panel Channel (`#create-raid`):** Create a Text Channel for raid leaders and grant the bot `View Channel`, `Send Messages`, `Embed Links`, and `Read Message History`.\n"
+                    "• **Optional Voice Category (`Raid Voice`):** Create a Category and grant the bot `View Channel` + `Manage Channels` so temporary raid voice channels are created at start time.\n\n"
+                    "**Step B — Run `/setup` (Includes Permission Smoke Test)**\n"
+                    "`/setup raid_forum:#raids announcement_channel:#raid-network-push panel_channel:#create-raid [voice_category:Raid Voice] [leader_role:@Raid Leader] [kin_role:@Kin] [kin_icon:<emoji>] [calendar_channel:#calendar] [rss_channel:#lotro-rss] [server_timezone:America/New_York] [server_invite_url:<url>]`\n"
+                    "• If any permission or channel flag is missing, `/setup` halts and displays an exact checklist of what to fix.\n"
+                    "• Once all checks pass, `/setup` posts all **8 LOTRO Cluster Panels** in chronological release order (Level 50 Angmar at the top → Level 160 Cluster & Custom/PvMP at the bottom) and keeps them sticky at the bottom of `panel_channel`."
                 ),
             )
             embeds.append(forum_embed)
@@ -138,17 +128,15 @@ class ConfigCog(commands.Cog):
                 colour=colour,
                 description=(
                     "Servers using the same `grima-bot` deployment can automatically publish and mirror shared events via `mirrorkey:<code>` markers.\n\n"
-                    "**Outgoing Push Channel (Source Server — Publishing Events)**\n"
-                    "1. Create a text or announcement channel (e.g. `#raid-network-push`) and grant the bot `View Channel` + `Send Messages`.\n"
-                    "2. Run `/network-push channel:#raid-network-push` *(requires Manage Server)*.\n"
-                    "3. Whenever a new shared event is created, Gríma posts `<Event> — <Timestamp>` with `mirrorkey:<code>` to this channel. *(Run `/network-push` with no channel to disable automatic publishing.)*\n"
-                    "4. *Announcement (News) Channels:* Gríma does not auto-publish; click **Publish** on messages you want crossposted to following servers.\n\n"
-                    "**Incoming Pull Channel (Destination Server — Auto-Sync Watcher)**\n"
-                    "1. Complete `/event-setup` on the destination server first.\n"
-                    "2. Copy the **Channel ID** of the channel to watch (`User Settings → Advanced → Developer Mode` → right-click channel → **Copy Channel ID**). This can be a local channel following a partner's Announcement channel, or a shared feed channel in another server where this bot is present.\n"
-                    "3. Ensure both **you** and **grima-bot** have `View Channel` + `Read Message History` in the watched channel.\n"
-                    "4. Run `/event-watch source_channel_id:<Channel ID>` *(requires Manage Server)*. Any new message containing `mirrorkey:<code>` automatically creates a synchronized forum post in your `#raids` forum.\n"
-                    "5. Use `/event-watch source_channel_id:<ID> enabled:False` to stop watching, or `/network-status` (`retry:True`) to inspect/retry discoveries.\n\n"
+                    "**Outgoing Push Channel (`announcement_channel` in `/setup`)**\n"
+                    "1. Configured via the mandatory `announcement_channel` parameter in `/setup`.\n"
+                    "2. Whenever a new shared event is created from the cluster panels, Gríma posts `<Event> — <Timestamp>` with `mirrorkey:<code>` to this channel.\n"
+                    "3. *Announcement (News) Channels:* Gríma does not auto-publish; click **Publish** on messages you want crossposted to following servers.\n\n"
+                    "**Incoming Pull Channel (`watch_channel_id` in `/setup`)**\n"
+                    "1. Copy the **Channel ID** of the channel to watch (`User Settings → Advanced → Developer Mode` → right-click channel → **Copy Channel ID**). This can be a local channel following a partner's Announcement channel, or a shared feed channel in another server where this bot is present.\n"
+                    "2. Ensure both **you** and **grima-bot** have `View Channel` + `Read Message History` in the watched channel.\n"
+                    "3. Pass `watch_channel_id:<Channel ID>` when running `/setup` (or `watch_channel_id:off` to clear watchers). `/setup` smoke-tests your read access and starts watching for new `mirrorkey:<code>` messages.\n"
+                    "4. Use `/network-status` (`retry:True`) to inspect or retry any failed event discoveries.\n\n"
                     "**Manual Sync & Cross-Server Broadcasts**\n"
                     "• **Manual Share/Pull:** Run `/event-share` inside an event post to get its code (`revoke:True` to disable new mirrors); partner raid leaders run `/event-sync code:<code>`.\n"
                     "• **Broadcast Updates:** Run `/event-announce message:<text>` inside an event post to send an announcement to every linked server's forum thread.\n"
@@ -167,12 +155,11 @@ class ConfigCog(commands.Cog):
                     "• **Set Class Specializations (`/specs`):** Players run `/specs classes:<Class> spec:<Red/Blue/Yellow> [tier:<1-5>]` to save their specialization (omit `tier` to apply across all tiers, or set per-tier specs).\n"
                     "• **Inline Forum Signup Picker:** In shared forum events, if a player clicks `✅` or a class button before running `/specs`, Gríma automatically opens a private **Class & Specialization Picker** so they can choose their class/spec and finish signing up immediately.\n"
                     "• **Classic Discord Class Roles (`/remove_roles`):** For legacy text-channel raids, clicking a class button assigns a matching Discord role (grant the bot `Manage Roles` and place `grima-bot`'s role above the LOTRO class roles in `Server Settings → Roles`). Players can clear their class roles anytime with `/remove_roles`.\n"
-                    "• **Personal Timezone (`/time_zones`):** Players can set their personal timezone so times they type when creating events are parsed in their local time.\n\n"
-                    "**Step B — Configure Raid Leader & Kinship Roles *(Administrator)***\n"
-                    "• **Raid Leader Role (`/leader`):** Run `/leader role:@Raid Leader`. Members with this role can create events from `/event-panel`, edit raid settings, build/edit rosters (`/roster-create`, `/roster-manage`, `/roster-edit`, `/roster-swap`), and run `/event-sync`.\n"
-                    "• **Kinship Role & Icon (`/kin`):** Run `/kin role:@Kin Member icon:<emoji>` to badge kinship members on signups.\n\n"
-                    "**Step C — Optional Live Calendar Channel (`/calendar`)**\n"
-                    "• Create a read-only `#raid-calendar` channel and run `/calendar` for an automatically updated summary of all upcoming local and mirrored raids."
+                    "• **Personal Timezone (`/time_zones personal`):** Players can set their personal timezone so times they type when creating events are parsed in their local time.\n\n"
+                    "**Step B — Configure Raid Leader, Kinship & Optional Channels in `/setup`**\n"
+                    "• **Raid Leader Role (`leader_role` in `/setup`):** Members with this role can create events from the cluster panels, edit raid settings, build/edit rosters (`/roster-create`, `/roster-manage`, `/roster-edit`, `/roster-swap`), and run `/event-sync`.\n"
+                    "• **Kinship Role & Icon (`kin_role` & `kin_icon` in `/setup`):** Badges kinship members on raid signups.\n"
+                    "• **Optional Live Calendar & RSS (`calendar_channel`, `discord_events`, `rss_channel` in `/setup`):** Posts an auto-updating raid summary embed, creates native Discord Scheduled Events, and/or posts official LOTRO forum RSS news."
                 ),
             )
             embeds.append(roles_embed)

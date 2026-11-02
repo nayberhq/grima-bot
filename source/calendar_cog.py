@@ -17,11 +17,6 @@ logger.setLevel(logging.INFO)
 
 
 @app_commands.guild_only()
-class CalendarGroup(app_commands.Group):
-    def __init__(self):
-        super().__init__(name=_("calendar"), description=_("Manage the calendar settings."))
-
-
 class CalendarCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -256,62 +251,6 @@ class CalendarCog(commands.Cog):
         await interaction.response.send_message(_("Waiting for lotro.com to respond..."))
         events = await self.events_embed(interaction.guild_id)
         await interaction.edit_original_response(content='', embed=events)
-
-    group = CalendarGroup()
-
-    @group.command(name=_("off"), description=("Turn off calendars."))
-    async def calendar_off(self, interaction: discord.Interaction):
-        if not self.is_raid_leader(interaction.user, interaction.guild):
-            await interaction.response.send_message(_("You must be a raid leader to change the calendar settings."), ephemeral=True)
-            return
-        upsert(self.conn, 'Settings', ['calendar', 'guild_events'], [None, False], ['guild_id'], [interaction.guild_id])
-        content = _("Events will not be posted to a calendar.")
-        await interaction.response.send_message(content, ephemeral=True)
-        self.conn.commit()
-
-    @group.command(name=_("channel"), description=("Post events to calendar in this channel."))
-    async def calendar_channel(self, interaction: discord.Interaction):
-        if not self.is_raid_leader(interaction.user, interaction.guild):
-            await interaction.response.send_message(_("You must be a raid leader to change the calendar settings."), ephemeral=True)
-            return
-        channel = interaction.channel
-        guild = interaction.guild
-        perms = channel.permissions_for(guild.me)
-        if not (perms.send_messages and perms.embed_links):
-            await interaction.response.send_message(_("Missing permissions to access this channel."))
-            return
-        upsert(self.conn, 'Settings', ['guild_events'], [False], ['guild_id'], [guild.id])
-        content = _("Events will be posted to this channel.")
-        await interaction.response.send_message(content, ephemeral=True)
-        # post calendar will commit
-        await self.post_calendar(guild.id, channel)
-
-    @group.command(name=_("discord"), description=("Post events to discord calendar."))
-    async def calendar_discord(self, interaction: discord.Interaction):
-        if not self.is_raid_leader(interaction.user, interaction.guild):
-            await interaction.response.send_message(_("You must be a raid leader to change the calendar settings."), ephemeral=True)
-            return
-        upsert(self.conn, 'Settings', ['calendar', 'guild_events'], [None, True], ['guild_id'], [interaction.guild_id])
-        content = _("Events will be posted as discord guild events.")
-        await interaction.response.send_message(content, ephemeral=True)
-        self.conn.commit()
-
-    @group.command(name=_("both"), description=("Post events to both discord and channel calendar."))
-    async def calendar_both(self, interaction: discord.Interaction):
-        if not self.is_raid_leader(interaction.user, interaction.guild):
-            await interaction.response.send_message(_("You must be a raid leader to change the calendar settings."), ephemeral=True)
-            return
-        channel = interaction.channel
-        guild = interaction.guild
-        perms = channel.permissions_for(guild.me)
-        if not (perms.send_messages and perms.embed_links):
-            await interaction.response.send_message(_("Missing permissions to access this channel."))
-            return
-        upsert(self.conn, 'Settings', ['guild_events'], [True], ['guild_id'], [guild.id])
-        content = _("Events will be posted to this channel and as discord guild events.")
-        await interaction.response.send_message(content, ephemeral=True)
-        # post calendar will commit
-        await self.post_calendar(guild.id, channel)
 
 
 async def setup(bot):

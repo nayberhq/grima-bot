@@ -128,29 +128,6 @@ class TimeCog(commands.Cog):
         self.conn.commit()
         await interaction.response.send_message(content, ephemeral=True)
 
-    @group.command(name=_("server"), description=_("Set the time zone for this discord server."))
-    @app_commands.describe(timezone=_("Select a city representing the time zone."))
-    @app_commands.autocomplete(timezone=time_zone_autocomplete)
-    async def time_zone_server(self, interaction: discord.Interaction, timezone: Optional[str]):
-        if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message(_("You must be an admin to change the server time zone."), ephemeral=True)
-            return
-        if timezone:
-            try:
-                tz = pytz.timezone(timezone)
-            except pytz.UnknownTimeZoneError as e:
-                content = _("{0} is not a valid time zone!").format(e)
-                await interaction.response.send_message(content, ephemeral=True)
-                return
-            tz = str(tz)
-            content = _("Set server time zone to {0}.").format(tz)
-        else:
-            tz = None
-            content = _("Deleted server time zone data.")
-        res = upsert(self.conn, 'Settings', ['server'], [tz], ['guild_id'], [interaction.guild_id])
-        self.conn.commit()
-        await interaction.response.send_message(content, ephemeral=True)
-
 
 async def setup(bot):
     await bot.add_cog(TimeCog(bot))

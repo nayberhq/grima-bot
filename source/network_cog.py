@@ -86,7 +86,13 @@ class NetworkCog(commands.Cog):
         if task and not task.done():return
         async def bump():
             await asyncio.sleep(5)
-            for panel in self.store.rows('SELECT * FROM CreationPanels WHERE channel_id=?',(message.channel.id,)):
+            from events_cog import PRESETS
+            order=list(PRESETS.keys())
+            panels=sorted(
+                self.store.rows('SELECT * FROM CreationPanels WHERE channel_id=?',(message.channel.id,)),
+                key=lambda p:(order.index(p['preset']) if p['preset'] in order else len(order),p['message_id'])
+            )
+            for panel in panels:
                 self.queue_panel(f"bump:{panel['message_id']}",message.channel.id,message.guild.id,panel['preset'],panel['message_id'])
             await self.process_panels()
         self.panel_tasks[message.channel.id]=asyncio.create_task(bump())
@@ -94,10 +100,35 @@ class NetworkCog(commands.Cog):
     def queue_panel(self,key,channel_id,guild_id,preset,old_id=None):
         self.store.write('INSERT OR IGNORE INTO PanelJobs VALUES (?,?,?,?,?)',(key,channel_id,guild_id,preset,old_id))
 
+    async def deploy_all_panels(self,guild_id,channel_id):
+        from events_cog import PRESETS
+        existing=self.store.rows('SELECT * FROM CreationPanels WHERE guild_id=?',(guild_id,))
+        for panel in existing:
+            try:
+                old_channel=await self.events.channel(panel['channel_id'])
+                await old_channel.get_partial_message(panel['message_id']).delete()
+            except discord.HTTPException:
+                pass
+        with self.bot.conn:
+            self.bot.conn.execute('DELETE FROM CreationPanels WHERE guild_id=?',(guild_id,))
+            self.bot.conn.execute('DELETE FROM PanelJobs WHERE guild_id=?',(guild_id,))
+        stamp=int(time.time()*1000)
+        for index,preset in enumerate(PRESETS.keys()):
+            self.queue_panel(f'setup:{guild_id}:{stamp}:{index}:{preset}',channel_id,guild_id,preset)
+        await self.process_panels()
+
     async def process_panels(self):
         from events_cog import CreationView, PRESETS
-        for job in self.store.rows('SELECT * FROM PanelJobs'):
+        order=list(PRESETS.keys())
+        jobs=sorted(
+            self.store.rows('SELECT * FROM PanelJobs'),
+            key=lambda j:(order.index(j['preset']) if j['preset'] in order else len(order),j['key'])
+        )
+        for job in jobs:
             try:
+                if job['preset'] not in PRESETS:
+                    self.store.write('DELETE FROM PanelJobs WHERE key=?',(job['key'],))
+                    continue
                 channel=await self.events.channel(job['channel_id']);preset=PRESETS[job['preset']]
                 view=CreationView(self.events,job['preset'])
                 message=await self.sender.send(channel,job['key'],None,embed=discord.Embed(title=preset['title'],description=preset['description']),view=view)
@@ -126,17 +157,6 @@ class NetworkCog(commands.Cog):
         self.store.write('DELETE FROM EventBlocks WHERE raid_id=? AND guild_id=?',(event['raid_id'],int(guild_id)))
         code=event['share_token'] or self.store.share(event['raid_id'])
         await interaction.response.send_message(f'Allowed reconnection. Destination administrator: /event-repair code:{code}',ephemeral=True)
-
-    @app_commands.command(name='network-push',description='Set the channel for automatic event discovery announcements, or disable publishing.')
-    @app_commands.guild_only()
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def push(self, interaction:discord.Interaction, channel:discord.TextChannel|None=None):
-        if channel:
-            perms=channel.permissions_for(interaction.guild.me)
-            if not perms.view_channel or not perms.send_messages:
-                await interaction.response.send_message('Bot needs View Channel and Send Messages.',ephemeral=True);return
-        self.store.write('INSERT OR REPLACE INTO NetworkSettings VALUES (?,?)',(interaction.guild_id,channel.id if channel else None))
-        await interaction.response.send_message('Push channel saved. Active unpublished events will publish on the next cycle. Configure pull independently with /event-watch.' if channel else 'Automatic publishing disabled.',ephemeral=True)
 
     @app_commands.command(name='event-status',description='Inspect linked servers, stale updates and pending deliveries; optionally retry.')
     @app_commands.guild_only()
@@ -214,18 +234,6 @@ class NetworkCog(commands.Cog):
             await interaction.followup.send(f'Repaired <#{thread}>.',ephemeral=True)
         except (ValueError,discord.HTTPException) as exc:
             await interaction.followup.send(str(exc)[:1800],ephemeral=True)
-
-    @app_commands.command(name='event-invite',description='Set a verified invite to this owning server for mirrored events.')
-    @app_commands.guild_only()
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def invite(self,interaction:discord.Interaction,url:str):
-        await interaction.response.defer(ephemeral=True)
-        invite=await self.bot.fetch_invite(url)
-        if not invite.guild or invite.guild.id!=interaction.guild_id:
-            await interaction.followup.send('The invite must lead to this server.',ephemeral=True);return
-        self.store.write('INSERT OR REPLACE INTO SourceInvites VALUES (?,?)',(interaction.guild_id,invite.url))
-        self.store.write('UPDATE SharedEvents SET revision=revision+1 WHERE raid_id IN (SELECT raid_id FROM Raids WHERE guild_id=?)',(interaction.guild_id,))
-        await interaction.followup.send('Owner-server invite saved. Mirrors update on the next refresh. Use a non-expiring invite.',ephemeral=True)
 
     async def cog_app_command_error(self,interaction,error):
         send=interaction.followup.send if interaction.response.is_done() else interaction.response.send_message
