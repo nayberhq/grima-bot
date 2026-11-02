@@ -131,16 +131,44 @@ class DevCog(commands.Cog):
         await ctx.send("Inactive guild count: {0}".format(inactive))
         await ctx.send("Deleted guild count: {0}".format(deleted))
 
+    async def _sync_guild_commands(self, guild):
+        self.bot.tree.copy_global_to(guild=guild)
+        return await self.bot.tree.sync(guild=guild)
+
+    async def _sync_global_commands(self):
+        return await self.bot.tree.sync()
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        if getattr(self.bot, '_slash_commands_synced', False):
+            return
+        self.bot._slash_commands_synced = True
+        try:
+            for guild in self.bot.guilds:
+                guild_cmds = await self._sync_guild_commands(guild)
+                logger.info('Startup slash sync: %s commands in guild %s (%s).', len(guild_cmds), guild.name, guild.id)
+            global_cmds = await self._sync_global_commands()
+            logger.info('Startup slash sync: %s global commands.', len(global_cmds))
+        except discord.HTTPException:
+            logger.exception('Startup slash sync failed; run !sync as bot owner.')
+
     @commands.command(hidden=True)
     @commands.is_owner()
     async def sync(self, ctx):
-        if ctx.guild is not None:
-            self.bot.tree.clear_commands(guild=ctx.guild)
-            await self.bot.tree.sync(guild=ctx.guild)
-        await self.bot.tree.sync()
-        logger.info("Synced bot commands.")
-        await ctx.send("Synced bot commands.")
-
+        try:
+            guild_cmds = None
+            if ctx.guild is not None:
+                guild_cmds = await self._sync_guild_commands(ctx.guild)
+            global_cmds = await self._sync_global_commands()
+        except discord.HTTPException as exc:
+            logger.exception('Slash command sync failed.')
+            await ctx.send(f'Sync failed: {exc}')
+            return
+        lines = [f'**Global:** {len(global_cmds)} command(s) (Discord may take up to ~1 hour to refresh everywhere).']
+        if ctx.guild is not None and guild_cmds is not None:
+            lines.append(f'**This server:** {len(guild_cmds)} command(s) — should appear immediately (try `/settings`).')
+        logger.info('Synced bot commands (%s global, guild=%s).', len(global_cmds), ctx.guild.id if ctx.guild else None)
+        await ctx.send('Synced bot commands.\n' + '\n'.join(lines))
 async def setup(bot):
     await bot.add_cog(DevCog(bot))
     logger.info("Loaded Dev Cog.")
