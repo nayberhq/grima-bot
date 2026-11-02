@@ -94,7 +94,7 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.store=EventStore(self.conn)
         self.store.event=Mock(return_value={**EVENT, 'cancelled':0, 'lock_delay':600, 'time':9999999999})
         self.store.copies=Mock(return_value=[dict(thread_id=1,locked=0),dict(thread_id=2,locked=0),dict(thread_id=3,locked=1)])
-        self.channels={i:NS(archived=False,fetch_message=AsyncMock(),send=AsyncMock(return_value=NS(id=i*10)),get_partial_message=Mock(return_value=NS(edit=AsyncMock(),delete=AsyncMock()))) for i in (1,2,3)}
+        self.channels={i:NS(id=i,archived=False,fetch_message=AsyncMock(),send=AsyncMock(return_value=NS(id=i*10)),get_partial_message=Mock(return_value=NS(edit=AsyncMock(),delete=AsyncMock()))) for i in (1,2,3)}
         events=NS(store=self.store,channel=AsyncMock(side_effect=lambda i:self.channels[i]))
         self.cog=PlanningCog(NS(conn=self.conn,get_cog=lambda _:events))
         self.cog.players=Mock(return_value=PLAYERS)

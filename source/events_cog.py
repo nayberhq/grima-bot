@@ -24,6 +24,8 @@ class EventsCog(commands.Cog):
         self.locks = defaultdict(asyncio.Lock)
         self.delivery_lock = asyncio.Lock()
         self.watch_lock = asyncio.Lock()
+        from durable_send import DurableSender
+        self.sender=DurableSender(bot.conn,bot)
 
     @property
     def raids(self):
@@ -329,8 +331,7 @@ class EventsCog(commands.Cog):
                     continue
                 if thread.archived:
                     await thread.edit(archived=False)
-                await thread.send(f"**Announcement from <@{delivery['author_id']}>**\n{delivery['body']}",
-                                  allowed_mentions=discord.AllowedMentions.none())
+                await self.sender.send(thread,f"announcement:{delivery['id']}:{delivery['thread_id']}",f"**Announcement from <@{delivery['author_id']}>**\n{delivery['body']}")
                 self.store.write('UPDATE AnnouncementDeliveries SET sent=1 WHERE announcement_id=? AND thread_id=?',
                                  (delivery['id'], delivery['thread_id']))
             except discord.HTTPException:
@@ -382,17 +383,10 @@ class EventsCog(commands.Cog):
             await interaction.response.send_message('Run /event-setup first.', ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True)
-        panel = PRESETS[preset.value]
-        message = await interaction.channel.send(embed=discord.Embed(title=panel['title'], description=panel['description']),
-            view=CreationView(self, preset.value))
-        self.store.write('INSERT INTO CreationPanels VALUES (?,?,?,?)',
-            (message.id, interaction.channel_id, interaction.guild_id, preset.value))
-        try:
-            await message.pin(reason='Persistent event creation panel')
-            note = 'Pinned creation panel.'
-        except discord.HTTPException:
-            note = 'Created the panel, but could not pin it. Check the bot’s pin permissions.'
-        await interaction.followup.send(f'{note} {message.jump_url}', ephemeral=True)
+        network=self.bot.get_cog('NetworkCog')
+        network.queue_panel(f'panel:{interaction.id}',interaction.channel_id,interaction.guild_id,preset.value)
+        await network.process_panels()
+        await interaction.followup.send('Creation panel queued. Failed deliveries retry automatically; panels move below new conversation.',ephemeral=True)
 
     @app_commands.command(name='event-share', description='Create or revoke the code other servers use to sync this raid.')
     @app_commands.guild_only()

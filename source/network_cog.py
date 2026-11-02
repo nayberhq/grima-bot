@@ -16,6 +16,8 @@ class NetworkCog(commands.Cog):
         self.invite_check_at=0
         from durable_send import DurableSender
         self.sender=DurableSender(bot.conn,bot)
+        bot.conn.execute('CREATE TABLE IF NOT EXISTS PanelJobs(key TEXT PRIMARY KEY,channel_id INTEGER,guild_id INTEGER,preset TEXT,old_id INTEGER)')
+        bot.conn.commit()
 
     @property
     def events(self): return self.bot.get_cog('EventsCog')
@@ -24,6 +26,7 @@ class NetworkCog(commands.Cog):
 
     async def tick(self):
         async with self.lock:
+            await self.process_panels()
             if time.time()>=self.invite_check_at:
                 self.invite_check_at=time.time()+3600
                 for row in self.store.rows('SELECT * FROM SourceInvites'):
@@ -83,18 +86,32 @@ class NetworkCog(commands.Cog):
         if task and not task.done():return
         async def bump():
             await asyncio.sleep(5)
-            from events_cog import CreationView, PRESETS
             for panel in self.store.rows('SELECT * FROM CreationPanels WHERE channel_id=?',(message.channel.id,)):
-                try:
-                    preset=PRESETS[panel['preset']]
-                    fresh=await message.channel.send(embed=discord.Embed(title=preset['title'],description=preset['description']),view=CreationView(self.events,panel['preset']))
-                    self.store.write('UPDATE CreationPanels SET message_id=? WHERE message_id=?',(fresh.id,panel['message_id']))
-                    try:await message.channel.get_partial_message(panel['message_id']).delete()
-                    except discord.NotFound:pass
-                except discord.HTTPException:
-                    import logging
-                    logging.getLogger(__name__).exception('Could not bump creation panel')
+                self.queue_panel(f"bump:{panel['message_id']}",message.channel.id,message.guild.id,panel['preset'],panel['message_id'])
+            await self.process_panels()
         self.panel_tasks[message.channel.id]=asyncio.create_task(bump())
+
+    def queue_panel(self,key,channel_id,guild_id,preset,old_id=None):
+        self.store.write('INSERT OR IGNORE INTO PanelJobs VALUES (?,?,?,?,?)',(key,channel_id,guild_id,preset,old_id))
+
+    async def process_panels(self):
+        from events_cog import CreationView, PRESETS
+        for job in self.store.rows('SELECT * FROM PanelJobs'):
+            try:
+                channel=await self.events.channel(job['channel_id']);preset=PRESETS[job['preset']]
+                view=CreationView(self.events,job['preset'])
+                message=await self.sender.send(channel,job['key'],None,embed=discord.Embed(title=preset['title'],description=preset['description']),view=view)
+                with self.bot.conn:
+                    if job['old_id']:self.bot.conn.execute('DELETE FROM CreationPanels WHERE message_id=?',(job['old_id'],))
+                    self.bot.conn.execute('INSERT OR REPLACE INTO CreationPanels VALUES (?,?,?,?)',(message.id,job['channel_id'],job['guild_id'],job['preset']))
+                self.bot.add_view(view,message_id=message.id)
+                if job['old_id']:
+                    try:await channel.get_partial_message(job['old_id']).delete()
+                    except discord.NotFound:pass
+                self.store.write('DELETE FROM PanelJobs WHERE key=?',(job['key'],))
+            except (discord.HTTPException,ValueError):
+                import logging
+                logging.getLogger(__name__).exception('Panel job retained for retry')
 
     async def cog_unload(self):
         for task in self.panel_tasks.values():task.cancel()

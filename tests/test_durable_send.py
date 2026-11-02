@@ -29,3 +29,24 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         channel=NS(id=10,history=history,send=AsyncMock())
         with self.assertRaises(RuntimeError):await sender.send(channel,'event:1','body')
         channel.send.assert_not_awaited();conn.close()
+
+    async def test_embed_panel_recovers_after_restart(self):
+        import discord,json
+        conn=sqlite3.connect(':memory:');bot=NS(user=NS(id=9));sender=DurableSender(conn,bot)
+        embed=discord.Embed(title='Create raid',description='Choose content')
+        snapshot=json.dumps({'content':None,'embed':embed.to_dict()},sort_keys=True)
+        conn.execute('INSERT INTO SendIntents VALUES (?,?,?,?,NULL)',('panel:1',10,snapshot,100));conn.commit()
+        message=NS(id=20,author=NS(id=9),content='',embeds=[embed])
+        async def history(**kwargs):yield message
+        channel=NS(id=10,history=history,send=AsyncMock())
+        result=await sender.send(channel,'panel:1',None,embed=embed)
+        self.assertEqual(result.id,20);channel.send.assert_not_awaited();conn.close()
+
+    async def test_known_denial_allows_retry_without_history(self):
+        import discord
+        conn=sqlite3.connect(':memory:');sender=DurableSender(conn,NS(user=NS(id=9)))
+        channel=NS(id=10,send=AsyncMock(side_effect=discord.Forbidden(NS(status=403,reason='denied'),'denied')))
+        with self.assertRaises(discord.Forbidden):await sender.send(channel,'announcement:1','body')
+        self.assertEqual(conn.execute('SELECT count(*) FROM SendIntents').fetchone()[0],0)
+        channel.send.side_effect=None;channel.send.return_value=NS(id=20)
+        self.assertEqual((await sender.send(channel,'announcement:1','body')).id,20);conn.close()

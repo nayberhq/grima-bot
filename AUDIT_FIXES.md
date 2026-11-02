@@ -85,3 +85,25 @@ organizer announcements, panels, or thread creation.
 47 Python tests pass. Still outstanding: recovery for those other Discord
 writes; serverless hosting implementation and deployment; real browser/Discord
 validation across two servers. No remote pushes or deployments performed.
+
+## Recovery continuation
+
+Durable send intents now cover discovery messages, organizer announcements,
+new roster messages, and panel creation/reposting. Panel jobs persist the
+replacement and old-message cleanup steps, and resume on the lifecycle tick.
+Known forbidden/not-found send failures clear the unsent intent; ambiguous
+failures retain it for history recovery. Deleted roster projections clear the
+corresponding completed intent before replacement. Embed panels are matched
+by bot author, content and embed data; text deliveries match bot author and
+content after the recorded attempt time. Recovery retains the original snapshot.
+
+49 Python tests pass. This is crash recovery, not a Discord exactly-once
+transaction guarantee. Thread creation still has a separate creation/commit
+window; history matching is bounded and needs Read Message History. Live
+browser/Discord verification remains pending.
+
+Deployment prerequisites checked in this workspace: no bot config.json,
+Discord/cloud credential environment variables, or AWS/GCloud/Azure/Wrangler/
+Fly/gh deployment CLIs were present. No bot hosting target is configured.
+Serverless conversion and live deployment remain outstanding. Choose a hosting
+provider and configure credentials through its secure settings, not chat.

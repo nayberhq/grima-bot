@@ -1,5 +1,6 @@
 """Templates and durable, directly synchronized Vanguard rosters."""
 import asyncio
+import hashlib
 import io
 import json
 import logging
@@ -18,6 +19,8 @@ class PlanningCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.lock = asyncio.Lock()
+        from durable_send import DurableSender
+        self.sender=DurableSender(bot.conn,bot)
         bot.conn.executescript('''
             CREATE TABLE IF NOT EXISTS LegacyMigration(raid_id INTEGER PRIMARY KEY,error TEXT);
             CREATE TABLE IF NOT EXISTS RosterDelivery(thread_id INTEGER PRIMARY KEY,last_success INTEGER,error TEXT);
@@ -136,12 +139,14 @@ class PlanningCog(commands.Cog):
                         await thread.edit(archived=False)
                     old = {r['page']:r for r in self.store.rows('SELECT * FROM PlanMessages WHERE thread_id=?', (copy['thread_id'],))}
                     for index, body in enumerate(pages):
+                        key=f"roster:{copy['thread_id']}:{index}:{hashlib.sha256(body.encode()).hexdigest()}"
                         row = old.pop(index, None)
                         if row and row['body'] == body:
                             try:
                                 await thread.fetch_message(row['message_id'])
                                 continue
                             except discord.NotFound:
+                                self.store.write('DELETE FROM SendIntents WHERE key=?',(key,))
                                 row=None
                         message = None
                         if row:
@@ -149,9 +154,9 @@ class PlanningCog(commands.Cog):
                                 await thread.get_partial_message(row['message_id']).edit(content=body, allowed_mentions=discord.AllowedMentions.none())
                                 message = row['message_id']
                             except discord.NotFound:
-                                pass
+                                self.store.write('DELETE FROM SendIntents WHERE key=?',(key,))
                         if message is None:
-                            sent = await thread.send(body, allowed_mentions=discord.AllowedMentions.none())
+                            sent = await self.sender.send(thread,key,body)
                             message = sent.id
                         self.store.write('INSERT OR REPLACE INTO PlanMessages VALUES (?,?,?,?)', (copy['thread_id'], index, message, body))
                     for index, row in old.items():

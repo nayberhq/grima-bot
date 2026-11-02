@@ -144,7 +144,7 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
     def make_thread(self, thread_id):
         post = NS(edit=AsyncMock())
         thread = NS(id=thread_id, locked=False, archived=False,
-            edit=AsyncMock(), fetch_message=AsyncMock(), get_partial_message=Mock(return_value=post), send=AsyncMock())
+            edit=AsyncMock(), fetch_message=AsyncMock(), get_partial_message=Mock(return_value=post), send=AsyncMock(return_value=NS(id=thread_id+10000)))
         self.channels[thread_id] = thread
         return thread
 
