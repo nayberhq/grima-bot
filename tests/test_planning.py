@@ -205,3 +205,11 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.conn.commit();self.cog.migrate_legacy()
         self.assertIsNone(self.cog.plan(100))
         self.assertIsNotNone(self.store.one('SELECT * FROM LegacyMigration WHERE raid_id=100'))
+
+
+class PlannerExportLinkTests(unittest.IsolatedAsyncioTestCase):
+    async def test_export_uses_authorized_snapshot_link_flow(self):
+        cog = NS(open_planner=AsyncMock())
+        interaction = object()
+        await PlanningCog.export_command.callback(cog, interaction)
+        cog.open_planner.assert_awaited_once_with(interaction)

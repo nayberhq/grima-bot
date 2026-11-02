@@ -190,3 +190,13 @@ You can paste the code directly in the discord app when clicking the join server
 | ------- | ----- |
 | **/privacy** | Displays information on data collection and retention. |
 | **/welcome** | Resends the welcome message. |
+
+## Open signups in Vanguard
+
+Use the **Vanguard** event button or `/planner-export` in an event thread.
+Grima replies privately with a compressed signup snapshot link. Opening it
+loads the roster automatically at https://nayberhq.github.io/vanguard-raid-planner/.
+The planner Import tab also accepts snapshot URLs and can restore the plan
+that was open before import. Large rosters fall back to an attached Session JSON.
+Links contain signup data and should be kept private. After generating teams,
+use **Return plan to Grima**, or export Session JSON for `/planner-import`.

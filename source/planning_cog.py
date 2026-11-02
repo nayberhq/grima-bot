@@ -287,7 +287,7 @@ class PlanningCog(commands.Cog):
             pass
         else:
             view.add_item(discord.ui.Button(label='Open Vanguard', url=PLANNER_URL))
-        text = 'Current signup snapshot. In Vanguard, choose Copy JSON or Load signups. Loading replaces the open plan. Keep this private link private.'
+        text = 'Current signup snapshot. Open the link to load signups automatically in Vanguard. Your previous plan can be restored from the Import tab. Keep this private link private.'
         if url and len(url) > 512:
             text += '\n[Open in Vanguard](' + url + ')'
         if not url:
@@ -295,15 +295,10 @@ class PlanningCog(commands.Cog):
         kwargs = {} if url else dict(file=discord.File(io.BytesIO(json.dumps(data).encode()), filename=f"grima-{event['raid_id']}.json"))
         await interaction.response.send_message(text, view=view, ephemeral=True, suppress_embeds=True, **kwargs)
 
-    @app_commands.command(name='planner-export', description='Export current signups as a Vanguard session JSON.')
+    @app_commands.command(name='planner-export', description='Open current signups in Vanguard, with JSON fallback for larger rosters.')
     @app_commands.guild_only()
     async def export_command(self, interaction: discord.Interaction):
-        event = await self.events.command_event(interaction)
-        if not event:
-            return
-        specs = {r['player_id']:r for r in self.store.rows('SELECT * FROM Specs')}
-        data = export_session(event, self.players(event['raid_id']), specs)
-        await interaction.response.send_message('Import this session into Vanguard. Set your composition, generate teams, then export Session JSON. Unspecified specs offer all supported specs; the run starts at relative hour 0.', file=discord.File(io.BytesIO(json.dumps(data).encode()), filename=f"grima-{event['raid_id']}.json"), ephemeral=True)
+        await self.open_planner(interaction)
 
     @app_commands.command(name='planner-import', description='Replace this event’s planned roster from Vanguard Session JSON.')
     @app_commands.guild_only()
