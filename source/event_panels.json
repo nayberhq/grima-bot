@@ -2,6 +2,7 @@
   "angmar": {
     "title": "Level 50: Shadows of Angmar",
     "description": "Create an event for Shadows of Angmar content",
+    "image": "https://lotro-wiki.com/images/thumb/f/fb/The_Rift_of_N%C3%BBrz_Gh%C3%A2shu.jpg/600px-The_Rift_of_N%C3%BBrz_Gh%C3%A2shu.jpg",
     "buttons": [
       {"label": "Helegrod: Drake", "name": "Helegrod: Drake Wing", "size": 12},
       {"label": "Helegrod: Spider", "name": "Helegrod: Spider Wing", "size": 12},
@@ -13,6 +14,7 @@
   "moria_mirkwood": {
     "title": "Level 60–65: Moria, Mirkwood & Enedwaith",
     "description": "Create an event for Moria, Mirkwood, or In Their Absence content",
+    "image": "https://lotro-wiki.com/images/7/79/Barad_Guldur.jpg",
     "buttons": [
       {"label": "The Watcher", "name": "The Vile Maw", "size": 12},
       {"label": "Filikul (Turtle)", "name": "Filikul", "size": 12},
@@ -24,6 +26,7 @@
   "isengard_rohan": {
     "title": "Level 75–85: Isengard & Erebor",
     "description": "Create an event for Rise of Isengard or Road to Erebor content",
+    "image": "https://lotro-wiki.com/images/thumb/a/a8/Tower_of_Orthanc.jpg/600px-Tower_of_Orthanc.jpg",
     "buttons": [
       {"label": "Draigoch's Lair", "name": "Draigoch's Lair", "size": 12},
       {"label": "Tower of Orthanc", "name": "Tower of Orthanc", "size": 12},
@@ -35,6 +38,7 @@
   "helms_mordor": {
     "title": "Level 95–115: Helm's Deep, Gondor & Mordor",
     "description": "Create an event for Helm's Deep, Pelennor, or Mordor content",
+    "image": "https://lotro-wiki.com/images/thumb/f/f9/The_Abyss_of_Mordath_2.jpg/600px-The_Abyss_of_Mordath_2.jpg",
     "buttons": [
       {"label": "Deeping Wall", "name": "Deeping Wall", "size": 12},
       {"label": "Throne of Dread Terror", "name": "Throne of the Dread Terror", "size": 12},
@@ -44,6 +48,7 @@
   "morgul_gundabad": {
     "title": "Level 120–140: Ered Mithrin, Minas Morgul & Gundabad",
     "description": "Create an event for Grey Mountains, Minas Morgul, War of Three Peaks, or Gundabad content",
+    "image": "https://lotro-wiki.com/images/thumb/e/e8/The_Hiddenhoard_of_Abnank%C3%A2ra.jpg/600px-The_Hiddenhoard_of_Abnank%C3%A2ra.jpg",
     "buttons": [
       {"label": "Anvil of Winterstith", "name": "The Anvil of Winterstith", "size": 12},
       {"label": "Remmorchant", "name": "Remmorchant, the Net of Darkness", "size": 12},
@@ -56,6 +61,7 @@
   "umbar_morgoth": {
     "title": "Level 150: Umbar & Legacy of Morgoth",
     "description": "Create an event for Corsairs of Umbar or Legacy of Morgoth content",
+    "image": "https://lotro-wiki.com/images/thumb/d/d0/Depths_of_M%C3%A2khda_Khorbo.jpg/600px-Depths_of_M%C3%A2khda_Khorbo.jpg",
     "buttons": [
       {"label": "Depths of Mâkhda Khorbo", "name": "Depths of Mâkhda Khorbo", "size": 12},
       {"label": "Temple of Utug-bûr", "name": "Temple of Utug-bûr", "size": 12},
@@ -65,6 +71,7 @@
   "cluster": {
     "title": "Level 160: 160 Instance Cluster",
     "description": "Create an event for level 160 content",
+    "image": "https://lotro-wiki.com/images/thumb/9/93/The_Folly_of_Nagakh%C3%AAdi.jpg/800px-The_Folly_of_Nagakh%C3%AAdi.jpg",
     "buttons": [
       {"label": "Folly", "name": "The Folly of Nagakhêdi", "size": 12},
       {"label": "Wailing Hold", "name": "Kôth Rau, the Wailing Hold", "size": 6},
@@ -76,6 +83,7 @@
   "misc": {
     "title": "Custom, Seasonal & PvMP Content",
     "description": "Create a custom event, PvMP creep raid, skirmish, or seasonal boss run",
+    "image": "https://lotro-wiki.com/images/thumb/c/cd/Ettenmoors.jpg/600px-Ettenmoors.jpg",
     "buttons": [
       {"label": "12 man", "name": "12-player event", "size": 12},
       {"label": "6 man", "name": "6-player event", "size": 6},

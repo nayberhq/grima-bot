@@ -131,7 +131,9 @@ class NetworkCog(commands.Cog):
                     continue
                 channel=await self.events.channel(job['channel_id']);preset=PRESETS[job['preset']]
                 view=CreationView(self.events,job['preset'])
-                message=await self.sender.send(channel,job['key'],None,embed=discord.Embed(title=preset['title'],description=preset['description']),view=view)
+                embed=discord.Embed(title=preset['title'],description=preset['description'],colour=discord.Colour(0x3498db))
+                if preset.get('image'):embed.set_image(url=preset['image'])
+                message=await self.sender.send(channel,job['key'],None,embed=embed,view=view)
                 with self.bot.conn:
                     if job['old_id']:self.bot.conn.execute('DELETE FROM CreationPanels WHERE message_id=?',(job['old_id'],))
                     self.bot.conn.execute('INSERT OR REPLACE INTO CreationPanels VALUES (?,?,?,?)',(message.id,job['channel_id'],job['guild_id'],job['preset']))

@@ -90,7 +90,7 @@ class ConfigCog(commands.Cog):
     def welcome_msg(guild_name):
         msg = _("Greetings {0}! I am here to coordinate your LOTRO raids and cross-server events.\n\n"
                 "Administrators can configure the entire server and run a permission smoke test with a single command:\n"
-                "`/setup raid_forum:#raids announcement_channel:#raid-network-push panel_channel:#create-raid`\n\n"
+                "`/setup raid_forum:#raids announcement_channel:#raid-network-push panel_channel:#create-raid voice_category:Raid Voice`\n\n"
                 "Once configured, `/setup` posts sticky raid creation panels grouped chronologically by LOTRO release cluster "
                 "(newest clusters at the bottom) in your panel channel so raid leaders can schedule any raid with a single click.\n\n"
                 "Run `/help` anytime for the complete step-by-step server setup guide (raid forum, push/pull announcement sync, and roles channel).\n"
@@ -109,15 +109,15 @@ class ConfigCog(commands.Cog):
                 colour=colour,
                 description=(
                     "Gríma configures your entire server and runs a **permission smoke test** in a single `/setup` command.\n\n"
-                    "**Step A — Create the Mandatory Channels**\n"
+                    "**Step A — Create the Mandatory Channels & Category**\n"
                     "• **Raid Forum (`#raids`):** Create a **Forum Channel**. In its settings, turn **OFF** *\"Require people to select tags when posting\"*. Grant the bot `View Channel`, `Send Messages`, `Send Messages in Threads`, `Create Public Threads`, `Manage Threads`, `Embed Links`, `Read Message History`, and `Create Invite`.\n"
                     "• **Announcement Push Channel (`#raid-network-push`):** Create a Text or Announcement Channel and grant the bot `View Channel`, `Send Messages`, and `Read Message History`.\n"
                     "• **Event Panel Channel (`#create-raid`):** Create a Text Channel for raid leaders and grant the bot `View Channel`, `Send Messages`, `Embed Links`, and `Read Message History`.\n"
-                    "• **Optional Voice Category (`Raid Voice`):** Create a Category and grant the bot `View Channel` + `Manage Channels` so temporary raid voice channels are created at start time.\n\n"
+                    "• **Voice Category (`Raid Voice`):** Create a Category and grant the bot `View Channel` + `Manage Channels` so temporary raid voice channels are created at start time.\n\n"
                     "**Step B — Run `/setup` (Includes Permission Smoke Test)**\n"
-                    "`/setup raid_forum:#raids announcement_channel:#raid-network-push panel_channel:#create-raid [voice_category:Raid Voice] [leader_role:@Raid Leader] [kin_role:@Kin] [kin_icon:<emoji>] [calendar_channel:#calendar] [rss_channel:#lotro-rss] [server_timezone:America/New_York] [server_invite_url:<url>]`\n"
+                    "`/setup raid_forum:#raids announcement_channel:#raid-network-push panel_channel:#create-raid voice_category:Raid Voice [watch_channel:#pull] [leader_role:@Raid Leader] [kin_role:@Kin] [kin_icon:<emoji>] [calendar_channel:#calendar] [rss_channel:#lotro-rss] [server_timezone:America/New_York] [server_invite_url:<url>]`\n"
                     "• If any permission or channel flag is missing, `/setup` halts and displays an exact checklist of what to fix.\n"
-                    "• Once all checks pass, `/setup` posts all **8 LOTRO Cluster Panels** in chronological release order (Level 50 Angmar at the top → Level 160 Cluster & Custom/PvMP at the bottom) and keeps them sticky at the bottom of `panel_channel`."
+                    "• Once all checks pass, `/setup` posts all **8 LOTRO Cluster Panels** (with LOTRO Wiki artwork) in chronological release order (Level 50 Angmar at the top → Level 160 Cluster & Custom/PvMP at the bottom) and keeps them sticky at the bottom of `panel_channel`."
                 ),
             )
             embeds.append(forum_embed)

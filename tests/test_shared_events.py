@@ -422,19 +422,23 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         expected_order = ['angmar', 'moria_mirkwood', 'isengard_rohan', 'helms_mordor', 'morgul_gundabad', 'umbar_morgoth', 'cluster', 'misc']
         self.assertEqual(list(PRESETS.keys()), expected_order)
         for key in expected_order:
+            self.assertTrue(PRESETS[key].get('image', '').startswith('https://lotro-wiki.com/images/'))
             view = CreationView(self.cog, key)
             self.assertTrue(view.is_persistent())
             self.assertGreater(len(view.children), 0)
             for idx, btn in enumerate(view.children):
                 self.assertEqual(btn.row, idx // 5)
         sent_titles = []
+        sent_images = []
         async def send(*args, **kwargs):
             sent_titles.append(kwargs['embed'].title)
+            sent_images.append(kwargs['embed'].image.url)
             return NS(id=5000 + len(sent_titles))
         self.channels[777] = NS(id=777, send=AsyncMock(side_effect=send), get_partial_message=Mock(return_value=NS(delete=AsyncMock())))
         network = NetworkCog(self.bot)
         await network.deploy_all_panels(1, 777)
         self.assertEqual(sent_titles, [PRESETS[k]['title'] for k in expected_order])
+        self.assertEqual(sent_images, [PRESETS[k]['image'] for k in expected_order])
 
     async def test_setup_smoke_test_validates_permissions_and_applies_settings(self):
         from network_cog import NetworkCog
@@ -469,16 +473,24 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         panel_ch.get_partial_message = Mock(return_value=NS(delete=AsyncMock()))
         self.channels[13] = panel_ch
 
+        voice_cat = Mock(spec=discord.CategoryChannel)
+        voice_cat.id = 11
+        voice_cat.guild = guild
+        voice_cat.name = 'Raid Voice'
+        voice_cat.permissions_for = lambda _: NS(view_channel=True, manage_channels=False)
+
         ok, fail_embed = await self.cog.smoke_test_and_apply_setup(
             interaction=interaction,
             raid_forum=forum,
             announcement_channel=ann,
             panel_channel=panel_ch,
+            voice_category=voice_cat,
         )
         self.assertFalse(ok)
         self.assertIn('Send Messages in Threads', fail_embed.description)
         self.assertIn('Require people to select tags', fail_embed.description)
         self.assertIn('Send Messages', fail_embed.description)
+        self.assertIn('Manage Channels', fail_embed.description)
 
         # Now fix permissions and verify setup succeeds
         forum.flags = NS(require_tag=False)
@@ -488,6 +500,7 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
             create_public_threads=True, create_instant_invite=True,
         )
         ann.permissions_for = lambda _: NS(view_channel=True, send_messages=True, read_message_history=True)
+        voice_cat.permissions_for = lambda _: NS(view_channel=True, manage_channels=True)
         watch_ch = Mock(spec=discord.TextChannel)
         watch_ch.id = 14
         watch_ch.guild = guild
@@ -505,6 +518,7 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
             raid_forum=forum,
             announcement_channel=ann,
             panel_channel=panel_ch,
+            voice_category=voice_cat,
             watch_channel=watch_ch,
             leader_role=leader_role,
             kin_role=kin_role,
@@ -514,6 +528,7 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(ok2)
         self.assertIn('Server Setup Complete', ok_embed.title)
         self.assertEqual(self.cog.store.settings(1)['forum_id'], 10)
+        self.assertEqual(self.cog.store.settings(1)['voice_category_id'], 11)
         self.assertEqual(self.cog.store.one('SELECT push_id FROM NetworkSettings WHERE guild_id=1')['push_id'], 12)
         self.assertEqual(self.cog.store.one('SELECT source_channel_id FROM EventWatches WHERE guild_id=1')['source_channel_id'], 14)
         self.assertEqual(self.conn.execute('SELECT raid_leader, priority, server FROM Settings WHERE guild_id=1').fetchone(), (55, 66, 'America/New_York'))

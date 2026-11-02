@@ -371,7 +371,7 @@ class EventsCog(commands.Cog):
         raid_forum: discord.ForumChannel,
         announcement_channel: discord.TextChannel,
         panel_channel: discord.TextChannel,
-        voice_category: discord.CategoryChannel | None = None,
+        voice_category: discord.CategoryChannel,
         watch_channel: discord.TextChannel | discord.Thread | None = None,
         leader_role: discord.Role | None = None,
         kin_role: discord.Role | None = None,
@@ -445,20 +445,19 @@ class EventsCog(commands.Cog):
             else:
                 checks.append(f"**Event Panel Channel:** {panel_channel.mention} ({len(PRESETS)} cluster panels in release order)")
 
-        # 4. Optional: Voice Category
-        if voice_category is not None:
-            if not isinstance(voice_category, discord.CategoryChannel) or voice_category.guild.id != guild.id:
-                errors.append('**Voice Category:** Must be a Category in this server.')
+        # 4. Mandatory: Voice Category
+        if not isinstance(voice_category, discord.CategoryChannel) or voice_category.guild.id != guild.id:
+            errors.append('**Voice Category:** Must be a Category in this server.')
+        else:
+            v_perms = voice_category.permissions_for(me)
+            missing = self._missing_perms(v_perms, [
+                ('view_channel', 'View Channel'),
+                ('manage_channels', 'Manage Channels'),
+            ])
+            if missing:
+                errors.append(f"**Voice Category ({voice_category.name}):** Bot is missing: {', '.join(missing)}.")
             else:
-                v_perms = voice_category.permissions_for(me)
-                missing = self._missing_perms(v_perms, [
-                    ('view_channel', 'View Channel'),
-                    ('manage_channels', 'Manage Channels'),
-                ])
-                if missing:
-                    errors.append(f"**Voice Category ({voice_category.name}):** Bot is missing: {', '.join(missing)}.")
-                else:
-                    checks.append(f"**Voice Category:** {voice_category.name} (permissions verified)")
+                checks.append(f"**Voice Category:** {voice_category.name} (permissions verified)")
 
         # 5. Optional: Watch (Incoming Discovery Pull) Channel
         watch_target = None
@@ -625,7 +624,7 @@ class EventsCog(commands.Cog):
         raid_forum='Mandatory: Forum channel where raid posts are created (disable Required Tags).',
         announcement_channel='Mandatory: Outgoing channel where mirrorkey discovery codes are posted.',
         panel_channel='Mandatory: Channel where sticky cluster raid creation panels are posted.',
-        voice_category='Optional: Category where temporary raid voice channels are created at start time.',
+        voice_category='Mandatory: Category where temporary raid voice channels are created at start time.',
         watch_channel='Optional: Channel to watch for incoming mirrorkey codes (e.g. a channel following partner announcements).',
         leader_role='Optional: Role permitted to create events, edit raids, and manage rosters.',
         kin_role='Optional: Role used to distinguish kinship members on raid signups.',
@@ -644,7 +643,7 @@ class EventsCog(commands.Cog):
         raid_forum: discord.ForumChannel,
         announcement_channel: discord.TextChannel,
         panel_channel: discord.TextChannel,
-        voice_category: discord.CategoryChannel | None = None,
+        voice_category: discord.CategoryChannel,
         watch_channel: discord.TextChannel | discord.Thread | None = None,
         leader_role: discord.Role | None = None,
         kin_role: discord.Role | None = None,
