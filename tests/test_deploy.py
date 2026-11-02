@@ -28,3 +28,22 @@ class DeployTests(unittest.TestCase):
 
     def test_os_upgrade_requires_update_action(self):
         with self.assertRaises(ValueError):module.validate(module.parser().parse_args(['--status','--user','pi','--host','pi.local','--update-os']))
+
+    def test_help_embeds_cover_forum_sync_and_roles_within_discord_limits(self):
+        import builtins, sys
+        sys.path.insert(0, str(ROOT / 'source'))
+        builtins._ = lambda s: s
+        import config_cog
+        embeds = config_cog.ConfigCog.build_help_embeds('all')
+        self.assertEqual(len(embeds), 3)
+        total_chars = sum(len(e) for e in embeds)
+        self.assertLessEqual(total_chars, 6000)
+        for e in embeds:
+            self.assertLessEqual(len(e.description), 4096)
+        combined = '\n'.join(e.description for e in embeds)
+        for expected in ('/event-setup', '/event-panel', '/network-push', '/event-watch', '/specs', '/leader', '/remove_roles'):
+            self.assertIn(expected, combined)
+        self.assertEqual(len(config_cog.ConfigCog.build_help_embeds('forum')), 1)
+        self.assertEqual(len(config_cog.ConfigCog.build_help_embeds('sync')), 1)
+        self.assertEqual(len(config_cog.ConfigCog.build_help_embeds('roles')), 1)
+

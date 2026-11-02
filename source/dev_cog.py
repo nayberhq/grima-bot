@@ -135,6 +135,9 @@ class DevCog(commands.Cog):
     @commands.is_owner()
     async def sync(self, ctx):
         await self.bot.tree.sync()
+        if ctx.guild is not None:
+            self.bot.tree.copy_global_to(guild=ctx.guild)
+            await self.bot.tree.sync(guild=ctx.guild)
         logger.info("Synced bot commands.")
         await ctx.send("Synced bot commands.")
 
