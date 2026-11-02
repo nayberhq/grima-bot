@@ -464,6 +464,52 @@ class EventsCog(commands.Cog):
     def _missing_perms(perms, required):
         return [label for attr, label in required if not getattr(perms, attr, False)]
 
+    async def resolve_kin_icon(self, guild, raw_icon: str) -> str | None:
+        icon_str = raw_icon.strip()
+        if Emoji.is_emoji(icon_str):
+            return icon_str
+        partial = discord.PartialEmoji.from_str(icon_str)
+        if partial.is_custom_emoji():
+            if hasattr(self.bot, 'get_emoji'):
+                found = self.bot.get_emoji(partial.id)
+                if found:
+                    return str(found)
+            if hasattr(self.bot, 'fetch_application_emojis'):
+                try:
+                    app_emojis = await self.bot.fetch_application_emojis()
+                    match = next((e for e in app_emojis if e.id == partial.id or e.name.lower() == partial.name.lower()), None)
+                    if not match and hasattr(self.bot, 'create_application_emoji') and hasattr(self.bot, 'http_session'):
+                        ext = 'gif' if partial.animated else 'png'
+                        url = f'https://cdn.discordapp.com/emojis/{partial.id}.{ext}?size=128'
+                        async with self.bot.http_session.get(url) as resp:
+                            if resp.ok:
+                                safe_name = re.sub(r'[^A-Za-z0-9_]', '_', partial.name)[:32] or 'kin_icon'
+                                match = await self.bot.create_application_emoji(name=safe_name, image=await resp.read())
+                    if match:
+                        return str(match)
+                except Exception:
+                    pass
+            return str(partial)
+        short = re.fullmatch(r':?([A-Za-z0-9_]{2,32}):?', icon_str)
+        if short:
+            name_q = short.group(1).lower()
+            for e in getattr(guild, 'emojis', None) or ():
+                if e.name.lower() == name_q:
+                    return str(e)
+            if hasattr(self.bot, 'emojis'):
+                for e in self.bot.emojis or ():
+                    if e.name.lower() == name_q:
+                        return str(e)
+            if hasattr(self.bot, 'fetch_application_emojis'):
+                try:
+                    app_emojis = await self.bot.fetch_application_emojis()
+                    match = next((e for e in app_emojis if e.name.lower() == name_q), None)
+                    if match:
+                        return str(match)
+                except Exception:
+                    pass
+        return None
+
     async def smoke_test_and_apply_setup(
         self,
         interaction: discord.Interaction,
@@ -627,16 +673,15 @@ class EventsCog(commands.Cog):
         # 6. Optional: Raid Leader Role & Kinship Role / Icon
         if leader_role is not None:
             checks.append(f"**Raid Leader Role:** {leader_role.mention}")
+        resolved_kin_icon = None
         if kin_icon is not None and kin_icon.strip():
-            icon_str = kin_icon.strip()
-            is_unicode = Emoji.is_emoji(icon_str)
-            is_custom = discord.PartialEmoji.from_str(icon_str).is_custom_emoji()
-            if not (is_unicode or is_custom):
-                errors.append(f"**Kin Icon (`{icon_str}`):** Not a valid Unicode or Discord custom emoji.")
+            resolved_kin_icon = await self.resolve_kin_icon(guild, kin_icon)
+            if not resolved_kin_icon:
+                errors.append(f"**Kin Icon (`{kin_icon.strip()}`):** Not a valid Unicode or accessible custom emoji.")
             elif not kin_role:
-                checks.append(f"**Kin Icon:** {icon_str}")
+                checks.append(f"**Kin Icon:** {resolved_kin_icon}")
         if kin_role is not None:
-            icon_suffix = f" ({kin_icon.strip()})" if (kin_icon and kin_icon.strip()) else ""
+            icon_suffix = f" ({resolved_kin_icon})" if resolved_kin_icon else ""
             checks.append(f"**Kinship Role:** {kin_role.mention}{icon_suffix}")
 
         # 7. Optional: Calendar Channel & Native Discord Events
@@ -740,8 +785,19 @@ class EventsCog(commands.Cog):
             upsert(self.bot.conn, 'Settings', ['raid_leader'], [leader_role.id], ['guild_id'], [guild.id])
         if kin_role is not None:
             upsert(self.bot.conn, 'Settings', ['priority'], [kin_role.id], ['guild_id'], [guild.id])
-        if kin_icon is not None and kin_icon.strip():
-            upsert(self.bot.conn, 'Settings', ['icon'], [kin_icon.strip()], ['guild_id'], [guild.id])
+        if resolved_kin_icon is not None:
+            old_icon = self.store.one('SELECT icon FROM Settings WHERE guild_id=?', (guild.id,))
+            upsert(self.bot.conn, 'Settings', ['icon'], [resolved_kin_icon], ['guild_id'], [guild.id])
+            if old_icon and old_icon.get('icon') and old_icon['icon'] != resolved_kin_icon:
+                for p in self.store.rows('SELECT raid_id, player_id, byname FROM Players WHERE byname LIKE ?', (f"{old_icon['icon']}%",)):
+                    new_byname = resolved_kin_icon + p['byname'][len(old_icon['icon']):]
+                    self.bot.conn.execute('UPDATE Players SET byname=? WHERE raid_id=? AND player_id=?', (new_byname, p['raid_id'], p['player_id']))
+        elif kin_role is not None:
+            existing_icon = self.store.one('SELECT icon FROM Settings WHERE guild_id=?', (guild.id,))
+            if not existing_icon or not existing_icon.get('icon'):
+                ident = self.store.one('SELECT emoji FROM GuildIdentity WHERE guild_id=?', (guild.id,))
+                if ident and ident.get('emoji'):
+                    upsert(self.bot.conn, 'Settings', ['icon'], [ident['emoji']], ['guild_id'], [guild.id])
         if rss_channel is not None:
             upsert(self.bot.conn, 'Settings', ['rss'], [rss_channel.id], ['guild_id'], [guild.id])
         if resolved_tz is not None:

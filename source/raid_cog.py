@@ -592,7 +592,8 @@ class RaidCog(commands.Cog):
         role_id = select_one(self.conn, 'Settings', ['priority'], ['guild_id'], [guild_id])
         icon = select_one(self.conn, 'Settings', ['icon'], ['guild_id'], [guild_id])
         if not icon:
-            icon = "\U0001F46A"
+            ident = self.event_store.one('SELECT emoji FROM GuildIdentity WHERE guild_id=?', (guild_id,))
+            icon = ident['emoji'] if (ident and ident.get('emoji')) else "\U0001F46A"
         if role_id in [role.id for role in user.roles]:
             byname = f"{icon} {user.display_name}"
         else:
