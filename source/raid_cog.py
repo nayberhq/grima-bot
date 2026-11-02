@@ -427,7 +427,7 @@ class RaidCog(commands.Cog):
             return
         post = channel.get_partial_message(raid_id)
         try:
-            await post.edit(embed=embed)
+            await post.edit(embed=embed, view=RaidView(self, raid_id=raid_id))
         except discord.Forbidden:
             try:
                 await channel.send(_("Missing permissions to edit the raid post."))
@@ -754,14 +754,28 @@ class RaidView(discord.ui.View):
             if planning and hasattr(planning, 'raid_planner_url'):
                 planner_url = planning.raid_planner_url(raid_id)
         if planner_url:
-            self.add_item(discord.ui.Button(emoji="\U0001F4CB", url=planner_url, row=0))
+            self.add_item(discord.ui.Button(emoji="\U0001F4CB", url=planner_url, row=4))
         else:
-            btn = discord.ui.Button(emoji="\U0001F4CB", style=discord.ButtonStyle.secondary, custom_id='raid_view:vanguard', row=0)
+            btn = discord.ui.Button(emoji="\U0001F4CB", style=discord.ButtonStyle.secondary, custom_id='raid_view:vanguard', row=4)
             btn.callback = self.vanguard
             self.add_item(btn)
         inbox_btn = discord.ui.Button(emoji="\U0001F4E5", style=discord.ButtonStyle.secondary, custom_id='raid_view:import', row=4)
         inbox_btn.callback = self.inbox_import
         self.add_item(inbox_btn)
+        refresh_btn = discord.ui.Button(emoji="\U0001F504", style=discord.ButtonStyle.secondary, custom_id='raid_view:refresh', row=4)
+        refresh_btn.callback = self.refresh_post
+        self.add_item(refresh_btn)
+
+    async def refresh_post(self, interaction: discord.Interaction):
+        if not await self.raid_cog.check_signup(interaction):
+            return
+        raid_id = self.raid_cog.resolve_raid_id(interaction.message.id)
+        await interaction.response.defer(ephemeral=True)
+        await self.raid_cog.update_raid_post(raid_id, interaction.channel, delay=0)
+        planning = self.raid_cog.bot.get_cog('PlanningCog')
+        if planning and planning.plan(raid_id):
+            await planning.sync(raid_id)
+        await interaction.followup.send('Refreshed raid post and planner link.', ephemeral=True)
 
     async def inbox_import(self, interaction: discord.Interaction):
         planning = self.raid_cog.bot.get_cog('PlanningCog')

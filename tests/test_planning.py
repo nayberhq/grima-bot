@@ -242,11 +242,30 @@ class PlannerExportLinkTests(unittest.IsolatedAsyncioTestCase):
         planner_btn = next(c for c in view.children if getattr(c, 'url', None))
         self.assertEqual(str(planner_btn.emoji), '\U0001F4CB')
         self.assertIsNone(planner_btn.label)
+        self.assertEqual(planner_btn.row, 4)
         self.assertIn('#grima=', planner_btn.url)
 
         inbox_btn = next(c for c in view.children if getattr(c, 'custom_id', None) == 'raid_view:import')
         self.assertEqual(str(inbox_btn.emoji), '\U0001F4E5')
         self.assertIsNone(inbox_btn.label)
+        self.assertEqual(inbox_btn.row, 4)
+
+        refresh_btn = next(c for c in view.children if getattr(c, 'custom_id', None) == 'raid_view:refresh')
+        self.assertEqual(str(refresh_btn.emoji), '\U0001F504')
+        self.assertIsNone(refresh_btn.label)
+        self.assertEqual(refresh_btn.row, 4)
+
+        raid_cog.check_signup = AsyncMock(return_value=True)
+        raid_cog.update_raid_post = AsyncMock()
+        refresh_i = NS(
+            message=NS(id=100),
+            channel=NS(id=100),
+            user=NS(id=9),
+            response=NS(defer=AsyncMock()),
+            followup=NS(send=AsyncMock()),
+        )
+        await refresh_btn.callback(refresh_i)
+        raid_cog.update_raid_post.assert_awaited_once()
 
         interaction = NS(
             message=NS(id=100),
