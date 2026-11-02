@@ -9,8 +9,18 @@ permissions:
 jobs:
   image:
     runs-on: ubuntu-latest
+    env:
+      VANGUARD_PLANNER_PATH: ${{ github.workspace }}/.vanguard-planner
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: nayberhq/vanguard-raid-planner
+          ref: main
+          path: .vanguard-planner
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'

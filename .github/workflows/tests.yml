@@ -1,0 +1,30 @@
+name: Grima tests and Vanguard integration
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      VANGUARD_PLANNER_PATH: ${{ github.workspace }}/.vanguard-planner
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out the actual Vanguard planner
+        uses: actions/checkout@v4
+        with:
+          repository: nayberhq/vanguard-raid-planner
+          ref: main
+          path: .vanguard-planner
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: pip install -r requirements.txt
+      - run: python -m unittest discover -s tests -v

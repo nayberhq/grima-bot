@@ -200,3 +200,13 @@ The planner Import tab also accepts snapshot URLs and can restore the plan
 that was open before import. Large rosters fall back to an attached Session JSON.
 Links contain signup data and should be kept private. After generating teams,
 use **Return plan to Grima**, or export Session JSON for `/planner-import`.
+
+### Cross-repository regression test
+
+CI checks out Vanguard `main` and runs Grima’s tests against its real decoder,
+session loader, team generator, and return-code encoder. The round trip verifies
+Discord IDs, Unicode names, tier-specific specs, event identity, and fellowship
+groups. It runs on pushes and pull requests to `main` and before release images
+are built. Locally, set `VANGUARD_PLANNER_PATH=/path/to/vanguard-raid-planner`
+when running `python3 -m unittest discover -s tests`. Without that checkout the
+integration test explicitly skips locally; missing CI configuration fails.
