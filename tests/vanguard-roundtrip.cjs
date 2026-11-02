@@ -11,6 +11,8 @@ const run=code=>vm.runInContext(code,ctx);
  assert.equal(ctx.cleaned,'/');assert.equal(run('tab'),'Roster');
  const actual=JSON.parse(run('JSON.stringify(sessionSnapshot())'));
  assert.equal(actual.grimaEventId,input.session.grimaEventId);
+ assert.equal(actual.players[0].primary,true);assert.equal(actual.players[0].name,'Éowyn 0');
+ assert.equal(actual.players[1].primary,false);
  assert.deepEqual(actual.players.map(p=>[p.id,p.name,p.choices.map(c=>[c.c,c.spec,c.role])]),input.session.players.map(p=>[p.id,p.name,p.choices.map(c=>[c.c,c.spec,c.role])]));
  // The organizer chooses composition after loading the signup snapshot.
  run("template={Tank:[1,1],Healer:[1,1],Buffer:[1,1],Debuffer:[1,1]};generateTeams()");

@@ -54,6 +54,15 @@ def signup_choices(player, specs, tier):
     return result
 
 
+def planner_identity(player):
+    """Network kin markers become planner priority, never part of the name."""
+    raw = str(player['byname'])
+    primary = bool(re.search(r'<a?:net_[a-z0-9_]+:\d+>', raw, re.I))
+    name = re.sub(r'<a?:[a-z0-9_]+:\d+>', ' ', raw, flags=re.I)
+    name = ' '.join(name.split()) or str(player['player_id'])
+    return dict(name=name, primary=primary)
+
+
 def export_session(event, players, specs):
     if event.get('creep'):
         raise ValueError('Vanguard supports free-people classes only.')
@@ -65,7 +74,7 @@ def export_session(event, players, specs):
         choices = signup_choices(p, specs.get(p['player_id'], {}), tier)
         if not choices:
             raise ValueError(f"No supported class choices for {p['byname']}.")
-        roster.append(dict(id=str(p['player_id']), name=p['byname'], choices=choices,
+        roster.append(dict(id=str(p['player_id']), **planner_identity(p), choices=choices,
                            available=[True], max=1))
     return dict(format='vanguard-raid-planner-session', version=6, players=roster,
                 runs=[dict(id=1, time=0, label=event['name'], source=0)],

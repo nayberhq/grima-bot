@@ -21,8 +21,12 @@ class VanguardIntegrationTests(unittest.TestCase):
         event = dict(raid_id=9007199254740001, name='Folly — integration', tier='T2', duration=3600, size=6)
         classes = ['Guardian', 'Minstrel', 'Captain', 'Burglar', 'Hunter', 'Warden']
         players = [dict(player_id=9007199254740993+i, byname=f'Éowyn {i}', **{c:1}) for i,c in enumerate(classes)]
+        players[0]['byname'] = '<:net_vanguard_591528:1566670178362589284> Éowyn 0'
         specs = {players[0]['player_id']: {'Guardian':2 << 3}, players[1]['player_id']: {'Minstrel':2 << 3}}
         session = export_session(event, players, specs)
+        self.assertEqual(session['players'][0]['name'], 'Éowyn 0')
+        self.assertTrue(session['players'][0]['primary'])
+        self.assertFalse(session['players'][1]['primary'])
         url = planner_link(session)
         self.assertIsNotNone(url, 'Representative six-player roster should fit the Discord link budget')
         result = subprocess.run(['node', str(Path(__file__).with_name('vanguard-roundtrip.cjs')), str(root)], input=json.dumps(dict(session=session,url=url)), text=True, capture_output=True, timeout=120)
@@ -38,4 +42,4 @@ class VanguardIntegrationTests(unittest.TestCase):
                 if plan['version'] == 7:
                     self.assertEqual(sum(teams[0]['fellowship_sizes']),6)
                 for member in teams[0]['members']:
-                    self.assertTrue(member['name'].startswith('Éowyn'))
+                    self.assertIn('Éowyn', member['name'])

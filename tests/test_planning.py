@@ -285,3 +285,20 @@ class PlannerExportLinkTests(unittest.IsolatedAsyncioTestCase):
         await modal.on_submit(submit_i)
         self.assertEqual(planning.plan(100)['revision'], 1)
         planning.sync.assert_awaited_once_with(100)
+
+
+class KinMarkerExportTests(unittest.TestCase):
+    def test_marker_names_and_priority(self):
+        for raw, name, primary in [
+            ('<:net_vanguard_591528:1566670178362589284> Éowyn', 'Éowyn', True),
+            ('Sam <a:net_other_1:123456>', 'Sam', True),
+            ('<:smile:123456> Frodo', 'Frodo', False),
+            ('Éowyn', 'Éowyn', False),
+            ('<:net_vanguard_591528:1566670178362589284>', str(PLAYERS[0]['player_id']), True),
+        ]:
+            with self.subTest(raw=raw):
+                player = dict(PLAYERS[0], byname=raw)
+                exported = export_session(EVENT, [player], {})['players'][0]
+                self.assertEqual(exported['name'], name)
+                self.assertEqual(exported['primary'], primary)
+                self.assertEqual(player['byname'], raw)
