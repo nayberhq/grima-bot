@@ -1,4 +1,4 @@
-"""Paged ephemeral editor for /setup."""
+"""Paged ephemeral editor for /settings."""
 from __future__ import annotations
 
 import discord

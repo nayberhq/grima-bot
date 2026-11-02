@@ -41,7 +41,7 @@ class DeployTests(unittest.TestCase):
         for e in embeds:
             self.assertLessEqual(len(e.description), 4096)
         combined = '\n'.join(e.description for e in embeds)
-        for expected in ('/setup', 'raid_forum', 'announcement_channel', 'panel channel', 'watch_channel', '/specs', '/remove_roles'):
+        for expected in ('/setup', '/settings', 'raid_forum', 'announcement_channel', 'panel_channel', 'watch_channel', '/specs', '/remove_roles'):
             self.assertIn(expected, combined)
         self.assertEqual(len(config_cog.ConfigCog.build_help_embeds('forum')), 1)
         self.assertEqual(len(config_cog.ConfigCog.build_help_embeds('sync')), 1)

@@ -7,7 +7,7 @@ GPL-3.0 licensing are preserved.
 
 ## Quick Setup & Operations
 
-- **Unified Server Setup (`/setup`)**: Opens a private paged editor to configure raid forum(s) (`Single Channel`, `Instance + Raid`, or `Tiers`), announcement push, watch channel, cluster panels, voice category, roles, and optional calendar/RSS. Saving runs the permission smoke test; panels repost only when the panel channel changes.
+- **Server setup (`/setup`)** and **paged settings (`/settings`)**: `/setup` runs the full permission smoke test from slash parameters (forums, push/pull channels, panels, voice, roles, calendar/RSS). `/settings` opens a private multi-page editor prefilled from saved configuration; saving runs the same smoke test and only reposts cluster panels when the panel channel changes.
 - **Default Event Footer (`/description`)**: Copy any Discord message link into `/description message_link:<url>` to set your server's reusable event description footer.
 - **In-Discord Setup Guide (`/help`)**: Displays step-by-step instructions for setting up raid forums, announcement push/pull sync, and class/role channels.
 - **Pi Deployment (`./deploy.sh`)**: See [DEPLOYMENT.md](DEPLOYMENT.md) for testing, building, and deploying container releases to a 64-bit Raspberry Pi.

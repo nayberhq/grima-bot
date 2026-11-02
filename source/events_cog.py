@@ -15,7 +15,7 @@ from discord.ext import commands, tasks
 
 from database import upsert
 from event_store import EventStore, forum_title, mirror_keys, extract_origin_badge, InvalidShare
-from time_cog import Time
+from time_cog import Time, time_zone_autocomplete
 
 log = logging.getLogger(__name__)
 PRESETS = json.loads(Path(__file__).with_name('event_panels.json').read_text())
@@ -847,7 +847,7 @@ class EventsCog(commands.Cog):
                 title='Setup Smoke Test Failed — Missing Permissions or Invalid Settings',
                 colour=discord.Colour(0xe74c3c),
                 description=(
-                    "Fix the following items in Discord and run `/setup` again:\n\n"
+                    "Fix the following items in Discord and run `/setup` or `/settings` again:\n\n"
                     + '\n'.join(f"• {e}" for e in errors)
                 ),
             )
@@ -943,11 +943,101 @@ class EventsCog(commands.Cog):
             embed.add_field(name='Notes', value='\n'.join(f"• {w}" for w in warnings)[:1024], inline=False)
         return True, embed
 
-    @app_commands.command(name='setup', description='Open the paged server setup editor (forums, panels, roles, and sync).')
+    @app_commands.command(name='setup', description='Configure raid forums (single, instance+raid, or tiers), push/pull channels, panels, and roles.')
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_guild=True)
     @app_commands.default_permissions(manage_guild=True)
-    async def setup_command(self, interaction: discord.Interaction):
+    @app_commands.autocomplete(server_timezone=time_zone_autocomplete)
+    @app_commands.choices(forum_mode=[
+        app_commands.Choice(name='Single Channel (all raids & instances in one forum)', value='single'),
+        app_commands.Choice(name='Instance + Raid (≤6-man in instance_forum, ≥12-man in raid_forum)', value='instance_raid'),
+        app_commands.Choice(name='Tiers (1 forum per tier: t1_forum through t5_forum)', value='tiers'),
+    ])
+    @app_commands.describe(
+        raid_forum='Mandatory: Primary raid forum (all events in Single mode, 12m+ in Instance+Raid, T1/untiered in Tiers).',
+        announcement_channel='Mandatory: Outgoing channel where mirrorkey discovery codes are posted.',
+        panel_channel='Mandatory: Channel where sticky cluster raid creation panels are posted.',
+        voice_category='Mandatory: Category where temporary raid voice channels are created at start time.',
+        forum_mode='Optional: Forum routing layout ("Single Channel", "Instance + Raid", or "Tiers"; default Single).',
+        instance_forum='For "Instance + Raid" mode: Forum channel for 6-man and 3-man instances.',
+        t1_forum='For "Tiers" mode: Forum channel for Tier 1 events (defaults to raid_forum if omitted).',
+        t2_forum='For "Tiers" mode: Forum channel for Tier 2 / T2c events.',
+        t3_forum='For "Tiers" mode: Forum channel for Tier 3 events.',
+        t4_forum='For "Tiers" mode: Forum channel for Tier 4 events.',
+        t5_forum='For "Tiers" mode: Forum channel for Tier 5 events.',
+        watch_channel='Optional: Channel to watch for incoming mirrorkey codes (e.g. a channel following partner announcements).',
+        leader_role='Optional: Role permitted to create events, edit raids, and manage rosters.',
+        kin_role='Optional: Role used to distinguish kinship members on raid signups.',
+        kin_icon='Optional: Emoji badge displayed next to kinship members on raid signups.',
+        calendar_channel='Optional: Channel where the live auto-updating raid calendar embed is posted.',
+        discord_events='Optional: Also create native Discord Scheduled Events for hosted raids.',
+        rss_channel='Optional: Channel where official LOTRO forum RSS announcements are posted.',
+        server_timezone='Optional: Default server timezone (e.g. America/New_York).',
+        server_invite_url='Optional: Non-expiring invite URL to this server for cross-server voice links.',
+        duration_minutes='Optional: Default raid duration in minutes (15–1440, default 180).',
+        lock_delay_minutes='Optional: Minutes after event end before locking forum threads (0–10080, default 60).',
+    )
+    async def setup_command(
+        self,
+        interaction: discord.Interaction,
+        raid_forum: discord.ForumChannel,
+        announcement_channel: discord.TextChannel,
+        panel_channel: discord.TextChannel,
+        voice_category: discord.CategoryChannel,
+        forum_mode: app_commands.Choice[str] | None = None,
+        instance_forum: discord.ForumChannel | None = None,
+        t1_forum: discord.ForumChannel | None = None,
+        t2_forum: discord.ForumChannel | None = None,
+        t3_forum: discord.ForumChannel | None = None,
+        t4_forum: discord.ForumChannel | None = None,
+        t5_forum: discord.ForumChannel | None = None,
+        watch_channel: discord.TextChannel | discord.Thread | None = None,
+        leader_role: discord.Role | None = None,
+        kin_role: discord.Role | None = None,
+        kin_icon: str | None = None,
+        calendar_channel: discord.TextChannel | None = None,
+        discord_events: bool = False,
+        rss_channel: discord.TextChannel | None = None,
+        server_timezone: str | None = None,
+        server_invite_url: str | None = None,
+        duration_minutes: app_commands.Range[int, 15, 1440] = 180,
+        lock_delay_minutes: app_commands.Range[int, 0, 10080] = 60,
+    ):
+        await interaction.response.defer(ephemeral=True)
+        selected_mode = forum_mode.value if forum_mode else 'single'
+        effective_t1 = t1_forum or (raid_forum if selected_mode == 'tiers' else None)
+        _, embed = await self.smoke_test_and_apply_setup(
+            interaction=interaction,
+            raid_forum=raid_forum,
+            announcement_channel=announcement_channel,
+            panel_channel=panel_channel,
+            voice_category=voice_category,
+            forum_mode=selected_mode,
+            instance_forum=instance_forum,
+            t1_forum=effective_t1,
+            t2_forum=t2_forum,
+            t3_forum=t3_forum,
+            t4_forum=t4_forum,
+            t5_forum=t5_forum,
+            watch_channel=watch_channel,
+            leader_role=leader_role,
+            kin_role=kin_role,
+            kin_icon=kin_icon,
+            calendar_channel=calendar_channel,
+            discord_events=discord_events,
+            rss_channel=rss_channel,
+            server_timezone=server_timezone,
+            server_invite_url=server_invite_url,
+            duration_minutes=duration_minutes,
+            lock_delay_minutes=lock_delay_minutes,
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @app_commands.command(name='settings', description='Open the paged server settings editor (prefilled from saved configuration).')
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.default_permissions(manage_guild=True)
+    async def settings_command(self, interaction: discord.Interaction):
         from setup_editor import SetupEditorView, load_setup_draft
         draft = load_setup_draft(self.store, self.bot.conn, interaction.guild_id)
         view = SetupEditorView(self, interaction.user.id, draft)
