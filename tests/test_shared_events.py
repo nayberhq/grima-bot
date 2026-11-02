@@ -90,8 +90,13 @@ class StoreTests(unittest.TestCase):
 
     def test_marker_parser(self):
         key = 'aB0_' * 8
+        key2 = 'zY9-' * 8
         self.assertEqual(mirror_keys(f'mirrorkey:{key}\nmirrorkey:{key}'), [key])
         self.assertEqual(mirror_keys(f'notmirrorkey:{key} mirrorkey:short mirrorkey:{key}x'), [])
+        embed = discord.Embed(title='Shared Event', description=f'Join via mirrorkey:{key}')
+        embed.add_field(name='Extra', value=f'mirrorkey:{key2}')
+        msg = NS(content='', embeds=[embed])
+        self.assertEqual(mirror_keys(msg), [key, key2])
 
     def test_title_uses_destination_timezone_and_truncates(self):
         # 2026-11-02 01:00 UTC is still Sunday on the Pacific coast.

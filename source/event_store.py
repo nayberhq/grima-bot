@@ -10,8 +10,29 @@ def forum_title(title, timestamp, timezone):
     return f'{day} {title}'[:100]
 
 
-def mirror_keys(text):
-    """Extract bearer share codes, preserving order and ignoring duplicate markers."""
+def mirror_keys(source):
+    """Extract bearer share codes from a string or Discord Message (including embeds), preserving order and ignoring duplicates."""
+    if isinstance(source, str):
+        text = source
+    else:
+        parts = [getattr(source, 'content', '') or '']
+        for embed in getattr(source, 'embeds', None) or ():
+            for attr in ('title', 'description', 'url'):
+                val = getattr(embed, attr, None)
+                if val:
+                    parts.append(str(val))
+            footer = getattr(embed, 'footer', None)
+            if footer and getattr(footer, 'text', None):
+                parts.append(str(footer.text))
+            author = getattr(embed, 'author', None)
+            if author and getattr(author, 'name', None):
+                parts.append(str(author.name))
+            for field in getattr(embed, 'fields', None) or ():
+                if getattr(field, 'name', None):
+                    parts.append(str(field.name))
+                if getattr(field, 'value', None):
+                    parts.append(str(field.value))
+        text = '\n'.join(parts)
     return list(dict.fromkeys(re.findall(r'(?<![\w-])mirrorkey:([A-Za-z0-9_-]{32})(?![\w-])', text)))
 
 

@@ -44,10 +44,10 @@ class NetworkCog(commands.Cog):
                     message=await channel.fetch_message(pending['message_id'])
                     if not message.flags.crossposted:
                         # Expired or revoked codes no longer need publication polling.
-                        active=[self.store.by_token(code) for code in mirror_keys(message.content)]
+                        active=[self.store.by_token(code) for code in mirror_keys(message)]
                         if any(e and not self.store.ended(e,time.time()) for e in active):continue
                     else:
-                        for code in mirror_keys(message.content):
+                        for code in mirror_keys(message):
                             try:await self.events.sync_event(pending['guild_id'],code)
                             except InvalidShare:pass
                             except (ValueError,discord.HTTPException) as exc:

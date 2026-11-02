@@ -296,12 +296,12 @@ class EventsCog(commands.Cog):
                             after=discord.Object(id=watch['last_message_id'])):
                         # Announcement drafts are not discovery authorization until manually published.
                         if isinstance(channel,discord.TextChannel) and channel.is_news() and not message.flags.crossposted:
-                            if mirror_keys(message.content):
+                            if mirror_keys(message):
                                 self.store.write('INSERT OR IGNORE INTO PendingPublications VALUES (?,?,?)',(watch['guild_id'],watch['source_channel_id'],message.id))
                             self.store.write('UPDATE EventWatches SET last_message_id=? WHERE guild_id=? AND source_channel_id=?',(message.id,watch['guild_id'],watch['source_channel_id']))
                             continue
-                        # Only literal message text is parsed; no embeds or quoted URLs.
-                        for code in mirror_keys(message.content):
+                        # Parse both literal message text and embedded text/fields.
+                        for code in mirror_keys(message):
                             try:
                                 await self.sync_event(watch['guild_id'], code)
                             except InvalidShare:
@@ -324,6 +324,27 @@ class EventsCog(commands.Cog):
     async def on_message(self, message):
         if message.guild and self.store.one('SELECT 1 FROM EventWatches WHERE source_channel_id=?', (message.channel.id,)):
             await self.scan_watches()
+
+    @commands.Cog.listener()
+    async def on_raw_message_edit(self, payload: discord.RawMessageUpdateEvent):
+        if self.store.one('SELECT 1 FROM EventWatches WHERE source_channel_id=?', (payload.channel_id,)):
+            try:
+                channel = await self.channel(payload.channel_id)
+                message = await channel.fetch_message(payload.message_id)
+            except discord.HTTPException:
+                return
+            codes = mirror_keys(message)
+            if not codes:
+                return
+            for watch in self.store.rows('SELECT * FROM EventWatches WHERE source_channel_id=?', (payload.channel_id,)):
+                for code in codes:
+                    try:
+                        await self.sync_event(watch['guild_id'], code)
+                    except InvalidShare:
+                        pass
+                    except (ValueError, discord.HTTPException) as exc:
+                        self.store.write('INSERT OR REPLACE INTO WatchFailures VALUES (?,?,?,?,?)',
+                                         (watch['guild_id'], watch['source_channel_id'], message.id, code, str(exc)))
 
     async def deliver_announcements(self):
         async with self.delivery_lock:
