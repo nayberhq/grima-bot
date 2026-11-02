@@ -618,6 +618,47 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('Not in the Vanguard discord? join here!\nhttps://discord.gg/vanguard', ann_body)
         self.assertIn('mirrorkey:', ann_body)
 
+    async def test_calendar_displays_network_embed_emoji_or_kin_name_fallback(self):
+        from event_store import extract_origin_badge
+        key = self.cog.store.share(100)
+        relayed_embed = NS(
+            title=None,
+            description=f'1 test is hosting an event!\nmirrorkey:{key}',
+            url=None,
+            footer=None,
+            fields=[],
+            author=NS(
+                name='One',
+                icon_url='https://cdn.discordapp.com/emojis/1542002113201180672.png?size=128',
+                proxy_icon_url=None,
+            ),
+        )
+        relayed_msg = NS(id=50, content='', embeds=[relayed_embed])
+        kin_name, emoji_str = extract_origin_badge(relayed_msg)
+        self.assertEqual(kin_name, 'One')
+        self.assertEqual(emoji_str, '<:One:1542002113201180672>')
+
+        # Watcher scans relayed message and records GuildIdentity for source guild 1
+        self.cog.store.write('INSERT INTO EventWatches VALUES (2, 900, 0)')
+        async def history(**kwargs):
+            if kwargs['after'].id < 50:
+                yield relayed_msg
+        self.channels[900] = NS(history=history)
+        target = self.make_thread(200)
+        forum = NS(create_thread=AsyncMock(return_value=NS(thread=target, message=NS(id=200))))
+        self.cog.validate_destinations = AsyncMock(return_value=forum)
+        await self.cog.scan_watches()
+
+        calendar = CalendarCog(self.bot)
+        embed_with_icon = calendar.calendar_embed(2)
+        self.assertIn('<:One:1542002113201180672> [Folly]', embed_with_icon.fields[0].value)
+
+        # Fallback to kin name when emoji is absent
+        self.cog.store.write("UPDATE GuildIdentity SET emoji=NULL WHERE guild_id=1")
+        embed_with_name = calendar.calendar_embed(2)
+        self.assertIn('**[One]** [Folly]', embed_with_name.fields[0].value)
+
+
 
 
 

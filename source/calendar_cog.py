@@ -79,10 +79,11 @@ class CalendarCog(commands.Cog):
 
     def calendar_embed(self, guild_id):
         conn = self.bot.conn
-        raids = conn.execute('''SELECT r.channel_id,r.raid_id,r.name,r.tier,r.time FROM Raids r
+        store = EventStore(conn)
+        raids = conn.execute('''SELECT r.channel_id,r.raid_id,r.name,r.tier,r.time,r.guild_id FROM Raids r
             LEFT JOIN SharedEvents e USING (raid_id) WHERE r.guild_id=?
             AND (e.raid_id IS NULL OR (e.cancelled=0 AND r.time+e.duration>CAST(strftime('%s','now') AS INTEGER)))
-            UNION ALL SELECT c.thread_id,c.message_id,r.name,r.tier,r.time
+            UNION ALL SELECT c.thread_id,c.message_id,r.name,r.tier,r.time,r.guild_id
             FROM EventCopies c JOIN Raids r USING (raid_id) JOIN SharedEvents e USING (raid_id)
             WHERE c.guild_id=? AND r.guild_id!=? AND e.cancelled=0
             AND r.time+e.duration>CAST(strftime('%s','now') AS INTEGER) ORDER BY 5''', (guild_id,guild_id,guild_id)).fetchall()
@@ -93,12 +94,17 @@ class CalendarCog(commands.Cog):
         for raid in raids[:20]:
             timestamp = int(raid[4])
             tier = raid[3]
+            source_guild_id = raid[5]
+            source_guild = self.bot.get_guild(source_guild_id) if hasattr(self.bot, 'get_guild') else None
+            fallback_name = getattr(source_guild, 'name', None) if source_guild else None
+            badge = store.guild_badge(source_guild_id, fallback_name=fallback_name)
+            prefix = f"{badge} " if badge else ""
             if tier:
-                msg = "[{name} {tier}](<https://discord.com/channels/{guild}/{channel}/{msg}>)\n".format(
-                guild=guild_id, channel=raid[0], msg=raid[1], name=raid[2], tier=raid[3])
+                msg = "{prefix}[{name} {tier}](<https://discord.com/channels/{guild}/{channel}/{msg}>)\n".format(
+                prefix=prefix, guild=guild_id, channel=raid[0], msg=raid[1], name=raid[2], tier=raid[3])
             else:
-                msg = "[{name}](<https://discord.com/channels/{guild}/{channel}/{msg}>)\n".format(
-                guild=guild_id, channel=raid[0], msg=raid[1], name=raid[2])
+                msg = "{prefix}[{name}](<https://discord.com/channels/{guild}/{channel}/{msg}>)\n".format(
+                prefix=prefix, guild=guild_id, channel=raid[0], msg=raid[1], name=raid[2])
             embed.add_field(name=f"<t:{timestamp}:F>", value=msg, inline=False)
         embed.set_footer(text=_("Last updated"))
         embed.timestamp = datetime.now()

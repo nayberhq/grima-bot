@@ -36,6 +36,26 @@ def mirror_keys(source):
     return list(dict.fromkeys(re.findall(r'(?<![\w-])mirrorkey:([A-Za-z0-9_-]{32})(?![\w-])', text)))
 
 
+def extract_origin_badge(message):
+    """Extract (kin_name, emoji_mention) from a relayed network embed message."""
+    for embed in getattr(message, 'embeds', None) or ():
+        author = getattr(embed, 'author', None)
+        if not author:
+            continue
+        kin_name = (getattr(author, 'name', None) or '').strip()
+        icon_url = (getattr(author, 'icon_url', None) or getattr(author, 'proxy_icon_url', None) or '').strip()
+        emoji_str = None
+        m = re.search(r'/emojis/(\d+)\.(png|webp|gif|jpg)', icon_url, re.I)
+        if m:
+            emoji_id, ext = m.group(1), m.group(2).lower()
+            safe_name = re.sub(r'[^A-Za-z0-9_]', '', kin_name) or 'kin'
+            prefix = 'a' if ext == 'gif' else ''
+            emoji_str = f'<{prefix}:{safe_name}:{emoji_id}>'
+        if kin_name or emoji_str:
+            return kin_name or None, emoji_str
+    return None, None
+
+
 class InvalidShare(ValueError):
     """A permanently invalid discovery code."""
 
@@ -87,6 +107,7 @@ class EventStore:
         if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='SourceInvites'").fetchone():
             conn.execute('CREATE TABLE SourceInvites(guild_id INTEGER PRIMARY KEY,url TEXT NOT NULL)')
             conn.execute('UPDATE SharedEvents SET revision=revision+1')
+        conn.execute('CREATE TABLE IF NOT EXISTS GuildIdentity(guild_id INTEGER PRIMARY KEY,kin_name TEXT,emoji TEXT)')
         columns = {row[1] for row in conn.execute('PRAGMA table_info(EventCopies)')}
         if 'ended_rendered' not in columns:
             conn.execute('ALTER TABLE EventCopies ADD COLUMN ended_rendered INTEGER NOT NULL DEFAULT 0')
@@ -120,6 +141,26 @@ class EventStore:
 
     def settings(self, guild_id):
         return self.one('SELECT * FROM EventSettings WHERE guild_id=?', (guild_id,))
+
+    def set_guild_identity(self, guild_id, kin_name=None, emoji=None):
+        existing = self.one('SELECT * FROM GuildIdentity WHERE guild_id=?', (guild_id,))
+        new_name = kin_name if kin_name else (existing['kin_name'] if existing else None)
+        new_emoji = emoji if emoji else (existing['emoji'] if existing else None)
+        if new_name or new_emoji:
+            self.write('INSERT OR REPLACE INTO GuildIdentity VALUES (?,?,?)', (guild_id, new_name, new_emoji))
+
+    def guild_badge(self, guild_id, fallback_name=None):
+        ident = self.one('SELECT kin_name, emoji FROM GuildIdentity WHERE guild_id=?', (guild_id,))
+        if ident and ident.get('emoji'):
+            return ident['emoji']
+        settings_icon = self.one('SELECT icon FROM Settings WHERE guild_id=?', (guild_id,))
+        if settings_icon and settings_icon.get('icon'):
+            return settings_icon['icon']
+        if ident and ident.get('kin_name'):
+            return f"**[{ident['kin_name']}]**"
+        if fallback_name:
+            return f"**[{fallback_name}]**"
+        return None
 
     def configure(self, guild_id, forum_id, category_id, duration, lock_delay,
                   forum_mode='single', instance_forum_id=0,

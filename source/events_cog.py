@@ -14,7 +14,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from database import upsert
-from event_store import EventStore, forum_title, mirror_keys, InvalidShare
+from event_store import EventStore, forum_title, mirror_keys, extract_origin_badge, InvalidShare
 from time_cog import Time, time_zone_autocomplete
 
 log = logging.getLogger(__name__)
@@ -282,9 +282,14 @@ class EventsCog(commands.Cog):
                     log.exception('Event lifecycle failed for %s/%s; will retry', raid_id, copy['guild_id'])
             await self.refresh_locked(raid_id, now)
 
-    async def sync_event(self, guild_id, code):
+    async def sync_event(self, guild_id, code, origin_message=None):
         """One entry point for manual sync and watcher delivery. Idempotent per guild."""
         event = self.store.by_token(code.strip())
+        if event and origin_message is not None:
+            kin_name, emoji_str = extract_origin_badge(origin_message)
+            if kin_name or emoji_str:
+                self.store.set_guild_identity(event['guild_id'], kin_name=kin_name, emoji=emoji_str)
+                await self.raids.calendar_cog.update_calendar(event['guild_id'])
         settings = self.store.settings(guild_id)
         if event and self.store.one('SELECT 1 FROM EventBlocks WHERE raid_id=? AND guild_id=?', (event['raid_id'],guild_id)):
             raise InvalidShare('This server was disconnected by the organizer.')
@@ -339,7 +344,13 @@ class EventsCog(commands.Cog):
                             self.store.write('UPDATE EventWatches SET last_message_id=? WHERE guild_id=? AND source_channel_id=?',(message.id,watch['guild_id'],watch['source_channel_id']))
                             continue
                         # Parse both literal message text and embedded text/fields.
+                        kin_name, emoji_str = extract_origin_badge(message)
                         for code in mirror_keys(message):
+                            if kin_name or emoji_str:
+                                ev = self.store.by_token(code)
+                                if ev:
+                                    self.store.set_guild_identity(ev['guild_id'], kin_name=kin_name, emoji=emoji_str)
+                                    await self.raids.calendar_cog.update_calendar(ev['guild_id'])
                             try:
                                 await self.sync_event(watch['guild_id'], code)
                             except InvalidShare:
@@ -374,8 +385,14 @@ class EventsCog(commands.Cog):
             codes = mirror_keys(message)
             if not codes:
                 return
+            kin_name, emoji_str = extract_origin_badge(message)
             for watch in self.store.rows('SELECT * FROM EventWatches WHERE source_channel_id=?', (payload.channel_id,)):
                 for code in codes:
+                    if kin_name or emoji_str:
+                        ev = self.store.by_token(code)
+                        if ev:
+                            self.store.set_guild_identity(ev['guild_id'], kin_name=kin_name, emoji=emoji_str)
+                            await self.raids.calendar_cog.update_calendar(ev['guild_id'])
                     try:
                         await self.sync_event(watch['guild_id'], code)
                     except InvalidShare:

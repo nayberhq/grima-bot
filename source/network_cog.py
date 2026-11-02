@@ -5,7 +5,7 @@ import time
 import discord
 from discord import app_commands
 from discord.ext import commands
-from event_store import InvalidShare, mirror_keys
+from event_store import InvalidShare, mirror_keys, extract_origin_badge
 
 
 class NetworkCog(commands.Cog):
@@ -71,7 +71,12 @@ class NetworkCog(commands.Cog):
                         active=[self.store.by_token(code) for code in mirror_keys(message)]
                         if any(e and not self.store.ended(e,time.time()) for e in active):continue
                     else:
+                        kin_name, emoji_str = extract_origin_badge(message)
                         for code in mirror_keys(message):
+                            if kin_name or emoji_str:
+                                ev = self.store.by_token(code)
+                                if ev:
+                                    self.store.set_guild_identity(ev['guild_id'], kin_name=kin_name, emoji=emoji_str)
                             try:await self.events.sync_event(pending['guild_id'],code)
                             except InvalidShare:pass
                             except (ValueError,discord.HTTPException) as exc:
