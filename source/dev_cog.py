@@ -138,19 +138,14 @@ class DevCog(commands.Cog):
     async def _sync_global_commands(self):
         return await self.bot.tree.sync()
 
-    @commands.Cog.listener()
-    async def on_ready(self):
-        if getattr(self.bot, '_slash_commands_synced', False):
-            return
-        self.bot._slash_commands_synced = True
-        try:
-            for guild in self.bot.guilds:
-                guild_cmds = await self._sync_guild_commands(guild)
-                logger.info('Startup slash sync: %s commands in guild %s (%s).', len(guild_cmds), guild.name, guild.id)
-            global_cmds = await self._sync_global_commands()
-            logger.info('Startup slash sync: %s global commands.', len(global_cmds))
-        except discord.HTTPException:
-            logger.exception('Startup slash sync failed; run !sync as bot owner.')
+    async def push_slash_commands(self):
+        """Copy the global command tree to each guild (instant) and refresh globals."""
+        for guild in self.bot.guilds:
+            guild_cmds = await self._sync_guild_commands(guild)
+            logger.info('Startup slash sync: %s commands in guild %s (%s).', len(guild_cmds), guild.name, guild.id)
+        global_cmds = await self._sync_global_commands()
+        logger.info('Startup slash sync: %s global commands.', len(global_cmds))
+        return global_cmds
 
     @commands.command(hidden=True)
     @commands.is_owner()

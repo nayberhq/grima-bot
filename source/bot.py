@@ -157,6 +157,15 @@ class Bot(commands.Bot):
         except commands.ExtensionAlreadyLoaded:
             pass
 
+        if not getattr(self, '_slash_commands_synced', False):
+            self._slash_commands_synced = True
+            dev = self.get_cog('DevCog')
+            if dev:
+                try:
+                    await dev.push_slash_commands()
+                except discord.HTTPException:
+                    self.logger.exception('Startup slash sync failed; run !sync as bot owner.')
+
         if not hasattr(self,'ready_monitor') or self.ready_monitor.done():
             self.ready_monitor=asyncio.create_task(self.monitor_readiness())
 
