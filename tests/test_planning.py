@@ -243,7 +243,8 @@ class PlannerExportLinkTests(unittest.IsolatedAsyncioTestCase):
         await PlanningCog.export_command.callback(cog, interaction)
         cog.open_planner.assert_awaited_once_with(interaction)
 
-    async def test_raid_view_has_direct_planner_link_and_inbox_modal(self):
+    async def test_raid_view_has_colored_planner_button_and_inbox_modal(self):
+        import discord
         import sqlite3
         from event_store import EventStore
         conn = sqlite3.connect(':memory:')
@@ -266,11 +267,15 @@ class PlannerExportLinkTests(unittest.IsolatedAsyncioTestCase):
         )
         from raid_cog import RaidView
         view = RaidView(raid_cog, raid_id=100)
-        planner_btn = next(c for c in view.children if getattr(c, 'url', None))
+        planner_btn = next(c for c in view.children if c.custom_id == 'raid_view:vanguard')
         self.assertEqual(str(planner_btn.emoji), '\U0001F4CB')
         self.assertIsNone(planner_btn.label)
-        self.assertEqual(planner_btn.row, 4)
-        self.assertIn('#grima=', planner_btn.url)
+        self.assertEqual(planner_btn.row, 1)
+        self.assertEqual(planner_btn.style, discord.ButtonStyle.primary)
+        planning.open_planner = AsyncMock()
+        planner_i = NS()
+        await planner_btn.callback(planner_i)
+        planning.open_planner.assert_awaited_once_with(planner_i)
 
         inbox_btn = next(c for c in view.children if getattr(c, 'custom_id', None) == 'raid_view:import')
         self.assertEqual(str(inbox_btn.emoji), '\U0001F4E5')

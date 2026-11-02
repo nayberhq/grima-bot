@@ -236,7 +236,14 @@ The leader row is Settings, Raid Import, Refresh. Each requires the configured
 raid-leader role in the event’s source server, including on mirrored posts.
 Organizer/admin status alone does not grant these controls; settings and import
 modals recheck the role when submitted. The signup row is ✅, ❌, Plan; opening
-Vanguard is available to participants. Class buttons remain between these rows.
+Vanguard is available to participants. The two utility rows are consecutive, followed by three class rows.
+Plan, Raid Import and Refresh use blue buttons. Plan replies with the planner
+link because Discord direct-link buttons cannot have a colored background.
+Successful signup (including the class/spec picker) follows the clicked event
+thread; withdrawal unfollows that thread. Notification preferences remain under
+the member’s control. Grima needs Send Messages in Threads to add members and
+Manage Threads (or thread ownership) to remove them. Membership failures preserve
+the signup change and show an ephemeral warning.
 The roster-edit button is removed; use Vanguard and Raid Import to edit plans.
 
 Each planned run is delivered as one embed card, containing all fellowship

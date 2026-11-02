@@ -183,11 +183,15 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await self.raids.has_raid_leader_role(member, self.guilds[1], 100))
 
     async def test_button_rows_order_and_denied_leader_callbacks(self):
-        self.raids.class_emojis = [discord.PartialEmoji(name='Warden',id=123456789012345678)]
+        self.raids.class_emojis = [discord.PartialEmoji(name=f'Class{n}',id=123456789012345678+n) for n in range(12)]
         view = RaidView(self.raids, planner_url='https://nayberhq.github.io/vanguard-raid-planner/')
         self.assertEqual([c.custom_id for c in view.children if c.row==0], ['raid_view:settings','raid_view:import','raid_view:refresh'])
-        self.assertEqual([c.custom_id for c in view.children if c.row==4], ['raid_view:check','raid_view:cancel',None])
+        self.assertEqual([c.custom_id for c in view.children if c.row==1], ['raid_view:check','raid_view:cancel','raid_view:vanguard'])
         self.assertNotIn('raid_view:select', [c.custom_id for c in view.children])
+        self.assertEqual([len([c for c in view.children if c.row==row]) for row in range(5)], [3,3,4,4,4])
+        for cid in ('raid_view:vanguard','raid_view:import','raid_view:refresh'):
+            self.assertEqual(next(c for c in view.children if c.custom_id==cid).style, discord.ButtonStyle.primary)
+
         self.raids.has_raid_leader_role = AsyncMock(return_value=False)
         i=NS(user=NS(id=9),guild=self.guilds[1],message=NS(id=100),response=NS(send_message=AsyncMock(),send_modal=AsyncMock(),defer=AsyncMock()))
         for cid in ('raid_view:settings','raid_view:import','raid_view:refresh'):
@@ -212,12 +216,15 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         interaction = NS(message=NS(id=200), user=user,
             guild=NS(id=2, roles=[role]), channel=self.channels[200],
             response=NS(send_message=AsyncMock(), defer=AsyncMock()))
+        interaction.channel = Mock(spec=discord.Thread, id=200, add_user=AsyncMock(), remove_user=AsyncMock())
         await view.sign_up_class(interaction, 'Warden')
+        interaction.channel.add_user.assert_awaited_once_with(user)
         rows = self.conn.execute('SELECT raid_id,player_id,Warden FROM Players').fetchall()
         self.assertEqual(rows, [(100, 99, 1)])
         for thread_id in (100, 200):
             self.channels[thread_id].get_partial_message.return_value.edit.assert_awaited()
         await view.sign_up_cancel(interaction)
+        interaction.channel.remove_user.assert_awaited_once_with(user)
         self.assertEqual(self.conn.execute('SELECT count(*) FROM Players').fetchone()[0], 0)
 
     async def test_partner_admin_cannot_edit_source_event(self):
@@ -414,7 +421,9 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         from signup_picker import SignupPicker
         picker=SignupPicker(self.raids,100,99,'Warden');picker.spec=2
         i=NS(user=NS(id=99,display_name='Warden',roles=[]),guild=NS(id=2),channel=self.thread,response=NS(edit_message=AsyncMock(),send_message=AsyncMock()))
+        i.channel = Mock(spec=discord.Thread, id=100, add_user=AsyncMock())
         await picker.submit.callback(i)
+        i.channel.add_user.assert_awaited_once_with(i.user)
         self.assertEqual(self.cog.store.one('SELECT raid_id,player_id,Warden FROM Players'),dict(raid_id=100,player_id=99,Warden=1))
         saved_spec = self.conn.execute('SELECT Warden FROM Specs WHERE player_id=99').fetchone()[0]
         for tier_idx in range(5):
@@ -438,7 +447,9 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
             channel=self.channels[200],
             response=NS(send_message=AsyncMock(), defer=AsyncMock()),
         )
+        interaction.channel = Mock(spec=discord.Thread, id=200, add_user=AsyncMock())
         await view.sign_up_all(interaction)
+        interaction.channel.add_user.assert_awaited_once_with(user)
         # Should NOT prompt with SignupPicker; should immediately sign up on canonical raid 100
         self.assertIsNone(interaction.response.send_message.call_args.kwargs.get('view'))
         self.assertEqual(

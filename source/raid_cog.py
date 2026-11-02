@@ -19,6 +19,7 @@ from database import create_table, count, delete, read_config_key, select, selec
 from time_cog import Time
 from utils import get_match
 from event_store import EventStore
+from thread_follow import follow_signup
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -723,7 +724,7 @@ class RaidView(discord.ui.View):
         self.conn = raid_cog.conn
         self._init_planner_buttons(raid_id=raid_id, planner_url=planner_url)
         for index, emoji in enumerate(raid_cog.class_emojis):
-            row = 1 + index//4
+            row = 2 + index//4
             self.add_item(EmojiButton(emoji, row))
         order = {'raid_view:settings':0, 'raid_view:import':1, 'raid_view:refresh':2,
                  'raid_view:check':0, 'raid_view:cancel':1, 'raid_view:vanguard':2}
@@ -742,29 +743,22 @@ class RaidView(discord.ui.View):
         modal = ConfigureModal(self.raid_cog, self.raid_cog.resolve_raid_id(interaction.message.id))
         await interaction.response.send_modal(modal)
 
-    @discord.ui.button(emoji="\u274C", style=discord.ButtonStyle.red, custom_id='raid_view:cancel', row=4)
+    @discord.ui.button(emoji="\u274C", style=discord.ButtonStyle.red, custom_id='raid_view:cancel', row=1)
     async def red_cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.sign_up_cancel(interaction)
 
-    @discord.ui.button(emoji="\u2705", style=discord.ButtonStyle.green, custom_id='raid_view:check', row=4)
+    @discord.ui.button(emoji="\u2705", style=discord.ButtonStyle.green, custom_id='raid_view:check', row=1)
     async def green_check(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.sign_up_all(interaction)
 
     def _init_planner_buttons(self, raid_id=None, planner_url=None):
-        if planner_url is None and raid_id is not None and hasattr(self.raid_cog, 'bot') and self.raid_cog.bot:
-            planning = self.raid_cog.bot.get_cog('PlanningCog')
-            if planning and hasattr(planning, 'raid_planner_url'):
-                planner_url = planning.raid_planner_url(raid_id)
-        if planner_url:
-            self.add_item(discord.ui.Button(emoji="\U0001F4CB", url=planner_url, row=4))
-        else:
-            btn = discord.ui.Button(emoji="\U0001F4CB", style=discord.ButtonStyle.secondary, custom_id='raid_view:vanguard', row=4)
-            btn.callback = self.vanguard
-            self.add_item(btn)
-        inbox_btn = discord.ui.Button(emoji="\U0001F4E5", style=discord.ButtonStyle.secondary, custom_id='raid_view:import', row=0)
+        btn = discord.ui.Button(emoji="\U0001F4CB", style=discord.ButtonStyle.primary, custom_id='raid_view:vanguard', row=1)
+        btn.callback = self.vanguard
+        self.add_item(btn)
+        inbox_btn = discord.ui.Button(emoji="\U0001F4E5", style=discord.ButtonStyle.primary, custom_id='raid_view:import', row=0)
         inbox_btn.callback = self.inbox_import
         self.add_item(inbox_btn)
-        refresh_btn = discord.ui.Button(emoji="\U0001F504", style=discord.ButtonStyle.secondary, custom_id='raid_view:refresh', row=0)
+        refresh_btn = discord.ui.Button(emoji="\U0001F504", style=discord.ButtonStyle.primary, custom_id='raid_view:refresh', row=0)
         refresh_btn.callback = self.refresh_post
         self.add_item(refresh_btn)
 
@@ -850,6 +844,7 @@ class RaidView(discord.ui.View):
                [byname, timestamp, False, sign_up], ['player_id', 'raid_id'], [i.user.id, raid_id])
         self.conn.commit()
         await i.response.send_message(msg, ephemeral=True, delete_after=sign_up_delay)
+        await follow_signup(i, True)
         await self.raid_cog.update_raid_post(raid_id, i.channel, delay=sign_up_delay)
 
     async def sign_up_all(self, i):
@@ -892,6 +887,7 @@ class RaidView(discord.ui.View):
             await i.response.send_message('Signed up with your saved specializations. Your selection is shared across linked servers.', ephemeral=True, delete_after=sign_up_delay)
         else:
             await i.response.defer()
+        await follow_signup(i, True)
         await self.raid_cog.update_raid_post(raid_id, i.channel, delay=0)
 
     async def sign_up_cancel(self, i):
@@ -928,6 +924,7 @@ class RaidView(discord.ui.View):
             upsert(self.conn, 'Players', ['byname', 'timestamp', 'unavailable'], [byname, timestamp, True],
                    ['player_id', 'raid_id'], [i.user.id, raid_id])
         self.conn.commit()
+        await follow_signup(i, False)
         await self.raid_cog.update_raid_post(raid_id, i.channel, delay=0)
 
 
