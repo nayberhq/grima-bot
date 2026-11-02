@@ -303,7 +303,7 @@ class RaidCog(commands.Cog):
                 author_id, raid_time)
             await channel.send(error_message, delete_after=30)
         events = self.bot.get_cog('EventsCog')
-        origin = await events.create_origin(guild_id, full_name, tier, timestamp) if events else None
+        origin = await events.create_origin(guild_id, full_name, tier, timestamp, size=raid_size) if events else None
         if origin:
             channel, post, settings = origin
             tag = None  # Shared events use user IDs; guild roles cannot span servers.

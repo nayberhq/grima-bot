@@ -89,6 +89,18 @@ class EventStore:
         columns = {row[1] for row in conn.execute('PRAGMA table_info(EventCopies)')}
         if 'ended_rendered' not in columns:
             conn.execute('ALTER TABLE EventCopies ADD COLUMN ended_rendered INTEGER NOT NULL DEFAULT 0')
+        es_cols = {row[1] for row in conn.execute('PRAGMA table_info(EventSettings)')}
+        for col, col_def in (
+            ('forum_mode', "TEXT NOT NULL DEFAULT 'single'"),
+            ('instance_forum_id', 'INTEGER NOT NULL DEFAULT 0'),
+            ('t1_forum_id', 'INTEGER NOT NULL DEFAULT 0'),
+            ('t2_forum_id', 'INTEGER NOT NULL DEFAULT 0'),
+            ('t3_forum_id', 'INTEGER NOT NULL DEFAULT 0'),
+            ('t4_forum_id', 'INTEGER NOT NULL DEFAULT 0'),
+            ('t5_forum_id', 'INTEGER NOT NULL DEFAULT 0'),
+        ):
+            if col not in es_cols:
+                conn.execute(f'ALTER TABLE EventSettings ADD COLUMN {col} {col_def}')
         conn.commit()
 
     def rows(self, sql, args=()):
@@ -108,11 +120,33 @@ class EventStore:
     def settings(self, guild_id):
         return self.one('SELECT * FROM EventSettings WHERE guild_id=?', (guild_id,))
 
-    def configure(self, guild_id, forum_id, category_id, duration, lock_delay):
+    def configure(self, guild_id, forum_id, category_id, duration, lock_delay,
+                  forum_mode='single', instance_forum_id=0,
+                  t1_forum_id=0, t2_forum_id=0, t3_forum_id=0, t4_forum_id=0, t5_forum_id=0):
         if not 900 <= duration <= 86400 or not 0 <= lock_delay <= 604800:
             raise ValueError('Duration must be 15–1440 minutes; lock delay 0–10080 minutes.')
-        self.write('INSERT OR REPLACE INTO EventSettings VALUES (?,?,?,?,?)',
-                   (guild_id, forum_id, category_id, duration, lock_delay))
+        self.write('''INSERT OR REPLACE INTO EventSettings
+            (guild_id, forum_id, voice_category_id, duration, lock_delay,
+             forum_mode, instance_forum_id, t1_forum_id, t2_forum_id, t3_forum_id, t4_forum_id, t5_forum_id)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
+            (guild_id, forum_id, category_id, duration, lock_delay,
+             forum_mode, instance_forum_id, t1_forum_id, t2_forum_id, t3_forum_id, t4_forum_id, t5_forum_id))
+
+    @staticmethod
+    def select_forum_id(settings, size=12, tier=None):
+        mode = settings.get('forum_mode') or 'single'
+        if mode == 'instance_raid':
+            if (size or 12) <= 6 and settings.get('instance_forum_id'):
+                return settings['instance_forum_id']
+            return settings['forum_id']
+        if mode == 'tiers':
+            digits = ''.join(filter(str.isdigit, str(tier or '')))
+            tier_num = int(digits) if digits else 0
+            col = f't{tier_num}_forum_id'
+            if 1 <= tier_num <= 5 and settings.get(col):
+                return settings[col]
+            return settings['forum_id']
+        return settings['forum_id']
 
     def event(self, raid_id):
         return self.one('''SELECT r.*, e.duration, e.lock_delay, e.cancelled,

@@ -539,6 +539,36 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.conn.execute('SELECT raid_leader, priority, server FROM Settings WHERE guild_id=1').fetchone(), (55, 66, 'America/New_York'))
         self.assertEqual(len(self.cog.store.rows('SELECT * FROM CreationPanels WHERE guild_id=1')), 8)
 
+    async def test_forum_mode_routing_single_instance_raid_and_tiers(self):
+        # 1. Single mode
+        self.cog.store.configure(1, 10, 11, 3600, 600, forum_mode='single')
+        s_single = self.cog.store.settings(1)
+        self.assertEqual(self.cog.store.select_forum_id(s_single, size=6, tier='T3'), 10)
+        self.assertEqual(self.cog.store.select_forum_id(s_single, size=12, tier='T5'), 10)
+
+        # 2. Instance + Raid mode (<=6 -> instance_forum_id, >=12 -> forum_id)
+        self.cog.store.configure(1, 10, 11, 3600, 600, forum_mode='instance_raid', instance_forum_id=15)
+        s_ir = self.cog.store.settings(1)
+        self.assertEqual(self.cog.store.select_forum_id(s_ir, size=3, tier='T3'), 15)
+        self.assertEqual(self.cog.store.select_forum_id(s_ir, size=6, tier='T5'), 15)
+        self.assertEqual(self.cog.store.select_forum_id(s_ir, size=12, tier='T1'), 10)
+        self.assertEqual(self.cog.store.select_forum_id(s_ir, size=24, tier=''), 10)
+
+        # 3. Tiers mode (T1..T5 -> t1_forum_id..t5_forum_id, untiered -> forum_id)
+        self.cog.store.configure(
+            1, 10, 11, 3600, 600,
+            forum_mode='tiers',
+            t1_forum_id=101, t2_forum_id=102, t3_forum_id=103, t4_forum_id=104, t5_forum_id=105,
+        )
+        s_tiers = self.cog.store.settings(1)
+        self.assertEqual(self.cog.store.select_forum_id(s_tiers, size=6, tier='T1'), 101)
+        self.assertEqual(self.cog.store.select_forum_id(s_tiers, size=12, tier='T2c'), 102)
+        self.assertEqual(self.cog.store.select_forum_id(s_tiers, size=12, tier='T3'), 103)
+        self.assertEqual(self.cog.store.select_forum_id(s_tiers, size=12, tier='T4'), 104)
+        self.assertEqual(self.cog.store.select_forum_id(s_tiers, size=12, tier='T5'), 105)
+        self.assertEqual(self.cog.store.select_forum_id(s_tiers, size=24, tier=''), 10)
+
+
 
 
 if __name__ == '__main__':

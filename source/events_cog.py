@@ -79,8 +79,8 @@ class EventsCog(commands.Cog):
             return None
         return event
 
-    async def validate_destinations(self, settings, require_voice=True):
-        forum = await self.channel(settings['forum_id'])
+    async def validate_destinations(self, settings, require_voice=True, forum_id=None):
+        forum = await self.channel(forum_id or settings['forum_id'])
         if require_voice and not settings['voice_category_id']:
             raise ValueError('Hosting events requires a voice category. Set it with /setup.')
         category = await self.channel(settings['voice_category_id']) if require_voice else None
@@ -98,11 +98,12 @@ class EventsCog(commands.Cog):
             raise ValueError('Disable required tags on the event forum before using it.')
         return forum
 
-    async def create_origin(self, guild_id, name, tier, timestamp):
+    async def create_origin(self, guild_id, name, tier, timestamp, size=12):
         settings = self.store.settings(guild_id)
         if not settings:
             return None
-        forum = await self.validate_destinations(settings)
+        target_forum_id = self.store.select_forum_id(settings, size=size, tier=tier)
+        forum = await self.validate_destinations(settings, forum_id=target_forum_id)
         event = dict(name=name, tier=tier, time=timestamp)
         result = await forum.create_thread(name=self.title(event, guild_id),
             content='Preparing event…', allowed_mentions=discord.AllowedMentions.none(),
@@ -272,7 +273,8 @@ class EventsCog(commands.Cog):
                 except discord.NotFound:
                     # Preserve the canonical raid and any surviving voice channel.
                     pass
-            forum = await self.validate_destinations(settings, require_voice=False)
+            target_forum_id = self.store.select_forum_id(settings, size=event.get('size') or 12, tier=event.get('tier'))
+            forum = await self.validate_destinations(settings, require_voice=False, forum_id=target_forum_id)
             result = await forum.create_thread(name=self.title(event, guild_id), content='Preparing shared raid…',
                 auto_archive_duration=10080, allowed_mentions=discord.AllowedMentions.none())
             if existing:
@@ -393,6 +395,13 @@ class EventsCog(commands.Cog):
         announcement_channel: discord.TextChannel,
         panel_channel: discord.TextChannel,
         voice_category: discord.CategoryChannel,
+        forum_mode: str = 'single',
+        instance_forum: discord.ForumChannel | None = None,
+        t1_forum: discord.ForumChannel | None = None,
+        t2_forum: discord.ForumChannel | None = None,
+        t3_forum: discord.ForumChannel | None = None,
+        t4_forum: discord.ForumChannel | None = None,
+        t5_forum: discord.ForumChannel | None = None,
         watch_channel: discord.TextChannel | discord.Thread | None = None,
         leader_role: discord.Role | None = None,
         kin_role: discord.Role | None = None,
@@ -411,11 +420,11 @@ class EventsCog(commands.Cog):
         warnings = []
         checks = []
 
-        # 1. Mandatory: Raid Forum
-        if not isinstance(raid_forum, discord.ForumChannel) or raid_forum.guild.id != guild.id:
-            errors.append('**Raid Forum:** Must be a Forum Channel in this server.')
-        else:
-            f_perms = raid_forum.permissions_for(me)
+        def check_forum(forum_obj, label):
+            if not isinstance(forum_obj, discord.ForumChannel) or forum_obj.guild.id != guild.id:
+                errors.append(f"**{label}:** Must be a Forum Channel in this server.")
+                return False
+            f_perms = forum_obj.permissions_for(me)
             missing = self._missing_perms(f_perms, [
                 ('view_channel', 'View Channel'),
                 ('send_messages', 'Send Messages'),
@@ -427,13 +436,57 @@ class EventsCog(commands.Cog):
             if getattr(f_perms, 'create_public_threads', True) is False:
                 missing.append('Create Public Threads')
             if missing:
-                errors.append(f"**Raid Forum ({raid_forum.mention}):** Bot is missing: {', '.join(missing)}.")
-            if raid_forum.flags.require_tag:
-                errors.append(f"**Raid Forum ({raid_forum.mention}):** Disable *'Require people to select tags when posting'* in channel settings.")
-            if not missing and not raid_forum.flags.require_tag:
-                checks.append(f"**Raid Forum:** {raid_forum.mention} (permissions & tag settings verified)")
+                errors.append(f"**{label} ({forum_obj.mention}):** Bot is missing: {', '.join(missing)}.")
+            if forum_obj.flags.require_tag:
+                errors.append(f"**{label} ({forum_obj.mention}):** Disable *'Require people to select tags when posting'* in channel settings.")
+            if not missing and not forum_obj.flags.require_tag:
+                checks.append(f"**{label}:** {forum_obj.mention} (permissions & tag settings verified)")
+                return True
+            return False
+
+        # 1. Mandatory: Raid Forum & Forum Layout Mode
+        mode_labels = {
+            'single': 'Single Channel (all raids & instances in one forum)',
+            'instance_raid': 'Instance + Raid (≤6-man in `instance_forum`, ≥12-man in `raid_forum`)',
+            'tiers': 'Tiers (1 forum per tier `t1_forum`–`t5_forum`, untiered in `raid_forum`)',
+        }
+        if forum_mode not in mode_labels:
+            errors.append('**Forum Mode:** Must be `single`, `instance_raid`, or `tiers`.')
+        else:
+            checks.append(f"**Forum Layout Mode:** {mode_labels[forum_mode]}")
+
+        primary_label = 'Raid Forum (12-man+)' if forum_mode == 'instance_raid' else ('Default / Untiered Raid Forum' if forum_mode == 'tiers' else 'Raid Forum')
+        if check_forum(raid_forum, primary_label):
+            f_perms = raid_forum.permissions_for(me)
             if voice_category and not getattr(f_perms, 'create_instant_invite', False) and not server_invite_url:
-                warnings.append(f"**Raid Forum ({raid_forum.mention}):** Bot lacks `Create Invite` and no `server_invite_url` was provided; mirrored servers will not see a voice invite link until one is granted.")
+                warnings.append(f"**{primary_label} ({raid_forum.mention}):** Bot lacks `Create Invite` and no `server_invite_url` was provided; mirrored servers will not see a voice invite link until one is granted.")
+
+        if forum_mode == 'instance_raid':
+            if instance_forum is None:
+                errors.append('**Instance Forum (`instance_forum`):** Required when `forum_mode` is set to **Instance + Raid** (used for 3-man and 6-man events).')
+            else:
+                check_forum(instance_forum, 'Instance Forum (≤6-man)')
+        elif instance_forum is not None:
+            check_forum(instance_forum, 'Instance Forum (≤6-man)')
+
+        tier_forums = [
+            ('T1 Forum', t1_forum),
+            ('T2 Forum', t2_forum),
+            ('T3 Forum', t3_forum),
+            ('T4 Forum', t4_forum),
+            ('T5 Forum', t5_forum),
+        ]
+        if forum_mode == 'tiers':
+            missing_tiers = [label for label, f_obj in tier_forums if f_obj is None]
+            if missing_tiers:
+                errors.append(f"**Tier Forums:** When `forum_mode` is set to **Tiers**, provide all tier forums (missing: {', '.join(missing_tiers)}). Note: `t1_forum` defaults to `raid_forum` if omitted.")
+            for label, f_obj in tier_forums:
+                if f_obj is not None:
+                    check_forum(f_obj, label)
+        else:
+            for label, f_obj in tier_forums:
+                if f_obj is not None:
+                    check_forum(f_obj, label)
 
         # 2. Mandatory: Announcement (Outgoing Discovery Push) Channel
         if not isinstance(announcement_channel, discord.TextChannel) or announcement_channel.guild.id != guild.id:
@@ -593,6 +646,13 @@ class EventsCog(commands.Cog):
             voice_category.id if voice_category else 0,
             duration_minutes * 60,
             lock_delay_minutes * 60,
+            forum_mode=forum_mode,
+            instance_forum_id=instance_forum.id if instance_forum else 0,
+            t1_forum_id=(t1_forum.id if t1_forum else (raid_forum.id if forum_mode == 'tiers' else 0)),
+            t2_forum_id=t2_forum.id if t2_forum else 0,
+            t3_forum_id=t3_forum.id if t3_forum else 0,
+            t4_forum_id=t4_forum.id if t4_forum else 0,
+            t5_forum_id=t5_forum.id if t5_forum else 0,
         )
         self.store.write('INSERT OR REPLACE INTO NetworkSettings VALUES (?,?)', (guild.id, announcement_channel.id))
 
@@ -636,16 +696,28 @@ class EventsCog(commands.Cog):
             embed.add_field(name='Notes', value='\n'.join(f"• {w}" for w in warnings)[:1024], inline=False)
         return True, embed
 
-    @app_commands.command(name='setup', description='Configure raid forum, announcement push/pull channels, cluster panels, roles, and run smoke tests.')
+    @app_commands.command(name='setup', description='Configure raid forums (single, instance+raid, or tiers), push/pull channels, panels, and roles.')
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_guild=True)
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.autocomplete(server_timezone=time_zone_autocomplete)
+    @app_commands.choices(forum_mode=[
+        app_commands.Choice(name='Single Channel (all raids & instances in one forum)', value='single'),
+        app_commands.Choice(name='Instance + Raid (≤6-man in instance_forum, ≥12-man in raid_forum)', value='instance_raid'),
+        app_commands.Choice(name='Tiers (1 forum per tier: t1_forum through t5_forum)', value='tiers'),
+    ])
     @app_commands.describe(
-        raid_forum='Mandatory: Forum channel where raid posts are created (disable Required Tags).',
+        raid_forum='Mandatory: Primary raid forum (all events in Single mode, 12m+ in Instance+Raid, T1/untiered in Tiers).',
         announcement_channel='Mandatory: Outgoing channel where mirrorkey discovery codes are posted.',
         panel_channel='Mandatory: Channel where sticky cluster raid creation panels are posted.',
         voice_category='Mandatory: Category where temporary raid voice channels are created at start time.',
+        forum_mode='Optional: Forum routing layout ("Single Channel", "Instance + Raid", or "Tiers"; default Single).',
+        instance_forum='For "Instance + Raid" mode: Forum channel for 6-man and 3-man instances.',
+        t1_forum='For "Tiers" mode: Forum channel for Tier 1 events (defaults to raid_forum if omitted).',
+        t2_forum='For "Tiers" mode: Forum channel for Tier 2 / T2c events.',
+        t3_forum='For "Tiers" mode: Forum channel for Tier 3 events.',
+        t4_forum='For "Tiers" mode: Forum channel for Tier 4 events.',
+        t5_forum='For "Tiers" mode: Forum channel for Tier 5 events.',
         watch_channel='Optional: Channel to watch for incoming mirrorkey codes (e.g. a channel following partner announcements).',
         leader_role='Optional: Role permitted to create events, edit raids, and manage rosters.',
         kin_role='Optional: Role used to distinguish kinship members on raid signups.',
@@ -665,6 +737,13 @@ class EventsCog(commands.Cog):
         announcement_channel: discord.TextChannel,
         panel_channel: discord.TextChannel,
         voice_category: discord.CategoryChannel,
+        forum_mode: app_commands.Choice[str] | None = None,
+        instance_forum: discord.ForumChannel | None = None,
+        t1_forum: discord.ForumChannel | None = None,
+        t2_forum: discord.ForumChannel | None = None,
+        t3_forum: discord.ForumChannel | None = None,
+        t4_forum: discord.ForumChannel | None = None,
+        t5_forum: discord.ForumChannel | None = None,
         watch_channel: discord.TextChannel | discord.Thread | None = None,
         leader_role: discord.Role | None = None,
         kin_role: discord.Role | None = None,
@@ -678,12 +757,21 @@ class EventsCog(commands.Cog):
         lock_delay_minutes: app_commands.Range[int, 0, 10080] = 60,
     ):
         await interaction.response.defer(ephemeral=True)
+        selected_mode = forum_mode.value if forum_mode else 'single'
+        effective_t1 = t1_forum or (raid_forum if selected_mode == 'tiers' else None)
         _, embed = await self.smoke_test_and_apply_setup(
             interaction=interaction,
             raid_forum=raid_forum,
             announcement_channel=announcement_channel,
             panel_channel=panel_channel,
             voice_category=voice_category,
+            forum_mode=selected_mode,
+            instance_forum=instance_forum,
+            t1_forum=effective_t1,
+            t2_forum=t2_forum,
+            t3_forum=t3_forum,
+            t4_forum=t4_forum,
+            t5_forum=t5_forum,
             watch_channel=watch_channel,
             leader_role=leader_role,
             kin_role=kin_role,
