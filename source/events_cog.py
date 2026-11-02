@@ -158,25 +158,26 @@ class EventsCog(commands.Cog):
                 thread = await self.channel(copy['thread_id'])
                 await thread.edit(name=self.title(event, copy['guild_id']), archived=False)
                 local_embed = embed.copy()
-                planning = self.bot.get_cog('PlanningCog')
-                template = planning.template(event, 'description') if planning else None
-                footer_row = self.store.one('SELECT body FROM EventTemplates WHERE guild_id=? AND kind=?', (event['guild_id'], 'footer'))
+                footer_row = self.store.one("SELECT body FROM EventTemplates WHERE guild_id=? AND kind='footer'", (event['guild_id'],))
+                if not footer_row:
+                    footer_row = self.store.one("SELECT body FROM EventTemplates WHERE guild_id=? AND kind='description'", (event['guild_id'],))
                 invite_row = self.store.one('SELECT url FROM SourceInvites WHERE guild_id=?', (event['guild_id'],))
                 invite_url = invite_row['url'] if invite_row else None
                 budget = min(4096, 6000 - len(local_embed) + (len(local_embed.description or '')))
-                if template and planning:
-                    try:
-                        local_embed.description = planning.render(event, template['body'], budget)
-                    except ValueError:
-                        log.warning('Description template exceeds embed budget for event %s', raid_id)
-                else:
-                    footer_body = footer_row['body'] if footer_row else None
-                    local_embed.description = self.format_event_description(
-                        event,
-                        footer_text=footer_body,
-                        invite_url=invite_url,
-                        code=code,
-                    )[:budget]
+                footer_body = footer_row['body'] if footer_row else None
+                if footer_body:
+                    planning = self.bot.get_cog('PlanningCog')
+                    if planning:
+                        try:
+                            footer_body = planning.render(event, footer_body, budget)
+                        except ValueError:
+                            pass
+                local_embed.description = self.format_event_description(
+                    event,
+                    footer_text=footer_body,
+                    invite_url=invite_url,
+                    code=code,
+                )[:budget]
                 owner = next((c for c in self.store.copies(raid_id) if c['guild_id']==event['guild_id']), None)
                 if owner and owner['voice_id']:
                     local_embed.add_field(name='Event voice channel', value=f"https://discord.com/channels/{event['guild_id']}/{owner['voice_id']}", inline=False)
