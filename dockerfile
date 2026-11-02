@@ -1,7 +1,7 @@
 FROM python:3.12-slim-bookworm
 ENV PYTHONUNBUFFERED=1 GRIMA_DATA_DIR=/data
 WORKDIR /app
-COPY requirements.txt LICENSE.md ./
+COPY requirements.txt LICENSE.md lotro-com-chain.pem ./
 RUN pip install --no-cache-dir -r requirements.txt
 COPY source /app/source
 COPY tests /app/tests
