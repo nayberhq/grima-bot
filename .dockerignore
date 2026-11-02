@@ -1,0 +1,10 @@
+.git
+**/__pycache__
+**/config.json
+**/.env*
+**/raid_db*
+**/*.log
+*.zip
+*.bundle
+*.patch
+.deploy-venv

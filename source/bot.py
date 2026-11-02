@@ -1,4 +1,6 @@
 import aiohttp
+import asyncio
+from pathlib import Path
 from datetime import datetime
 import discord
 from discord.ext import commands
@@ -24,7 +26,7 @@ class Bot(commands.Bot):
             version = re.search(regex, f.read(), re.MULTILINE).group(1)
         self.version = version
 
-        logfile = 'raid_bot.log'
+        logfile = os.path.join(os.environ.get('GRIMA_DATA_DIR','.'),'raid_bot.log')
         logging.basicConfig(filename=logfile, level=logging.WARNING, format='%(asctime)s %(levelname)s: %(message)s',
                             datefmt='%Y-%m-%d %H:%M:%S')
         logger = logging.getLogger(__name__)
@@ -154,6 +156,15 @@ class Bot(commands.Bot):
             await self.load_extension('custom_cog')
         except commands.ExtensionAlreadyLoaded:
             pass
+
+        if not hasattr(self,'ready_monitor') or self.ready_monitor.done():
+            self.ready_monitor=asyncio.create_task(self.monitor_readiness())
+
+    async def monitor_readiness(self):
+        while not self.is_closed():
+            if self.is_ready() and all(self.get_cog(c) for c in ('EventsCog','PlanningCog','NetworkCog')):
+                Path('/tmp/grima-ready').touch()
+            await asyncio.sleep(30)
 
     async def on_command_error(self, ctx, error):
         if isinstance(error, commands.NoPrivateMessage):

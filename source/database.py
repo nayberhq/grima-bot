@@ -41,7 +41,7 @@ def create_connection(db_file):
     """ create a database connection to a SQLite database """
     conn = None
     try:
-        conn = sqlite3.connect(db_file)
+        conn = sqlite3.connect(os.path.join(os.environ.get('GRIMA_DATA_DIR','.'), db_file))
     except sqlite3.Error as e:
         logger.exception(e)
     return conn
