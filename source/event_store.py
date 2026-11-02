@@ -36,8 +36,8 @@ def mirror_keys(source):
     return list(dict.fromkeys(re.findall(r'(?<![\w-])mirrorkey:([A-Za-z0-9_-]{32})(?![\w-])', text)))
 
 
-def extract_origin_badge(message):
-    """Extract (kin_name, emoji_mention) from a relayed network embed message."""
+def extract_origin_badge(message, bot=None):
+    """Extract (kin_name, emoji_mention, icon_url) from a relayed network embed message."""
     for embed in getattr(message, 'embeds', None) or ():
         author = getattr(embed, 'author', None)
         if not author:
@@ -47,13 +47,19 @@ def extract_origin_badge(message):
         emoji_str = None
         m = re.search(r'/emojis/(\d+)\.(png|webp|gif|jpg)', icon_url, re.I)
         if m:
-            emoji_id, ext = m.group(1), m.group(2).lower()
-            safe_name = re.sub(r'[^A-Za-z0-9_]', '', kin_name) or 'kin'
-            prefix = 'a' if ext == 'gif' else ''
-            emoji_str = f'<{prefix}:{safe_name}:{emoji_id}>'
+            emoji_id = int(m.group(1))
+            ext = m.group(2).lower()
+            found_emoji = bot.get_emoji(emoji_id) if (bot and hasattr(bot, 'get_emoji')) else None
+            if found_emoji:
+                emoji_str = str(found_emoji)
+            else:
+                slug = re.sub(r'[^a-z0-9]+', '_', kin_name.lower()).strip('_') or 'kin'
+                safe_name = f"net_{slug}_{str(emoji_id)[-6:]}"[:32]
+                prefix = 'a' if ext == 'gif' else ''
+                emoji_str = f'<{prefix}:{safe_name}:{emoji_id}>'
         if kin_name or emoji_str:
-            return kin_name or None, emoji_str
-    return None, None
+            return kin_name or None, emoji_str, icon_url or None
+    return None, None, None
 
 
 class InvalidShare(ValueError):

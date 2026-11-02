@@ -634,9 +634,9 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
         relayed_msg = NS(id=50, content='', embeds=[relayed_embed])
-        kin_name, emoji_str = extract_origin_badge(relayed_msg)
+        kin_name, emoji_str, icon_url = extract_origin_badge(relayed_msg)
         self.assertEqual(kin_name, 'One')
-        self.assertEqual(emoji_str, '<:One:1542002113201180672>')
+        self.assertEqual(emoji_str, '<:net_one_180672:1542002113201180672>')
 
         # Watcher scans relayed message and records GuildIdentity for source guild 1
         self.cog.store.write('INSERT INTO EventWatches VALUES (2, 900, 0)')
@@ -651,7 +651,7 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
 
         calendar = CalendarCog(self.bot)
         embed_with_icon = calendar.calendar_embed(2)
-        self.assertIn('<:One:1542002113201180672> [Folly]', embed_with_icon.fields[0].value)
+        self.assertIn('<:net_one_180672:1542002113201180672> [Folly]', embed_with_icon.fields[0].value)
 
         # Fallback to kin name when emoji is absent
         self.cog.store.write("UPDATE GuildIdentity SET emoji=NULL WHERE guild_id=1")

@@ -329,6 +329,31 @@ class EventsCog(commands.Cog):
         await self.raids.calendar_cog.update_calendar(guild_id)
         return result.thread.id, True
 
+    async def ensure_origin_emoji(self, guild_id, kin_name, emoji_str, icon_url):
+        if emoji_str:
+            m = re.search(r':(\d+)>$', emoji_str)
+            if m and hasattr(self.bot, 'get_emoji'):
+                found = self.bot.get_emoji(int(m.group(1)))
+                if found:
+                    emoji_str = str(found)
+                elif hasattr(self.bot, 'fetch_application_emojis'):
+                    slug = re.sub(r'[^a-z0-9]+', '_', (kin_name or 'kin').lower()).strip('_') or 'kin'
+                    prefix = f"net_{slug[:21].rstrip('_')}_"
+                    app_name = f"net_{slug[:21].rstrip('_')}_{m.group(1)[-6:]}"[:32]
+                    try:
+                        app_emojis = await self.bot.fetch_application_emojis()
+                        existing = next((e for e in app_emojis if e.name == app_name or e.name.startswith(prefix)), None)
+                        if not existing and icon_url and hasattr(self.bot, 'create_application_emoji') and hasattr(self.bot, 'http_session'):
+                            async with self.bot.http_session.get(icon_url) as resp:
+                                if resp.ok:
+                                    existing = await self.bot.create_application_emoji(name=app_name, image=await resp.read())
+                        if existing:
+                            emoji_str = str(existing)
+                    except Exception:
+                        pass
+        self.store.set_guild_identity(guild_id, kin_name=kin_name, emoji=emoji_str)
+        await self.raids.calendar_cog.update_calendar(guild_id)
+
     async def scan_watches(self):
         # A durable cursor also catches messages sent while the process was offline.
         async with self.watch_lock:
@@ -344,13 +369,12 @@ class EventsCog(commands.Cog):
                             self.store.write('UPDATE EventWatches SET last_message_id=? WHERE guild_id=? AND source_channel_id=?',(message.id,watch['guild_id'],watch['source_channel_id']))
                             continue
                         # Parse both literal message text and embedded text/fields.
-                        kin_name, emoji_str = extract_origin_badge(message)
+                        kin_name, emoji_str, icon_url = extract_origin_badge(message, self.bot)
                         for code in mirror_keys(message):
                             if kin_name or emoji_str:
                                 ev = self.store.by_token(code)
                                 if ev:
-                                    self.store.set_guild_identity(ev['guild_id'], kin_name=kin_name, emoji=emoji_str)
-                                    await self.raids.calendar_cog.update_calendar(ev['guild_id'])
+                                    await self.ensure_origin_emoji(ev['guild_id'], kin_name, emoji_str, icon_url)
                             try:
                                 await self.sync_event(watch['guild_id'], code)
                             except InvalidShare:
@@ -385,14 +409,13 @@ class EventsCog(commands.Cog):
             codes = mirror_keys(message)
             if not codes:
                 return
-            kin_name, emoji_str = extract_origin_badge(message)
+            kin_name, emoji_str, icon_url = extract_origin_badge(message, self.bot)
             for watch in self.store.rows('SELECT * FROM EventWatches WHERE source_channel_id=?', (payload.channel_id,)):
                 for code in codes:
                     if kin_name or emoji_str:
                         ev = self.store.by_token(code)
                         if ev:
-                            self.store.set_guild_identity(ev['guild_id'], kin_name=kin_name, emoji=emoji_str)
-                            await self.raids.calendar_cog.update_calendar(ev['guild_id'])
+                            await self.ensure_origin_emoji(ev['guild_id'], kin_name, emoji_str, icon_url)
                     try:
                         await self.sync_event(watch['guild_id'], code)
                     except InvalidShare:
