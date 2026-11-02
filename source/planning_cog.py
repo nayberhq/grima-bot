@@ -102,7 +102,6 @@ class PlanningCog(commands.Cog):
         raids = self.bot.get_cog('RaidCog')
         icons = getattr(raids, 'emojis_dict', {})
         roles = {'Tank':'🛡️', 'Healer':'💚', 'DPS':'⚔️', 'Buffer':'✨', 'Debuffer':'🌀'}
-        colors = {'Blue':'🟦', 'Red':'🟥', 'Yellow':'🟨'}
         cards = []
         for n, team in enumerate(json.loads(plan['body']), 1):
             members = team['members']
@@ -119,8 +118,11 @@ class PlanningCog(commands.Cog):
                     status = ' — ⚠ LEFT SIGNUPS' if player['id'] not in signed else ''
                     if player['id'] in signed and not any(v for k,v in signed[player['id']].items() if k.replace('-','').lower()==player['c'].replace('-','').lower()):
                         status = ' — ⚠ CLASS WITHDRAWN'
-                    class_icon = icons.get(player['c']+'_'+player['spec']) or icons.get(player['c']) or player['c']
-                    lines.append(f"{slot}. {roles.get(player['role'],'•')} {class_icon} {colors.get(player['spec'],'')} <@{player['id']}>{status}")
+                    class_name = player['c'].replace('-', '')
+                    class_icon = icons.get(class_name+'_'+player['spec']) or icons.get(player['c']+'_'+player['spec'])
+                    if not class_icon:
+                        class_icon = f"{icons.get(class_name) or icons.get(player['c']) or player['c']} ({player['spec']})"
+                    lines.append(f"{slot}. {roles.get(player['role'],'•')} {class_icon} <@{player['id']}>{status}")
                 embed.add_field(name=f"Fellowship {group}", value='\n'.join(lines) or 'No players assigned', inline=True)
                 start += size
             embed.set_footer(text=f"Revision {plan['revision']} · 🛡️ Tank  💚 Healer  ⚔️ DPS  ✨ Buffer  🌀 Debuffer")

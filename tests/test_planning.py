@@ -137,6 +137,7 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
                 self.assertLessEqual(len(field.value),1024)
                 self.assertIn('<:Guardian_Blue:',field.value)
                 self.assertIn('🛡️',field.value)
+                self.assertFalse(any(square in field.value for square in ('🟥','🟦','🟨')))
         await self.cog.sync(100)
         self.assertEqual(self.channels[1].send.await_count,2)
         self.assertTrue(all('embed' in call.kwargs for call in self.channels[1].send.call_args_list))
