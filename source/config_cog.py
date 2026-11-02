@@ -110,7 +110,7 @@ class ConfigCog(commands.Cog):
                 description=(
                     "Gríma configures your entire server and runs a **permission smoke test** in a single `/setup` command.\n\n"
                     "**Step A — Create the Mandatory Channels & Category**\n"
-                    "• **Raid Forum (`#raids`):** Create a **Forum Channel**. In its settings, turn **OFF** *\"Require people to select tags when posting\"*. Grant the bot `View Channel`, `Send Messages`, `Send Messages in Threads`, `Create Public Threads`, `Manage Threads`, `Embed Links`, `Read Message History`, and `Create Invite`.\n"
+                    "• **Raid Forum (`#raids`):** Create a **Forum Channel**. In its settings, turn **OFF** *\"Require people to select tags when posting\"*. Grant the bot `View Channel`, `Create Posts` (`Send Messages`), `Send Messages in Posts`, `Manage Posts`, `Embed Links`, `Read Post History`, and `Create Invite`.\n"
                     "• **Announcement Push Channel (`#raid-network-push`):** Create a Text or Announcement Channel and grant the bot `View Channel`, `Send Messages`, and `Read Message History`.\n"
                     "• **Event Panel Channel (`#create-raid`):** Create a Text Channel for raid leaders and grant the bot `View Channel`, `Send Messages`, `Embed Links`, and `Read Message History`.\n"
                     "• **Voice Category (`Raid Voice`):** Create a Category and grant the bot `View Channel` + `Manage Channels` so temporary raid voice channels are created at start time.\n\n"

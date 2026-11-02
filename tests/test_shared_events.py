@@ -492,7 +492,7 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
             voice_category=voice_cat,
         )
         self.assertFalse(ok)
-        self.assertIn('Send Messages in Threads', fail_embed.description)
+        self.assertIn('Send Messages in Posts', fail_embed.description)
         self.assertIn('Require people to select tags', fail_embed.description)
         self.assertIn('Send Messages', fail_embed.description)
         self.assertIn('Manage Channels', fail_embed.description)

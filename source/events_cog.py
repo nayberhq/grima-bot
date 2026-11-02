@@ -503,14 +503,12 @@ class EventsCog(commands.Cog):
             f_perms = forum_obj.permissions_for(me)
             missing = self._missing_perms(f_perms, [
                 ('view_channel', 'View Channel'),
-                ('send_messages', 'Send Messages'),
-                ('send_messages_in_threads', 'Send Messages in Threads'),
+                ('send_messages', 'Send Messages (Create Posts)'),
+                ('send_messages_in_threads', 'Send Messages in Posts'),
                 ('embed_links', 'Embed Links'),
-                ('read_message_history', 'Read Message History'),
-                ('manage_threads', 'Manage Threads'),
+                ('read_message_history', 'Read Post History'),
+                ('manage_threads', 'Manage Posts'),
             ])
-            if getattr(f_perms, 'create_public_threads', True) is False:
-                missing.append('Create Public Threads')
             if missing:
                 errors.append(f"**{label} ({forum_obj.mention}):** Bot is missing: {', '.join(missing)}.")
             if forum_obj.flags.require_tag:
