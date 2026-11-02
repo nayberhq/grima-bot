@@ -461,6 +461,15 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
             create_public_threads=True, create_instant_invite=True,
         )
         ann.permissions_for = lambda _: NS(view_channel=True, send_messages=True, read_message_history=True)
+        watch_ch = Mock(spec=discord.TextChannel)
+        watch_ch.id = 14
+        watch_ch.guild = guild
+        watch_ch.mention = '<#14>'
+        watch_ch.permissions_for = lambda _: NS(view_channel=True, read_message_history=True)
+        async def empty_history(**kwargs):
+            if False:
+                yield
+        watch_ch.history = empty_history
         leader_role = NS(id=55, mention='<@&55>')
         kin_role = NS(id=66, mention='<@&66>')
 
@@ -469,6 +478,7 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
             raid_forum=forum,
             announcement_channel=ann,
             panel_channel=panel_ch,
+            watch_channel=watch_ch,
             leader_role=leader_role,
             kin_role=kin_role,
             kin_icon='🛡️',
@@ -478,6 +488,7 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('Server Setup Complete', ok_embed.title)
         self.assertEqual(self.cog.store.settings(1)['forum_id'], 10)
         self.assertEqual(self.cog.store.one('SELECT push_id FROM NetworkSettings WHERE guild_id=1')['push_id'], 12)
+        self.assertEqual(self.cog.store.one('SELECT source_channel_id FROM EventWatches WHERE guild_id=1')['source_channel_id'], 14)
         self.assertEqual(self.conn.execute('SELECT raid_leader, priority, server FROM Settings WHERE guild_id=1').fetchone(), (55, 66, 'America/New_York'))
         self.assertEqual(len(self.cog.store.rows('SELECT * FROM CreationPanels WHERE guild_id=1')), 8)
 

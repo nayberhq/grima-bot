@@ -369,7 +369,7 @@ class EventsCog(commands.Cog):
         announcement_channel: discord.TextChannel,
         panel_channel: discord.TextChannel,
         voice_category: discord.CategoryChannel | None = None,
-        watch_channel_id: str | None = None,
+        watch_channel: discord.TextChannel | discord.Thread | None = None,
         leader_role: discord.Role | None = None,
         kin_role: discord.Role | None = None,
         kin_icon: str | None = None,
@@ -459,41 +459,20 @@ class EventsCog(commands.Cog):
 
         # 5. Optional: Watch (Incoming Discovery Pull) Channel
         watch_target = None
-        clear_watches = False
-        if watch_channel_id is not None and watch_channel_id.strip():
-            raw_watch = watch_channel_id.strip()
-            if raw_watch.lower() in ('off', 'none', 'disable', 'disabled'):
-                clear_watches = True
-                checks.append('**Event Watch (Pull) Channel:** Cleared all incoming watchers for this server')
+        if watch_channel is not None:
+            if not isinstance(watch_channel, (discord.TextChannel, discord.Thread)) or watch_channel.guild.id != guild.id:
+                errors.append('**Event Watch Channel:** Must be a Text/Announcement Channel or Thread in this server.')
             else:
-                m = re.fullmatch(r'(?:<#)?(\d+)>?', raw_watch)
-                if not m:
-                    errors.append('**Event Watch Channel (`watch_channel_id`):** Provide a numeric Channel ID, `#channel` mention, or `off`.')
+                w_perms = watch_channel.permissions_for(me)
+                missing = self._missing_perms(w_perms, [
+                    ('view_channel', 'View Channel'),
+                    ('read_message_history', 'Read Message History'),
+                ])
+                if missing:
+                    errors.append(f"**Event Watch Channel ({watch_channel.mention}):** Bot is missing: {', '.join(missing)}.")
                 else:
-                    source_id = int(m.group(1))
-                    try:
-                        w_channel = await self.channel(source_id)
-                        if not isinstance(w_channel, (discord.TextChannel, discord.Thread)):
-                            errors.append('**Event Watch Channel:** Must be a Text/Announcement Channel or Thread.')
-                        else:
-                            member = w_channel.guild.get_member(interaction.user.id) or await w_channel.guild.fetch_member(interaction.user.id)
-                            u_missing = self._missing_perms(w_channel.permissions_for(member), [
-                                ('view_channel', 'View Channel'),
-                                ('read_message_history', 'Read Message History'),
-                            ])
-                            b_missing = self._missing_perms(w_channel.permissions_for(w_channel.guild.me), [
-                                ('view_channel', 'View Channel'),
-                                ('read_message_history', 'Read Message History'),
-                            ])
-                            if u_missing:
-                                errors.append(f"**Event Watch Channel (<#{source_id}>):** You are missing: {', '.join(u_missing)}.")
-                            if b_missing:
-                                errors.append(f"**Event Watch Channel (<#{source_id}>):** Bot is missing: {', '.join(b_missing)}.")
-                            if not u_missing and not b_missing:
-                                watch_target = w_channel
-                                checks.append(f"**Event Watch (Pull) Channel:** <#{source_id}> (user & bot read permissions verified)")
-                    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                        errors.append(f"**Event Watch Channel (`{source_id}`):** Bot cannot access that channel. Verify the bot is in the source server and has `View Channel` + `Read Message History`.")
+                    watch_target = watch_channel
+                    checks.append(f"**Event Watch (Pull) Channel:** {watch_channel.mention} (permissions verified)")
 
         # 6. Optional: Raid Leader Role & Kinship Role / Icon
         if leader_role is not None:
@@ -594,13 +573,10 @@ class EventsCog(commands.Cog):
         )
         self.store.write('INSERT OR REPLACE INTO NetworkSettings VALUES (?,?)', (guild.id, announcement_channel.id))
 
-        if clear_watches:
-            self.store.write('DELETE FROM EventWatches WHERE guild_id=?', (guild.id,))
-            self.store.write('DELETE FROM WatchFailures WHERE guild_id=?', (guild.id,))
-            self.store.write('DELETE FROM PendingPublications WHERE guild_id=?', (guild.id,))
-        elif watch_target is not None:
+        if watch_target is not None:
             latest = [m async for m in watch_target.history(limit=1)]
             cursor = latest[0].id if latest else discord.utils.time_snowflake(discord.utils.utcnow())
+            self.store.write('DELETE FROM EventWatches WHERE guild_id=?', (guild.id,))
             self.store.write('INSERT OR REPLACE INTO EventWatches VALUES (?,?,?)', (guild.id, watch_target.id, cursor))
 
         if leader_role is not None:
@@ -647,7 +623,7 @@ class EventsCog(commands.Cog):
         announcement_channel='Mandatory: Outgoing channel where mirrorkey discovery codes are posted.',
         panel_channel='Mandatory: Channel where sticky cluster raid creation panels are posted.',
         voice_category='Optional: Category where temporary raid voice channels are created at start time.',
-        watch_channel_id='Optional: Channel ID (or #channel) to watch for incoming mirrorkey codes, or "off".',
+        watch_channel='Optional: Channel to watch for incoming mirrorkey codes (e.g. a channel following partner announcements).',
         leader_role='Optional: Role permitted to create events, edit raids, and manage rosters.',
         kin_role='Optional: Role used to distinguish kinship members on raid signups.',
         kin_icon='Optional: Emoji badge displayed next to kinship members on raid signups.',
@@ -666,7 +642,7 @@ class EventsCog(commands.Cog):
         announcement_channel: discord.TextChannel,
         panel_channel: discord.TextChannel,
         voice_category: discord.CategoryChannel | None = None,
-        watch_channel_id: str | None = None,
+        watch_channel: discord.TextChannel | discord.Thread | None = None,
         leader_role: discord.Role | None = None,
         kin_role: discord.Role | None = None,
         kin_icon: str | None = None,
@@ -685,7 +661,7 @@ class EventsCog(commands.Cog):
             announcement_channel=announcement_channel,
             panel_channel=panel_channel,
             voice_category=voice_category,
-            watch_channel_id=watch_channel_id,
+            watch_channel=watch_channel,
             leader_role=leader_role,
             kin_role=kin_role,
             kin_icon=kin_icon,
