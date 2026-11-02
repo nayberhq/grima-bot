@@ -377,8 +377,35 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         i=NS(user=NS(id=99,display_name='Warden',roles=[]),guild=NS(id=2),channel=self.thread,response=NS(edit_message=AsyncMock(),send_message=AsyncMock()))
         await picker.submit.callback(i)
         self.assertEqual(self.cog.store.one('SELECT raid_id,player_id,Warden FROM Players'),dict(raid_id=100,player_id=99,Warden=1))
-        self.assertEqual(self.conn.execute('SELECT Warden FROM Specs WHERE player_id=99').fetchone()[0],2)
+        saved_spec = self.conn.execute('SELECT Warden FROM Specs WHERE player_id=99').fetchone()[0]
+        for tier_idx in range(5):
+            self.assertEqual((saved_spec >> (tier_idx * 3)) & 0b111, 2)
         i.response.edit_message.assert_awaited_once()
+
+    async def test_saved_specs_auto_apply_on_signup_from_any_synced_server(self):
+        self.cog.store.write("UPDATE Raids SET tier='T3' WHERE raid_id=100")
+        self.cog.store.add_copy(100, 2, 200, 200, 22)
+        self.make_thread(200)
+        # Save Red+Blue (0b011 = 3) across all tiers for user 777 by Discord user ID
+        all_tiers_val = 3 * (1 + 8 + 64 + 512 + 4096)
+        self.conn.execute('INSERT INTO Specs (player_id, Warden) VALUES (?, ?)', (777, all_tiers_val))
+        self.conn.commit()
+        view = RaidView(self.raids)
+        user = NS(id=777, roles=[], display_name='CrossServerWarden')
+        interaction = NS(
+            message=NS(id=200),
+            user=user,
+            guild=NS(id=2, roles=[]),
+            channel=self.channels[200],
+            response=NS(send_message=AsyncMock(), defer=AsyncMock()),
+        )
+        await view.sign_up_all(interaction)
+        # Should NOT prompt with SignupPicker; should immediately sign up on canonical raid 100
+        self.assertIsNone(interaction.response.send_message.call_args.kwargs.get('view'))
+        self.assertEqual(
+            self.cog.store.one('SELECT raid_id,player_id,Warden FROM Players WHERE player_id=777'),
+            dict(raid_id=100, player_id=777, Warden=1),
+        )
 
     async def test_calendar_includes_mirror_and_omits_ended_events(self):
         self.cog.store.add_copy(100, 2, 200, 200, 22)

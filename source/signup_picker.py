@@ -37,8 +37,11 @@ class SignupPicker(discord.ui.View):
             await i.response.send_message('This event has ended or was removed.',ephemeral=True);return
         tier=int(''.join(filter(str.isdigit,event['tier'] or '')) or 1)
         prior=select_one(self.raids.conn,'Specs',[self.class_name],['player_id'],[i.user.id]) or 0
-        shift=(tier-1)*3
-        value=(prior & ~(7<<shift)) | self.spec<<shift
+        if prior:
+            shift=(tier-1)*3
+            value=(prior & ~(7<<shift)) | self.spec<<shift
+        else:
+            value=self.spec*(1+8+64+512+4096)
         upsert(self.raids.conn,'Specs',[self.class_name],[value],['player_id'],[i.user.id])
         upsert(self.raids.conn,'Players',['byname','timestamp','unavailable',self.class_name],[self.raids.process_name(i.guild.id,i.user),int(time.time()),False,True],['player_id','raid_id'],[i.user.id,self.raid_id])
         self.raids.conn.commit()

@@ -94,6 +94,25 @@ class RaidCog(commands.Cog):
         self.bot.add_view(CreepView(self))
 
     async def cog_load(self):
+        if hasattr(self.bot, 'fetch_application_emojis'):
+            try:
+                app_emojis = await self.bot.fetch_application_emojis()
+            except discord.HTTPException:
+                app_emojis = []
+            if app_emojis:
+                by_name = {e.name: e for e in app_emojis}
+                for e in self.class_emojis + self.creep_emojis + self.spec_emojis:
+                    by_name.setdefault(e.name, e)
+                specs = ["Red", "Blue", "Red_Blue", "Yellow", "Red_Yellow", "Blue_Yellow", "Triple"]
+                spec_names = ["_".join(element) for element in itertools.product(self.role_names, specs)]
+                self.class_emojis = [by_name[name] for name in self.role_names if name in by_name]
+                self.creep_emojis = [by_name[name] for name in (self.creep_names or ()) if name in by_name]
+                self.spec_emojis = [by_name[name] for name in spec_names if name in by_name]
+                self.emojis_dict = {e.name: str(e) for e in self.class_emojis + self.creep_emojis + self.spec_emojis}
+                self.bot.add_view(RaidView(self))
+                self.bot.add_view(CreepView(self))
+                self.conn.execute('UPDATE SharedEvents SET revision=revision+1')
+                self.conn.commit()
         self.background_task.start()
 
     async def cog_unload(self):
@@ -165,7 +184,15 @@ class RaidCog(commands.Cog):
             value &= ~(8**(tier-1) * 0b111)
             value |= 8**(tier-1) * spec.value
         upsert(self.conn, 'Specs', [classes.name], [value], ['player_id'], [interaction.user.id])
+        self.conn.commit()
         await interaction.response.send_message(_("Updated your {0} specialization.").format(classes.name), ephemeral=True)
+        events = self.bot.get_cog('EventsCog')
+        if events:
+            rows = self.conn.execute('SELECT raid_id FROM Players WHERE player_id=? AND unavailable=0', (interaction.user.id,)).fetchall()
+            for (rid,) in rows:
+                if self.event_store.event(rid):
+                    self.event_store.touch(rid)
+                    await events.refresh(rid)
 
     @app_commands.command(name=_("list_players"), description=_("List the signed up players for a raid in order of sign up time."))
     @app_commands.describe(raid_number=_("Specify the raid to list, e.g. 2 for the second upcoming raid. This defaults to 1 if omitted."), cut_off=_("Specify cut-off time in hours before raid time. This defaults to 24 hours if omitted."))
@@ -498,9 +525,8 @@ class RaidCog(commands.Cog):
         unavailable = not available
         result = select(self.conn, 'Players', columns, ['raid_id', 'unavailable'], [raid_id, unavailable])
         tier = select_one(self.conn, 'Raids', ['Tier'], ['raid_id'], [raid_id])
-        if tier:
-            # Parse tier to integer (e.g. T2c)
-            tier = int(''.join(filter(str.isdigit, tier)))
+        tier_digits = ''.join(filter(str.isdigit, tier or ''))
+        tier_num = int(tier_digits) if tier_digits else 1
         player_strings = []
         if result:
             number_of_players = len(result)
@@ -510,23 +536,23 @@ class RaidCog(commands.Cog):
                 i = 2
                 if available:
                     specs = select_one(self.conn, 'Specs', self.role_names, ['player_id'], [row[1]])
+                    if isinstance(specs, int):
+                        specs = (specs,)
                     player_string = row[i]
                     player_string += " "
                     for name in [*self.role_names, *self.creep_names]:
                         i = i + 1
                         if row[i]:
                             # No specs for creeps
-                            if tier and i < len(self.role_names) +3:
-                                #backwards compatibility before specs enforcement
-                                if specs:
-                                    spec = specs[i-3]
-                                    if spec:
-                                        # Get the relevant specialization for the tier
-                                        spec = (spec >> (tier-1)*3) & 0b111
-                                        emoji = name + "_" + self.specs[spec]
-                                        player_string += self.emojis_dict[emoji]
+                            if tier_digits and i < len(self.role_names) + 3 and specs and specs[i-3]:
+                                spec = (specs[i-3] >> (tier_num - 1) * 3) & 0b111
+                                if spec:
+                                    emoji = name + "_" + self.specs[spec]
+                                    player_string += self.emojis_dict.get(emoji, self.emojis_dict.get(name, f"[{name}]"))
+                                else:
+                                    player_string += self.emojis_dict.get(name, f"[{name}]")
                             else:
-                                player_string += self.emojis_dict[name]
+                                player_string += self.emojis_dict.get(name, f"[{name}]")
                 else:
                     player_string = "\u274C " + row[i]
                 player_string = player_string + "\n"
@@ -750,15 +776,15 @@ class RaidView(discord.ui.View):
 
         spec = select_one(self.conn, 'Specs', [class_name], ['player_id'], [i.user.id])
         tier = select_one(self.conn, 'Raids', ['Tier'], ['raid_id'], [raid_id])
-        if tier:
-            # Parse tier to integer (e.g. T2c)
-            tier = int(''.join(filter(str.isdigit, tier)))
-            if spec is None or not ((spec >> (tier-1)*3) & 0b111):
+        tier_digits = ''.join(filter(str.isdigit, tier or ''))
+        if tier_digits:
+            tier_num = int(tier_digits)
+            if spec is None or not ((spec >> (tier_num - 1) * 3) & 0b111):
                 if self.raid_cog.event_store.event(raid_id):
                     from signup_picker import SignupPicker
                     await i.response.send_message('Choose your specialization to finish signing up.',view=SignupPicker(self.raid_cog,raid_id,i.user.id,class_name),ephemeral=True)
                     return
-                err_msg = _("You have not yet set a {0} specialization for tier {1}. Please first use /specs.").format(class_name, tier)
+                err_msg = _("You have not yet set a {0} specialization for tier {1}. Please first use /specs.").format(class_name, tier_num)
                 await i.response.send_message(err_msg, ephemeral=True)
                 return
 
@@ -779,36 +805,42 @@ class RaidView(discord.ui.View):
         if not await self.raid_cog.check_signup(i):
             return
         raid_id = self.raid_cog.resolve_raid_id(i.message.id)
-
-        if self.raid_cog.event_store.event(raid_id):
-            from signup_picker import SignupPicker
-            await i.response.send_message('Choose a class and specialization.', view=SignupPicker(self.raid_cog,raid_id,i.user.id), ephemeral=True)
-            return
+        is_shared = bool(self.raid_cog.event_store.event(raid_id))
         specs = select_one(self.conn, 'Specs', self.raid_cog.role_names, ['player_id'], [i.user.id])
+        if isinstance(specs, int):
+            specs = (specs,)
         tier = select_one(self.conn, 'Raids', ['Tier'], ['raid_id'], [raid_id])
+        tier_digits = ''.join(filter(str.isdigit, tier or ''))
+        tier_num = int(tier_digits) if tier_digits else 1
 
         timestamp = int(time.time())
         columns = ['byname', 'timestamp', 'unavailable']
         byname = self.raid_cog.process_name(i.guild.id, i.user)
         values = [byname, timestamp, False]
 
-        if tier:
-            # Parse tier to integer (e.g. T2c)
-            tier = int(''.join(filter(str.isdigit, tier)))
-            if specs:
-                for index, name in enumerate(self.raid_cog.role_names):
-                    spec = specs[index]
-                    if spec and ((spec >> (tier-1)*3) & 0b111):
-                        columns.append(name)
-                        values.append(True)
-            if(len(columns) == 3):
+        if specs:
+            for index, name in enumerate(self.raid_cog.role_names):
+                spec = specs[index]
+                if spec and ((spec >> (tier_num - 1) * 3) & 0b111):
+                    columns.append(name)
+                    values.append(True)
+
+        if len(columns) == 3:
+            if is_shared:
+                from signup_picker import SignupPicker
+                await i.response.send_message('Choose a class and specialization.', view=SignupPicker(self.raid_cog,raid_id,i.user.id), ephemeral=True)
+                return
+            if tier_digits:
                 err_msg = _("You have not assigned yourself any class roles yet for this tier, please set a class specialization first with /specs.")
                 await i.response.send_message(err_msg, ephemeral=True)
                 return
 
-        await i.response.defer()
         upsert(self.conn, 'Players', columns, values, ['player_id', 'raid_id'], [i.user.id, raid_id])
         self.conn.commit()
+        if is_shared:
+            await i.response.send_message('Signed up with your saved specializations. Your selection is shared across linked servers.', ephemeral=True, delete_after=sign_up_delay)
+        else:
+            await i.response.defer()
         await self.raid_cog.update_raid_post(raid_id, i.channel, delay=0)
 
     async def sign_up_cancel(self, i):

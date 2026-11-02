@@ -312,6 +312,9 @@ class EventsCog(commands.Cog):
                         self.store.write('''UPDATE EventWatches SET last_message_id=?
                             WHERE guild_id=? AND source_channel_id=?''',
                             (message.id, watch['guild_id'], watch['source_channel_id']))
+                except discord.NotFound:
+                    self.store.write('DELETE FROM EventWatches WHERE guild_id=? AND source_channel_id=?',
+                                     (watch['guild_id'], watch['source_channel_id']))
                 except discord.HTTPException:
                     # Do not advance past a transient failure; already-created copies deduplicate.
                     log.exception('Watcher failed for server %s channel %s; will retry',
