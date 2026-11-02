@@ -138,23 +138,43 @@ def import_plan(data, event, players, specs=None, require_identity=False):
 PLANNER_URL = 'https://nayberhq.github.io/vanguard-raid-planner/'
 
 
-def planner_link(session):
+def planner_link(session, max_length=1650):
     """Snapshot carried in a URL fragment; never in the Pages HTTP request."""
     import base64
     import json
     import zlib
-    packed = zlib.compress(json.dumps(session, separators=(',', ':'), ensure_ascii=False).encode())
+    packed = zlib.compress(json.dumps(session, separators=(',', ':'), ensure_ascii=False).encode(), 9)
     token = base64.urlsafe_b64encode(packed).decode().rstrip('=')
     url = PLANNER_URL + '#grima=' + token
-    return url if len(url) <= 1650 else None
+    if len(url) <= max_length:
+        return url
+    if max_length < 1650 and isinstance(session, dict) and 'settings' in session:
+        compact = {k: v for k, v in session.items() if k not in ('recommendations', 'message')}
+        compact['settings'] = {k: v for k, v in session['settings'].items() if k not in ('lockPriority', 'recommendationRunLimit')}
+        packed = zlib.compress(json.dumps(compact, separators=(',', ':'), ensure_ascii=False).encode(), 9)
+        token = base64.urlsafe_b64encode(packed).decode().rstrip('=')
+        url = PLANNER_URL + '#grima=' + token
+        if len(url) <= max_length:
+            return url
+    return None
 
 
 def decode_plan_code(code):
     import base64, json, zlib
-    if not code.startswith('grimaplan:') or len(code)>4000:
-        raise ValueError('Paste a Grima plan code from Vanguard, or use /planner-import for larger plans.')
+    text = (code or '').strip()
+    if text.startswith('```'):
+        text = re.sub(r'^```(?:json)?\s*|\s*```$', '', text, flags=re.I | re.S).strip()
+    if text.startswith('{'):
+        if len(text) > 2_000_000:
+            raise ValueError('Plan is too large or invalid.')
+        try:
+            return json.loads(text)
+        except (ValueError, UnicodeError) as exc:
+            raise ValueError('Invalid session JSON; export a valid Session JSON or Grima plan code from Vanguard.') from exc
+    if not text.startswith('grimaplan:') or len(text)>4000:
+        raise ValueError('Paste a Vanguard Session JSON or Grima plan code, or use /planner-import for larger plans.')
     try:
-        token=code[len('grimaplan:'):].strip()
+        token=text[len('grimaplan:'):].strip()
         packed=base64.b64decode(token+'='*((-len(token))%4),altchars=b'-_',validate=True)
         decoder=zlib.decompressobj()
         raw=decoder.decompress(packed,2_000_001)

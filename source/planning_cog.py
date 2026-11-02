@@ -268,6 +268,33 @@ class PlanningCog(commands.Cog):
         self.store.write('UPDATE SharedEvents SET revision=revision+1 WHERE raid_id IN (SELECT raid_id FROM Raids WHERE guild_id=?)', (interaction.guild_id,))
         await interaction.response.send_message('Template saved. Description updates propagate on the next refresh.', ephemeral=True)
 
+    def raid_planner_url(self, raid_id):
+        event = self.store.event(raid_id)
+        if not event or event.get('creep'):
+            return PLANNER_URL
+        try:
+            data = export_session(event, self.players(raid_id), self.specs())
+            return planner_link(data, max_length=512)
+        except Exception:
+            return PLANNER_URL
+
+    async def open_import_modal(self, interaction, raid_id=None):
+        if raid_id is None:
+            event = await self.events.command_event(interaction)
+            if not event:
+                return
+            raid_id = event['raid_id']
+        else:
+            event = self.store.event(raid_id)
+            if not event:
+                await interaction.response.send_message('Use this button inside an event forum post.', ephemeral=True)
+                return
+            if not await self.events.can_manage(interaction, raid_id):
+                await interaction.response.send_message('Only the organizer or source raid leader can import.', ephemeral=True)
+                return
+        plan = self.plan(raid_id)
+        await interaction.response.send_modal(PlanCodeModal(self, raid_id, plan['revision'] if plan else 0))
+
     async def open_planner(self, interaction):
         event = await self.events.command_event(interaction)
         if not event:
@@ -279,21 +306,15 @@ class PlanningCog(commands.Cog):
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
         url = planner_link(data)
-        view = PlanReturnView(self,event['raid_id'])
-        if url and len(url) <= 512:
-            view.add_item(discord.ui.Button(label='Open in Vanguard', url=url))
-        elif url:
-            # Discord link buttons allow 512 characters; normal message links allow a larger snapshot.
-            pass
+        if url:
+            await interaction.response.send_message(f"[📋 Open Raid Planner]({url})", ephemeral=True, suppress_embeds=True)
         else:
-            view.add_item(discord.ui.Button(label='Open Vanguard', url=PLANNER_URL))
-        text = 'Current signup snapshot. Open the link to load signups automatically in Vanguard. Your previous plan can be restored from the Import tab. Keep this private link private.'
-        if url and len(url) > 512:
-            text += '\n[Open in Vanguard](' + url + ')'
-        if not url:
-            text = 'This signup list is too large for a link. Open Vanguard and import the attached session JSON.'
-        kwargs = {} if url else dict(file=discord.File(io.BytesIO(json.dumps(data).encode()), filename=f"grima-{event['raid_id']}.json"))
-        await interaction.response.send_message(text, view=view, ephemeral=True, suppress_embeds=True, **kwargs)
+            await interaction.response.send_message(
+                f"[📋 Open Raid Planner]({PLANNER_URL}) — import the attached session JSON.",
+                file=discord.File(io.BytesIO(json.dumps(data).encode()), filename=f"grima-{event['raid_id']}.json"),
+                ephemeral=True,
+                suppress_embeds=True,
+            )
 
     @app_commands.command(name='planner-export', description='Open current signups in Vanguard, with JSON fallback for larger rosters.')
     @app_commands.guild_only()
@@ -440,7 +461,12 @@ class PlanReturnView(discord.ui.View):
         await i.response.send_modal(PlanCodeModal(self.cog,self.raid_id,plan['revision'] if plan else 0))
 
 class PlanCodeModal(discord.ui.Modal,title='Import Vanguard plan'):
-    code=discord.ui.TextInput(label='Paste the Grima plan code',style=discord.TextStyle.paragraph,max_length=4000)
+    code=discord.ui.TextInput(
+        label='Paste exported Session JSON or plan code',
+        placeholder='Paste JSON or grimaplan:... exported from Raid Planner',
+        style=discord.TextStyle.paragraph,
+        max_length=4000,
+    )
     def __init__(self,cog,raid_id,revision):
         super().__init__();self.cog,self.raid_id,self.revision=cog,raid_id,revision
     async def on_submit(self,i):
@@ -448,7 +474,7 @@ class PlanCodeModal(discord.ui.Modal,title='Import Vanguard plan'):
             await i.response.send_message('You can no longer edit this event.',ephemeral=True);return
         try:
             event=self.cog.store.event(self.raid_id)
-            teams=import_plan(decode_plan_code(str(self.code)),event,self.cog.players(self.raid_id),self.cog.specs(),require_identity=True)
+            teams=import_plan(decode_plan_code(str(self.code)),event,self.cog.players(self.raid_id),self.cog.specs(),require_identity=False)
             revision=self.cog.save(event,teams,self.revision)
         except ValueError as exc:
             await i.response.send_message(str(exc),ephemeral=True);return

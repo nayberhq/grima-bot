@@ -185,7 +185,7 @@ class EventsCog(commands.Cog):
                     local_embed.add_field(name='Event voice channel', value='Created in the owning server when the event starts.', inline=False)
                 if copy['guild_id'] != event['guild_id']:
                     local_embed.add_field(name='Join the event server',value=invite_url if invite_url else 'Invite unavailable. Ask the organizer to set server_invite_url in /setup in the owning server.',inline=False)
-                view = None if ended else (CreepView(self.raids) if event['creep'] else RaidView(self.raids))
+                view = None if ended else (CreepView(self.raids) if event['creep'] else RaidView(self.raids, raid_id=raid_id))
                 await thread.get_partial_message(copy['message_id']).edit(
                     content=None, embed=local_embed, view=view, allowed_mentions=discord.AllowedMentions.none())
                 if copy['voice_id'] and copy['guild_id']==event['guild_id']:

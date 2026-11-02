@@ -321,7 +321,7 @@ class RaidCog(commands.Cog):
         if not creep:
             self.roster_init(raid_id, raid_size)
             embed = self.build_raid_message(raid_id, "\u200B", None)
-            await post.edit(embed=embed, view=RaidView(self))
+            await post.edit(embed=embed, view=RaidView(self, raid_id=raid_id))
         else:
             embed = self.build_raid_message(raid_id, "\u200B", None)
             await post.edit(embed=embed, view=CreepView(self))
@@ -696,15 +696,16 @@ class RaidCog(commands.Cog):
 
 
 class RaidView(discord.ui.View):
-    def __init__(self, raid_cog):
+    def __init__(self, raid_cog, raid_id=None, planner_url=None):
         super().__init__(timeout=None)
         self.raid_cog = raid_cog
         self.conn = raid_cog.conn
+        self._init_planner_buttons(raid_id=raid_id, planner_url=planner_url)
         for index, emoji in enumerate(raid_cog.class_emojis):
             row = 1 + index//4
             self.add_item(EmojiButton(emoji, row))
 
-    @discord.ui.button(emoji="\U0001F6E0\uFE0F", style=discord.ButtonStyle.blurple, custom_id='raid_view:settings')
+    @discord.ui.button(emoji="\U0001F6E0\uFE0F", style=discord.ButtonStyle.blurple, custom_id='raid_view:settings', row=0)
     async def settings(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self.raid_cog.has_raid_permission(interaction.user, interaction.guild, self.raid_cog.resolve_raid_id(interaction.message.id)):
             perm_msg = _("You do not have permission to change the raid settings.")
@@ -713,7 +714,7 @@ class RaidView(discord.ui.View):
         modal = ConfigureModal(self.raid_cog, self.raid_cog.resolve_raid_id(interaction.message.id))
         await interaction.response.send_modal(modal)
 
-    @discord.ui.button(emoji="\u26CF\uFE0F", style=discord.ButtonStyle.blurple, custom_id='raid_view:select')
+    @discord.ui.button(emoji="\u26CF\uFE0F", style=discord.ButtonStyle.blurple, custom_id='raid_view:select', row=0)
     async def select(self, interaction: discord.Interaction, button: discord.ui.Button):
         shared_id = self.raid_cog.resolve_raid_id(interaction.message.id)
         if self.raid_cog.event_store.event(shared_id):
@@ -739,16 +740,38 @@ class RaidView(discord.ui.View):
             upsert(self.conn, 'Raids', ['roster'], [True], ['raid_id'], [raid_id])
             self.conn.commit()
 
-    @discord.ui.button(emoji="\u274C", style=discord.ButtonStyle.red, custom_id='raid_view:cancel')
+    @discord.ui.button(emoji="\u274C", style=discord.ButtonStyle.red, custom_id='raid_view:cancel', row=0)
     async def red_cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.sign_up_cancel(interaction)
 
-    @discord.ui.button(emoji="\u2705", style=discord.ButtonStyle.green, custom_id='raid_view:check')
+    @discord.ui.button(emoji="\u2705", style=discord.ButtonStyle.green, custom_id='raid_view:check', row=0)
     async def green_check(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.sign_up_all(interaction)
 
-    @discord.ui.button(label='Vanguard', style=discord.ButtonStyle.secondary, custom_id='raid_view:vanguard', row=0)
-    async def vanguard(self, interaction: discord.Interaction, button: discord.ui.Button):
+    def _init_planner_buttons(self, raid_id=None, planner_url=None):
+        if planner_url is None and raid_id is not None and hasattr(self.raid_cog, 'bot') and self.raid_cog.bot:
+            planning = self.raid_cog.bot.get_cog('PlanningCog')
+            if planning and hasattr(planning, 'raid_planner_url'):
+                planner_url = planning.raid_planner_url(raid_id)
+        if planner_url:
+            self.add_item(discord.ui.Button(emoji="\U0001F4CB", url=planner_url, row=0))
+        else:
+            btn = discord.ui.Button(emoji="\U0001F4CB", style=discord.ButtonStyle.secondary, custom_id='raid_view:vanguard', row=0)
+            btn.callback = self.vanguard
+            self.add_item(btn)
+        inbox_btn = discord.ui.Button(emoji="\U0001F4E5", style=discord.ButtonStyle.secondary, custom_id='raid_view:import', row=4)
+        inbox_btn.callback = self.inbox_import
+        self.add_item(inbox_btn)
+
+    async def inbox_import(self, interaction: discord.Interaction):
+        planning = self.raid_cog.bot.get_cog('PlanningCog')
+        if not planning:
+            await interaction.response.send_message('Planner integration is unavailable.', ephemeral=True)
+            return
+        raid_id = self.raid_cog.resolve_raid_id(interaction.message.id)
+        await planning.open_import_modal(interaction, raid_id=raid_id)
+
+    async def vanguard(self, interaction: discord.Interaction):
         planning = self.raid_cog.bot.get_cog('PlanningCog')
         if not planning:
             await interaction.response.send_message('Planner integration is unavailable.', ephemeral=True)

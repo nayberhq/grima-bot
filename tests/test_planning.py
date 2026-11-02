@@ -29,7 +29,9 @@ class InterchangeTests(unittest.TestCase):
         encode=lambda raw:'grimaplan:'+base64.urlsafe_b64encode(zlib.compress(raw)).decode().rstrip('=')
         data=dict(format='vanguard-raid-planner-session',version=7,teams=[TEAM])
         self.assertEqual(decode_plan_code(encode(json.dumps(data).encode())),data)
-        for code in ('bad', 'grimaplan:bad',encode(b'x'*2000001)):
+        self.assertEqual(decode_plan_code(json.dumps(data)),data)
+        self.assertEqual(decode_plan_code(f"```json\n{json.dumps(data)}\n```"),data)
+        for code in ('bad', 'grimaplan:bad', '{bad json}', encode(b'x'*2000001)):
             with self.assertRaises(ValueError):decode_plan_code(code)
 
     def test_identity_and_offered_spec_validation(self):
@@ -213,3 +215,54 @@ class PlannerExportLinkTests(unittest.IsolatedAsyncioTestCase):
         interaction = object()
         await PlanningCog.export_command.callback(cog, interaction)
         cog.open_planner.assert_awaited_once_with(interaction)
+
+    async def test_raid_view_has_direct_planner_link_and_inbox_modal(self):
+        import sqlite3
+        from event_store import EventStore
+        conn = sqlite3.connect(':memory:')
+        self.addCleanup(conn.close)
+        store = EventStore(conn)
+        events = NS(store=store, can_manage=AsyncMock(return_value=True), command_event=AsyncMock())
+        bot = NS(conn=conn, get_cog=lambda name: {'EventsCog': events, 'PlanningCog': planning}.get(name))
+        planning = PlanningCog(bot)
+        planning.players = Mock(return_value=PLAYERS)
+        planning.specs = Mock(return_value={})
+        store.event = Mock(return_value={**EVENT, 'cancelled': 0, 'lock_delay': 600, 'time': 9999999999, 'creep': 0})
+        store.resolve = Mock(return_value=100)
+
+        raid_cog = NS(
+            bot=bot,
+            conn=conn,
+            class_emojis=[],
+            event_store=store,
+            resolve_raid_id=lambda mid: 100,
+        )
+        from raid_cog import RaidView
+        view = RaidView(raid_cog, raid_id=100)
+        planner_btn = next(c for c in view.children if getattr(c, 'url', None))
+        self.assertEqual(str(planner_btn.emoji), '\U0001F4CB')
+        self.assertIsNone(planner_btn.label)
+        self.assertIn('#grima=', planner_btn.url)
+
+        inbox_btn = next(c for c in view.children if getattr(c, 'custom_id', None) == 'raid_view:import')
+        self.assertEqual(str(inbox_btn.emoji), '\U0001F4E5')
+        self.assertIsNone(inbox_btn.label)
+
+        interaction = NS(
+            message=NS(id=100),
+            user=NS(id=9),
+            response=NS(send_modal=AsyncMock(), send_message=AsyncMock()),
+        )
+        await inbox_btn.callback(interaction)
+        interaction.response.send_modal.assert_awaited_once()
+        modal = interaction.response.send_modal.call_args.args[0]
+        modal.code._value = json.dumps(dict(format='vanguard-raid-planner-session', version=7, grimaEventId='100', teams=[TEAM]))
+        planning.sync = AsyncMock()
+        submit_i = NS(
+            user=NS(id=9),
+            response=NS(defer=AsyncMock(), send_message=AsyncMock()),
+            followup=NS(send=AsyncMock()),
+        )
+        await modal.on_submit(submit_i)
+        self.assertEqual(planning.plan(100)['revision'], 1)
+        planning.sync.assert_awaited_once_with(100)
