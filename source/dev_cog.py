@@ -135,35 +135,46 @@ class DevCog(commands.Cog):
         self.bot.tree.copy_global_to(guild=guild)
         return await self.bot.tree.sync(guild=guild)
 
-    async def _sync_global_commands(self):
-        return await self.bot.tree.sync()
+    async def _clear_discord_global_commands(self):
+        """Remove global slash commands so they do not duplicate guild copies."""
+        if self.bot.application_id is None:
+            return
+        await self.bot.http.bulk_upsert_global_commands(self.bot.application_id, payload=[])
 
     async def push_slash_commands(self):
-        """Copy the global command tree to each guild (instant) and refresh globals."""
+        """Publish slash commands as guild copies only (instant, no global duplicates)."""
         for guild in self.bot.guilds:
             guild_cmds = await self._sync_guild_commands(guild)
             logger.info('Startup slash sync: %s commands in guild %s (%s).', len(guild_cmds), guild.name, guild.id)
-        global_cmds = await self._sync_global_commands()
-        logger.info('Startup slash sync: %s global commands.', len(global_cmds))
-        return global_cmds
+        await self._clear_discord_global_commands()
+        logger.info('Startup slash sync: cleared global command registrations.')
+
+    @commands.Cog.listener()
+    async def on_guild_join(self, guild):
+        try:
+            guild_cmds = await self._sync_guild_commands(guild)
+            logger.info('Guild join slash sync: %s commands in %s (%s).', len(guild_cmds), guild.name, guild.id)
+        except discord.HTTPException:
+            logger.exception('Guild join slash sync failed for %s.', guild.id)
 
     @commands.command(hidden=True)
     @commands.is_owner()
     async def sync(self, ctx):
         try:
-            guild_cmds = None
-            if ctx.guild is not None:
-                guild_cmds = await self._sync_guild_commands(ctx.guild)
-            global_cmds = await self._sync_global_commands()
+            counts = []
+            for guild in self.bot.guilds:
+                guild_cmds = await self._sync_guild_commands(guild)
+                counts.append(f'**{guild.name}:** {len(guild_cmds)} command(s)')
+            await self._clear_discord_global_commands()
         except discord.HTTPException as exc:
             logger.exception('Slash command sync failed.')
             await ctx.send(f'Sync failed: {exc}')
             return
-        lines = [f'**Global:** {len(global_cmds)} command(s) (Discord may take up to ~1 hour to refresh everywhere).']
-        if ctx.guild is not None and guild_cmds is not None:
-            lines.append(f'**This server:** {len(guild_cmds)} command(s) — should appear immediately (try `/settings`).')
-        logger.info('Synced bot commands (%s global, guild=%s).', len(global_cmds), ctx.guild.id if ctx.guild else None)
+        lines = counts or ['No guilds to sync.']
+        lines.append('Removed global duplicates — each command should appear once per server.')
+        logger.info('Synced slash commands for %s guild(s).', len(counts))
         await ctx.send('Synced bot commands.\n' + '\n'.join(lines))
+
 async def setup(bot):
     await bot.add_cog(DevCog(bot))
     logger.info("Loaded Dev Cog.")
