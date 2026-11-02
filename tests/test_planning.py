@@ -118,7 +118,33 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.channels[1].send.assert_awaited_once()
         self.cog.players.return_value=[]
         await self.cog.sync(100)
-        self.assertIn('LEFT SIGNUPS', self.channels[1].get_partial_message.return_value.edit.call_args.kwargs['content'])
+        self.assertIn('LEFT SIGNUPS', str(self.channels[1].get_partial_message.return_value.edit.call_args.kwargs['embed'].to_dict()))
+
+    async def test_one_embed_per_run_with_all_groups_and_icons(self):
+        members=[dict(id=str(100+i),name='Player',c='Guardian',spec='Blue',role='Tank') for i in range(24)]
+        teams=[dict(label='Run one',members=members,time=0,fellowship_sizes=[6,6,6,6]),dict(label='Run two',members=members[:6],time=1,fellowship_sizes=[6])]
+        event={**self.event,'size':24}
+        self.cog.save(event,teams,0)
+        raids=NS(emojis_dict={'Guardian_Blue':'<:Guardian_Blue:123456789012345678>'})
+        original=self.cog.bot.get_cog
+        self.cog.bot.get_cog=lambda name:raids if name=='RaidCog' else original(name)
+        cards=self.cog.cards(event,self.cog.plan(100))
+        self.assertEqual(len(cards),2)
+        self.assertEqual([len(c.fields) for c in cards],[4,1])
+        for card in cards:
+            self.assertLessEqual(len(card),6000)
+            for field in card.fields:
+                self.assertLessEqual(len(field.value),1024)
+                self.assertIn('<:Guardian_Blue:',field.value)
+                self.assertIn('🛡️',field.value)
+        await self.cog.sync(100)
+        self.assertEqual(self.channels[1].send.await_count,2)
+        self.assertTrue(all('embed' in call.kwargs for call in self.channels[1].send.call_args_list))
+        # Moving from old per-group text messages removes obsolete extra posts.
+        self.store.write('INSERT INTO PlanMessages VALUES (1,5,555,?)',('old group',))
+        await self.cog.sync(100)
+        self.channels[1].get_partial_message.return_value.delete.assert_awaited()
+        self.assertIsNone(self.store.one('SELECT * FROM PlanMessages WHERE thread_id=1 AND page=5'))
 
     async def test_failed_delivery_retries(self):
         import discord
@@ -224,7 +250,7 @@ class PlannerExportLinkTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(conn.close)
         store = EventStore(conn)
         events = NS(store=store, can_manage=AsyncMock(return_value=True), command_event=AsyncMock())
-        bot = NS(conn=conn, get_cog=lambda name: {'EventsCog': events, 'PlanningCog': planning}.get(name))
+        bot = NS(conn=conn, get_cog=lambda name: {'EventsCog': events, 'PlanningCog': planning, 'RaidCog': raid_cog}.get(name))
         planning = PlanningCog(bot)
         planning.players = Mock(return_value=PLAYERS)
         planning.specs = Mock(return_value={})
@@ -249,19 +275,20 @@ class PlannerExportLinkTests(unittest.IsolatedAsyncioTestCase):
         inbox_btn = next(c for c in view.children if getattr(c, 'custom_id', None) == 'raid_view:import')
         self.assertEqual(str(inbox_btn.emoji), '\U0001F4E5')
         self.assertIsNone(inbox_btn.label)
-        self.assertEqual(inbox_btn.row, 4)
+        self.assertEqual(inbox_btn.row, 0)
 
         refresh_btn = next(c for c in view.children if getattr(c, 'custom_id', None) == 'raid_view:refresh')
         self.assertEqual(str(refresh_btn.emoji), '\U0001F504')
         self.assertIsNone(refresh_btn.label)
-        self.assertEqual(refresh_btn.row, 4)
+        self.assertEqual(refresh_btn.row, 0)
 
+        raid_cog.has_raid_leader_role = AsyncMock(return_value=True)
         raid_cog.check_signup = AsyncMock(return_value=True)
         raid_cog.update_raid_post = AsyncMock()
         refresh_i = NS(
             message=NS(id=100),
             channel=NS(id=100),
-            user=NS(id=9),
+            user=NS(id=9), guild=NS(id=1),
             response=NS(defer=AsyncMock()),
             followup=NS(send=AsyncMock()),
         )
@@ -270,7 +297,7 @@ class PlannerExportLinkTests(unittest.IsolatedAsyncioTestCase):
 
         interaction = NS(
             message=NS(id=100),
-            user=NS(id=9),
+            user=NS(id=9), guild=NS(id=1),
             response=NS(send_modal=AsyncMock(), send_message=AsyncMock()),
         )
         await inbox_btn.callback(interaction)
@@ -279,13 +306,20 @@ class PlannerExportLinkTests(unittest.IsolatedAsyncioTestCase):
         modal.code._value = json.dumps(dict(format='vanguard-raid-planner-session', version=7, grimaEventId='100', teams=[TEAM]))
         planning.sync = AsyncMock()
         submit_i = NS(
-            user=NS(id=9),
+            user=NS(id=9), guild=NS(id=1),
             response=NS(defer=AsyncMock(), send_message=AsyncMock()),
             followup=NS(send=AsyncMock()),
         )
         await modal.on_submit(submit_i)
         self.assertEqual(planning.plan(100)['revision'], 1)
         planning.sync.assert_awaited_once_with(100)
+        raid_cog.has_raid_leader_role.return_value = False
+        submit_i.response.send_message.reset_mock()
+        await modal.on_submit(submit_i)
+        submit_i.response.send_message.assert_awaited_once()
+        self.assertEqual(planning.plan(100)['revision'], 1)
+        planning.sync.assert_awaited_once_with(100)
+
 
 
 class KinMarkerExportTests(unittest.TestCase):

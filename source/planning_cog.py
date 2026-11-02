@@ -97,38 +97,45 @@ class PlanningCog(commands.Cog):
                          (event['raid_id'], expected+1, json.dumps(teams)))
         return expected+1
 
-    def pages(self, event, plan):
-        teams = json.loads(plan['body'])
+    def cards(self, event, plan):
         signed = {str(p['player_id']):p for p in self.players(event['raid_id'])}
-        pages = []
-        for n, team in enumerate(teams, 1):
+        raids = self.bot.get_cog('RaidCog')
+        icons = getattr(raids, 'emojis_dict', {})
+        roles = {'Tank':'🛡️', 'Healer':'💚', 'DPS':'⚔️', 'Buffer':'✨', 'Debuffer':'🌀'}
+        colors = {'Blue':'🟦', 'Red':'🟥', 'Yellow':'🟨'}
+        cards = []
+        for n, team in enumerate(json.loads(plan['body']), 1):
             members = team['members']
-            sizes=team.get('fellowship_sizes')
-            starts=[]
-            if sizes and sum(sizes)==len(members):
-                offset=0
-                for size in sizes:starts.append((offset,size));offset+=size
-            else:starts=[(offset,6) for offset in range(0,max(1,len(members)),6)]
-            for group_index,(start,group_size) in enumerate(starts,1):
-                lines = [f"**Planned roster · revision {plan['revision']} · team {n}**",
-                         discord.utils.escape_markdown(team['label']),
-                         f'Fellowship {group_index}' if sizes else f'Group {group_index} (list order)']
-                if team.get('time') is not None:
-                    lines.append(f"Planner time: {team['time']:g}h")
-                for slot, p in enumerate(members[start:start+group_size], start+1):
-                    status = '' if p['id'] in signed else ' — LEFT SIGNUPS'
-                    if p['id'] in signed and not any(v for k,v in signed[p['id']].items() if k.replace('-','').lower()==p['c'].replace('-','').lower()):
-                        status = ' — CLASS WITHDRAWN'
-                    lines.append(f"{slot}. <@{p['id']}> · {p['c']} / {p['spec']} · {p['role']}{status}")
-                pages.append('\n'.join(lines))
-        return pages
+            embed = discord.Embed(title=f"Run {n} · {team['label']}"[:256], color=0xA82D42,
+                                  description=f"**{len(members)}/{event['size']} players**" +
+                                  (f" · Planner time: {team['time']:g}h" if team.get('time') is not None else ''))
+            sizes = team.get('fellowship_sizes')
+            if not sizes or sum(sizes) != len(members):
+                sizes = [min(6,len(members)-i) for i in range(0,len(members),6)] or [0]
+            start = 0
+            for group, size in enumerate(sizes, 1):
+                lines = []
+                for slot, player in enumerate(members[start:start+size], start+1):
+                    status = ' — ⚠ LEFT SIGNUPS' if player['id'] not in signed else ''
+                    if player['id'] in signed and not any(v for k,v in signed[player['id']].items() if k.replace('-','').lower()==player['c'].replace('-','').lower()):
+                        status = ' — ⚠ CLASS WITHDRAWN'
+                    class_icon = icons.get(player['c']+'_'+player['spec']) or icons.get(player['c']) or player['c']
+                    lines.append(f"{slot}. {roles.get(player['role'],'•')} {class_icon} {colors.get(player['spec'],'')} <@{player['id']}>{status}")
+                embed.add_field(name=f"Fellowship {group}", value='\n'.join(lines) or 'No players assigned', inline=True)
+                start += size
+            embed.set_footer(text=f"Revision {plan['revision']} · 🛡️ Tank  💚 Healer  ⚔️ DPS  ✨ Buffer  🌀 Debuffer")
+            cards.append(embed)
+        return cards
+
+    def pages(self, event, plan):
+        return ['\n'.join([card.title, card.description]+[f"{f.name}\n{f.value}" for f in card.fields]) for card in self.cards(event, plan)]
 
     async def sync(self, raid_id):
         async with self.lock:
             event, plan = self.store.event(raid_id), self.plan(raid_id)
             if not event or not plan:
                 return
-            pages = self.pages(event, plan)
+            cards = self.cards(event, plan)
             for copy in self.store.copies(raid_id):
                 if copy['locked']:
                     continue
@@ -139,7 +146,8 @@ class PlanningCog(commands.Cog):
                     if thread.archived:
                         await thread.edit(archived=False)
                     old = {r['page']:r for r in self.store.rows('SELECT * FROM PlanMessages WHERE thread_id=?', (copy['thread_id'],))}
-                    for index, body in enumerate(pages):
+                    for index, card in enumerate(cards):
+                        body = json.dumps(card.to_dict(), sort_keys=True)
                         key=f"roster:{copy['thread_id']}:{index}:{hashlib.sha256(body.encode()).hexdigest()}"
                         row = old.pop(index, None)
                         if row and row['body'] == body:
@@ -152,12 +160,12 @@ class PlanningCog(commands.Cog):
                         message = None
                         if row:
                             try:
-                                await thread.get_partial_message(row['message_id']).edit(content=body, allowed_mentions=discord.AllowedMentions.none())
+                                await thread.get_partial_message(row['message_id']).edit(content=None, embed=card, allowed_mentions=discord.AllowedMentions.none())
                                 message = row['message_id']
                             except discord.NotFound:
                                 self.store.write('DELETE FROM SendIntents WHERE key=?',(key,))
                         if message is None:
-                            sent = await self.sender.send(thread,key,body)
+                            sent = await self.sender.send(thread,key,None,embed=card)
                             message = sent.id
                         self.store.write('INSERT OR REPLACE INTO PlanMessages VALUES (?,?,?,?)', (copy['thread_id'], index, message, body))
                     for index, row in old.items():
@@ -278,6 +286,13 @@ class PlanningCog(commands.Cog):
         except Exception:
             return PLANNER_URL
 
+    async def require_raid_leader(self, interaction, raid_id):
+        raids = self.bot.get_cog('RaidCog')
+        if raids and await raids.has_raid_leader_role(interaction.user, interaction.guild, raid_id):
+            return True
+        await interaction.response.send_message('Import requires the source server’s configured raid leader role.', ephemeral=True)
+        return False
+
     async def open_import_modal(self, interaction, raid_id=None):
         if raid_id is None:
             event = await self.events.command_event(interaction)
@@ -292,11 +307,13 @@ class PlanningCog(commands.Cog):
             if not await self.events.can_manage(interaction, raid_id):
                 await interaction.response.send_message('Only the organizer or source raid leader can import.', ephemeral=True)
                 return
+        if not await self.require_raid_leader(interaction, raid_id):
+            return
         plan = self.plan(raid_id)
         await interaction.response.send_modal(PlanCodeModal(self, raid_id, plan['revision'] if plan else 0))
 
     async def open_planner(self, interaction):
-        event = await self.events.command_event(interaction)
+        event = await self.events.command_event(interaction, manage=False)
         if not event:
             return
         try:
@@ -461,8 +478,8 @@ class PlanReturnView(discord.ui.View):
 
     @discord.ui.button(label='Import plan code',style=discord.ButtonStyle.primary)
     async def import_code(self,i,button):
-        if not await self.cog.events.can_manage(i,self.raid_id):
-            await i.response.send_message('Only the organizer or source raid leader can import.',ephemeral=True);return
+        if not await self.cog.require_raid_leader(i,self.raid_id):
+            return
         plan=self.cog.plan(self.raid_id)
         await i.response.send_modal(PlanCodeModal(self.cog,self.raid_id,plan['revision'] if plan else 0))
 
@@ -476,8 +493,8 @@ class PlanCodeModal(discord.ui.Modal,title='Import Vanguard plan'):
     def __init__(self,cog,raid_id,revision):
         super().__init__();self.cog,self.raid_id,self.revision=cog,raid_id,revision
     async def on_submit(self,i):
-        if not await self.cog.events.can_manage(i,self.raid_id):
-            await i.response.send_message('You can no longer edit this event.',ephemeral=True);return
+        if not await self.cog.require_raid_leader(i,self.raid_id):
+            return
         try:
             event=self.cog.store.event(self.raid_id)
             teams=import_plan(decode_plan_code(str(self.code)),event,self.cog.players(self.raid_id),self.cog.specs(),require_identity=False)

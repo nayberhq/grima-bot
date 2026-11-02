@@ -169,6 +169,40 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.cog.store.resolve(200), 100)
         self.assertEqual(len(self.cog.store.copies(100)), 2)
 
+    async def test_leader_controls_require_source_role_without_owner_or_admin_bypass(self):
+        self.cog.store.write('INSERT OR REPLACE INTO Settings(guild_id,raid_leader) VALUES (1,77)')
+        member = NS(id=9, roles=[], guild_permissions=NS(administrator=True))
+        self.guilds[1].get_member = Mock(return_value=member)
+        self.guilds[1].fetch_member = AsyncMock()
+        self.assertFalse(await self.raids.has_raid_leader_role(member, self.guilds[2], 100))
+        member.roles = [NS(id=88)]
+        self.assertFalse(await self.raids.has_raid_leader_role(member, self.guilds[2], 100))
+        member.roles = [NS(id=77)]
+        self.assertTrue(await self.raids.has_raid_leader_role(member, self.guilds[2], 100))
+        self.cog.store.write('UPDATE Settings SET raid_leader=NULL WHERE guild_id=1')
+        self.assertFalse(await self.raids.has_raid_leader_role(member, self.guilds[1], 100))
+
+    async def test_button_rows_order_and_denied_leader_callbacks(self):
+        self.raids.class_emojis = [discord.PartialEmoji(name='Warden',id=123456789012345678)]
+        view = RaidView(self.raids, planner_url='https://nayberhq.github.io/vanguard-raid-planner/')
+        self.assertEqual([c.custom_id for c in view.children if c.row==0], ['raid_view:settings','raid_view:import','raid_view:refresh'])
+        self.assertEqual([c.custom_id for c in view.children if c.row==4], ['raid_view:check','raid_view:cancel',None])
+        self.assertNotIn('raid_view:select', [c.custom_id for c in view.children])
+        self.raids.has_raid_leader_role = AsyncMock(return_value=False)
+        i=NS(user=NS(id=9),guild=self.guilds[1],message=NS(id=100),response=NS(send_message=AsyncMock(),send_modal=AsyncMock(),defer=AsyncMock()))
+        for cid in ('raid_view:settings','raid_view:import','raid_view:refresh'):
+            i.response.send_message.reset_mock()
+            await next(c for c in view.children if c.custom_id==cid).callback(i)
+            i.response.send_message.assert_awaited_once()
+        i.response.send_modal.assert_not_awaited()
+        i.response.defer.assert_not_awaited()
+        from raid_cog import ConfigureModal
+        modal=NS(raid_cog=self.raids,raid_id=100)
+        i.response.send_message.reset_mock()
+        await ConfigureModal.on_submit(modal,i)
+        i.response.send_message.assert_awaited_once()
+
+
     async def test_signup_and_cancel_from_mirror_use_canonical_roster(self):
         self.cog.store.add_copy(100, 2, 200, 200, 22)
         self.make_thread(200)

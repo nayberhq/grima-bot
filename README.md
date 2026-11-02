@@ -229,3 +229,17 @@ signups. Tests exercise 200 signups with every supported class/spec. Random
 9,707 characters. Browser decoder limit: 20,000 token characters, 2 MB inflated.
 Discord links retain their smaller transport limits; oversized rosters receive
 Session JSON plus planner-link.txt containing the complete URL when it fits.
+
+### Event controls and planned roster cards
+
+The leader row is Settings, Raid Import, Refresh. Each requires the configured
+raid-leader role in the event’s source server, including on mirrored posts.
+Organizer/admin status alone does not grant these controls; settings and import
+modals recheck the role when submitted. The signup row is ✅, ❌, Plan; opening
+Vanguard is available to participants. Class buttons remain between these rows.
+The roster-edit button is removed; use Vanguard and Raid Import to edit plans.
+
+Each planned run is delivered as one embed card, containing all fellowship
+groups, class/spec icons and role symbols. Separate runs use separate cards.
+Withdrawn players/classes remain flagged. Existing per-group posts are updated
+and surplus messages removed during roster sync after the bot is restarted.

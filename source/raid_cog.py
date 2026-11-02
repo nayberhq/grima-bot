@@ -352,6 +352,27 @@ class RaidCog(commands.Cog):
             assignment_values = [None, available, ','.join(self.slots_class_names[i])]
             upsert(self.conn, 'Assignment', assignment_columns, assignment_values, ['raid_id', 'slot_id'], [raid_id, i])
 
+    async def has_raid_leader_role(self, user, guild, raid_id):
+        """Leader controls require the configured source-server role, without bypasses."""
+        raid_id = self.resolve_raid_id(raid_id)
+        event = self.event_store.event(raid_id)
+        if event and self.event_store.ended(event, time.time()):
+            return False
+        origin_id = event['guild_id'] if event else select_one(self.conn, 'Raids', ['guild_id'], ['raid_id'], [raid_id])
+        if not origin_id:
+            return False
+        role_id = select_one(self.conn, 'Settings', ['raid_leader'], ['guild_id'], [origin_id])
+        if not role_id:
+            return False
+        origin = self.bot.get_guild(origin_id)
+        if not origin:
+            return False
+        try:
+            member = origin.get_member(user.id) or await origin.fetch_member(user.id)
+        except (discord.NotFound, discord.Forbidden):
+            return False
+        return any(role.id == role_id for role in member.roles)
+
     async def has_raid_permission(self, user, guild, raid_id, channel=None):
         raid_id = self.resolve_raid_id(raid_id)
         if not select_one(self.conn, 'Raids', ['raid_id'], ['raid_id'], [raid_id]):
@@ -704,47 +725,28 @@ class RaidView(discord.ui.View):
         for index, emoji in enumerate(raid_cog.class_emojis):
             row = 1 + index//4
             self.add_item(EmojiButton(emoji, row))
+        order = {'raid_view:settings':0, 'raid_view:import':1, 'raid_view:refresh':2,
+                 'raid_view:check':0, 'raid_view:cancel':1, 'raid_view:vanguard':2}
+        items = sorted(self.children, key=lambda c: (c.row or 0, order.get(c.custom_id, 2)))
+        self.clear_items()
+        for item in items:
+            self.add_item(item)
+
 
     @discord.ui.button(emoji="\U0001F6E0\uFE0F", style=discord.ButtonStyle.blurple, custom_id='raid_view:settings', row=0)
     async def settings(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await self.raid_cog.has_raid_permission(interaction.user, interaction.guild, self.raid_cog.resolve_raid_id(interaction.message.id)):
+        if not await self.raid_cog.has_raid_leader_role(interaction.user, interaction.guild, self.raid_cog.resolve_raid_id(interaction.message.id)):
             perm_msg = _("You do not have permission to change the raid settings.")
             await interaction.response.send_message(perm_msg, ephemeral=True)
             return
         modal = ConfigureModal(self.raid_cog, self.raid_cog.resolve_raid_id(interaction.message.id))
         await interaction.response.send_modal(modal)
 
-    @discord.ui.button(emoji="\u26CF\uFE0F", style=discord.ButtonStyle.blurple, custom_id='raid_view:select', row=0)
-    async def select(self, interaction: discord.Interaction, button: discord.ui.Button):
-        shared_id = self.raid_cog.resolve_raid_id(interaction.message.id)
-        if self.raid_cog.event_store.event(shared_id):
-            await self.raid_cog.bot.get_cog('PlanningCog').open_editor(interaction)
-            return
-        if not await self.raid_cog.has_raid_permission(interaction.user, interaction.guild, self.raid_cog.resolve_raid_id(interaction.message.id)):
-            perm_msg = _("You do not have permission to change the raid settings.")
-            await interaction.response.send_message(perm_msg, ephemeral=True)
-            return
-        raid_id = self.raid_cog.resolve_raid_id(interaction.message.id)
-        available = select(self.conn, 'Players', ['player_id, byname'], ['raid_id', 'unavailable'],
-                           [raid_id, False])
-        if not available:
-            msg = _("There are no players to assign for this raid!")
-            await interaction.response.send_message(msg, ephemeral=True)
-            return
-        msg = _("Please first select the player. The roster is updated when a class is selected. "
-                "You can select a slot manually or leave it on automatic.\n")
-        view = SelectView(self.raid_cog, raid_id)
-        await interaction.response.send_message(msg, view=view, ephemeral=True)
-        roster = select_one(self.conn, 'Raids', ['roster'], ['raid_id'], [raid_id])
-        if not roster:
-            upsert(self.conn, 'Raids', ['roster'], [True], ['raid_id'], [raid_id])
-            self.conn.commit()
-
-    @discord.ui.button(emoji="\u274C", style=discord.ButtonStyle.red, custom_id='raid_view:cancel', row=0)
+    @discord.ui.button(emoji="\u274C", style=discord.ButtonStyle.red, custom_id='raid_view:cancel', row=4)
     async def red_cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.sign_up_cancel(interaction)
 
-    @discord.ui.button(emoji="\u2705", style=discord.ButtonStyle.green, custom_id='raid_view:check', row=0)
+    @discord.ui.button(emoji="\u2705", style=discord.ButtonStyle.green, custom_id='raid_view:check', row=4)
     async def green_check(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.sign_up_all(interaction)
 
@@ -759,14 +761,23 @@ class RaidView(discord.ui.View):
             btn = discord.ui.Button(emoji="\U0001F4CB", style=discord.ButtonStyle.secondary, custom_id='raid_view:vanguard', row=4)
             btn.callback = self.vanguard
             self.add_item(btn)
-        inbox_btn = discord.ui.Button(emoji="\U0001F4E5", style=discord.ButtonStyle.secondary, custom_id='raid_view:import', row=4)
+        inbox_btn = discord.ui.Button(emoji="\U0001F4E5", style=discord.ButtonStyle.secondary, custom_id='raid_view:import', row=0)
         inbox_btn.callback = self.inbox_import
         self.add_item(inbox_btn)
-        refresh_btn = discord.ui.Button(emoji="\U0001F504", style=discord.ButtonStyle.secondary, custom_id='raid_view:refresh', row=4)
+        refresh_btn = discord.ui.Button(emoji="\U0001F504", style=discord.ButtonStyle.secondary, custom_id='raid_view:refresh', row=0)
         refresh_btn.callback = self.refresh_post
         self.add_item(refresh_btn)
 
+    async def require_leader(self, interaction):
+        raid_id = self.raid_cog.resolve_raid_id(interaction.message.id)
+        if await self.raid_cog.has_raid_leader_role(interaction.user, interaction.guild, raid_id):
+            return True
+        await interaction.response.send_message('This control requires the source server’s configured raid leader role.', ephemeral=True)
+        return False
+
     async def refresh_post(self, interaction: discord.Interaction):
+        if not await self.require_leader(interaction):
+            return
         if not await self.raid_cog.check_signup(interaction):
             return
         raid_id = self.raid_cog.resolve_raid_id(interaction.message.id)
@@ -778,6 +789,8 @@ class RaidView(discord.ui.View):
         await interaction.followup.send('Refreshed raid post and planner link.', ephemeral=True)
 
     async def inbox_import(self, interaction: discord.Interaction):
+        if not await self.require_leader(interaction):
+            return
         planning = self.raid_cog.bot.get_cog('PlanningCog')
         if not planning:
             await interaction.response.send_message('Planner integration is unavailable.', ephemeral=True)
@@ -1191,7 +1204,7 @@ class ConfigureModal(discord.ui.Modal):
         self.add_item(delete_field)
 
     async def on_submit(self, interaction: discord.Interaction):
-        if not await self.raid_cog.has_raid_permission(interaction.user, interaction.guild, self.raid_id):
+        if not await self.raid_cog.has_raid_leader_role(interaction.user, interaction.guild, self.raid_id):
             await interaction.response.send_message('You can no longer edit this event.', ephemeral=True)
             return
         text_fields = interaction.data['components']
