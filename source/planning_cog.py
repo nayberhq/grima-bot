@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import logging
+import re
 import time
 from typing import Literal
 
@@ -181,6 +182,64 @@ class PlanningCog(commands.Cog):
     @refresh_plans.before_loop
     async def ready(self):
         await self.bot.wait_until_ready()
+
+    @app_commands.command(name='description', description='Set the default event footer text by copying a Discord message link (or view/clear it).')
+    @app_commands.guild_only()
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.describe(
+        message_link='Link to a Discord message whose text will be copied into all events as the footer template.',
+        clear='Remove the saved event description footer.',
+    )
+    async def description_command(self, interaction: discord.Interaction, message_link: str | None = None, clear: bool = False):
+        if message_link is not None and clear:
+            raise ValueError('Provide a message_link or set clear=True, not both.')
+        if clear:
+            self.store.write('DELETE FROM EventTemplates WHERE guild_id=? AND kind=?', (interaction.guild_id, 'footer'))
+            self.store.write('UPDATE SharedEvents SET revision=revision+1 WHERE raid_id IN (SELECT raid_id FROM Raids WHERE guild_id=?)', (interaction.guild_id,))
+            await interaction.response.send_message('Event description footer cleared. Active events will update on the next refresh.', ephemeral=True)
+            return
+        if message_link is None:
+            row = self.store.one('SELECT body FROM EventTemplates WHERE guild_id=? AND kind=?', (interaction.guild_id, 'footer'))
+            await interaction.response.send_message(
+                f"**Current event description footer:**\n{row['body']}" if row else 'No event description footer set. Pass a Discord `message_link` to `/description` to set one.',
+                ephemeral=True,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return
+        m = re.search(r'discord(?:app)?\.com/channels/(\d+)/(\d+)/(\d+)', message_link.strip())
+        if not m:
+            raise ValueError('Paste a valid Discord message link (Right-click message → Copy Message Link).')
+        link_guild_id, link_channel_id, link_message_id = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if link_guild_id != interaction.guild_id:
+            raise ValueError('The template message link must be from a channel in this server.')
+        await interaction.response.defer(ephemeral=True)
+        try:
+            channel = await self.events.channel(link_channel_id)
+            msg = await channel.fetch_message(link_message_id)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+            raise ValueError('Could not fetch that message. Ensure the bot has View Channel and Read Message History in that channel.') from exc
+        parts = []
+        if getattr(msg, 'content', None) and msg.content.strip():
+            parts.append(msg.content.strip())
+        for emb in getattr(msg, 'embeds', None) or ():
+            if getattr(emb, 'description', None) and emb.description.strip():
+                parts.append(emb.description.strip())
+        body = '\n\n'.join(parts).strip()
+        if not body:
+            raise ValueError('The linked message has no text content to copy.')
+        if len(body) > 2500:
+            raise ValueError('The linked message text must be 2500 characters or fewer.')
+        self.store.write('INSERT OR REPLACE INTO EventTemplates VALUES (?,?,?)', (interaction.guild_id, 'footer', body))
+        self.store.write('UPDATE SharedEvents SET revision=revision+1 WHERE raid_id IN (SELECT raid_id FROM Raids WHERE guild_id=?)', (interaction.guild_id,))
+        for r in self.store.rows('SELECT raid_id FROM Raids WHERE guild_id=?', (interaction.guild_id,)):
+            if self.store.event(r['raid_id']):
+                await self.events.refresh(r['raid_id'])
+        await interaction.followup.send(
+            f"Saved event description footer from <https://discord.com/channels/{link_guild_id}/{link_channel_id}/{link_message_id}> and updated active events:\n\n{body[:1500]}",
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
 
     @app_commands.command(name='event-template', description='Set a source-server description or announcement template; omit text to view.')
     @app_commands.guild_only()

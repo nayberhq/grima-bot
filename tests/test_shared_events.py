@@ -568,6 +568,57 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.cog.store.select_forum_id(s_tiers, size=12, tier='T5'), 105)
         self.assertEqual(self.cog.store.select_forum_id(s_tiers, size=24, tier=''), 10)
 
+    async def test_announcement_and_description_templates_with_description_command(self):
+        from network_cog import NetworkCog
+        from planning_cog import PlanningCog
+        self.guilds[1].name = 'Vanguard'
+        self.cog.store.write("UPDATE Raids SET tier='T3', boss='Bring consumables' WHERE raid_id=100")
+        self.cog.store.write("INSERT OR REPLACE INTO SourceInvites VALUES (1, 'https://discord.gg/vanguard')")
+        planning = PlanningCog(self.bot)
+        network = NetworkCog(self.bot)
+        self.bot.get_cog = lambda name: {'RaidCog': self.raids, 'EventsCog': self.cog, 'PlanningCog': planning, 'NetworkCog': network, 'TimeCog': NS(get_server_timezone=lambda guild_id: 'UTC')}.get(name)
+
+        # Mock template message for /description
+        self.channels[555] = NS(
+            id=555,
+            fetch_message=AsyncMock(return_value=NS(id=888, content='Must have tier 3 deed and Discord voice.', embeds=[])),
+        )
+        interaction = NS(
+            guild_id=1,
+            response=NS(defer=AsyncMock(), send_message=AsyncMock()),
+            followup=NS(send=AsyncMock()),
+        )
+        await PlanningCog.description_command.callback(
+            planning,
+            interaction,
+            message_link='https://discord.com/channels/1/555/888',
+            clear=False,
+        )
+        saved_footer = self.cog.store.one("SELECT body FROM EventTemplates WHERE guild_id=1 AND kind='footer'")
+        self.assertEqual(saved_footer['body'], 'Must have tier 3 deed and Discord voice.')
+
+        # Verify event embed description matches description.txt template
+        edit_kwargs = self.thread.get_partial_message.return_value.edit.call_args.kwargs
+        desc = edit_kwargs['embed'].description
+        self.assertIn('Folly T3\nBring consumables', desc)
+        self.assertIn('----------------------------------------------\n\nMust have tier 3 deed and Discord voice.\n\n----------------------------------------------', desc)
+        self.assertIn('Not in the Vanguard discord? join here!\nhttps://discord.gg/vanguard', desc)
+        self.assertIn('mirrorkey:', desc)
+
+        # Verify outgoing announcement matches announcement.txt template
+        self.bot.fetch_invite = AsyncMock(return_value=NS(guild=NS(id=1), url='https://discord.gg/vanguard'))
+        self.channels[800] = NS(id=800, send=AsyncMock(return_value=NS(id=801)))
+        self.cog.store.write('INSERT OR REPLACE INTO NetworkSettings VALUES (1, 800)')
+        await network.tick()
+        ann_body = self.channels[800].send.call_args.args[0]
+        self.assertIn('Vanguard is hosting an event!', ann_body)
+        self.assertIn('Folly T3 at <t:', ann_body)
+        self.assertIn('Bring consumables', ann_body)
+        self.assertIn('<#100>', ann_body)
+        self.assertIn('Not in the Vanguard discord? join here!\nhttps://discord.gg/vanguard', ann_body)
+        self.assertIn('mirrorkey:', ann_body)
+
+
 
 
 

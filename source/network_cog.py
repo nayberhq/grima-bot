@@ -24,6 +24,30 @@ class NetworkCog(commands.Cog):
     @property
     def store(self): return self.events.store
 
+    def format_discovery_announcement(self, event, code, invite_url=None):
+        guild = self.bot.get_guild(event['guild_id'])
+        kinship = guild.name if guild and getattr(guild, 'name', None) else 'host'
+        title_tier = f"{event['name']} {event['tier']}".strip() if event.get('tier') else event['name']
+        lines = [
+            f"{kinship} is hosting an event!",
+            f"{title_tier} at <t:{event['time']}:F>",
+        ]
+        if event.get('boss'):
+            lines.append(event['boss'])
+        lines.append('')
+        lines.append(f"<#{event['channel_id']}>")
+        owner = next((c for c in self.store.copies(event['raid_id']) if c['guild_id'] == event['guild_id']), None)
+        if owner and owner.get('voice_id'):
+            lines.append(f"<#{owner['voice_id']}>")
+        else:
+            lines.append('Voice channel created at start time')
+        lines.append('')
+        lines.append(f"Not in the {kinship} discord? join here!")
+        lines.append(invite_url if invite_url else 'Invite unavailable')
+        lines.append('')
+        lines.append(f"mirrorkey:{code}")
+        return '\n'.join(lines)
+
     async def tick(self):
         async with self.lock:
             await self.process_panels()
@@ -72,8 +96,20 @@ class NetworkCog(commands.Cog):
                 try:
                     code=event['share_token'] or self.store.share(row['raid_id'])
                     channel=await self.events.channel(row['push_id'])
+                    invite_row=self.store.one('SELECT url FROM SourceInvites WHERE guild_id=?',(event['guild_id'],))
+                    if not invite_row:
+                        try:
+                            settings=self.store.settings(event['guild_id'])
+                            if settings:
+                                forum=await self.events.channel(settings['forum_id'])
+                                inv=await forum.create_invite(max_age=0,max_uses=0,unique=False,reason='Join the owning server for shared events')
+                                self.store.write('INSERT OR REPLACE INTO SourceInvites VALUES (?,?)',(event['guild_id'],str(inv.url)))
+                                invite_row={'url':str(inv.url)}
+                        except Exception:
+                            pass
+                    body=self.format_discovery_announcement(event,code,invite_row['url'] if invite_row else None)
                     # Intentionally do not call Message.publish(): crossposting is a human decision.
-                    message=await self.sender.send(channel,f"discovery:{row['raid_id']}:{row['push_id']}",f"{event['name']} — <t:{event['time']}:F>\nmirrorkey:{code}")
+                    message=await self.sender.send(channel,f"discovery:{row['raid_id']}:{row['push_id']}",body)
                     self.store.write('INSERT OR REPLACE INTO NetworkPush VALUES (?,?,NULL)',(row['raid_id'],message.id))
                 except (ValueError,discord.HTTPException) as exc:
                     self.store.write('INSERT OR REPLACE INTO NetworkPush VALUES (?,NULL,?)',(row['raid_id'],str(exc)))

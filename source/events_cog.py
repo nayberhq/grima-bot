@@ -110,6 +110,28 @@ class EventsCog(commands.Cog):
             auto_archive_duration=10080, reason='Create raid forum')
         return result.thread, result.message, settings
 
+    def format_event_description(self, event, footer_text=None, invite_url=None, code=None):
+        header = f"{event['name']} {event['tier']}".strip() if event.get('tier') else event['name']
+        lines = [header]
+        if event.get('boss'):
+            lines.append(event['boss'])
+        lines.append('')
+        lines.append('----------------------------------------------')
+        if footer_text and footer_text.strip():
+            lines.append('')
+            lines.append(footer_text.strip())
+            lines.append('')
+            lines.append('----------------------------------------------')
+        guild = self.bot.get_guild(event['guild_id'])
+        kinship = guild.name if guild and getattr(guild, 'name', None) else 'host'
+        lines.append('')
+        lines.append(f'Not in the {kinship} discord? join here!')
+        lines.append(invite_url if invite_url else 'Invite unavailable. Ask the organizer to set server_invite_url in /setup in the owning server.')
+        if code:
+            lines.append('')
+            lines.append(f'mirrorkey:{code}')
+        return '\n'.join(lines)
+
     async def refresh(self, raid_id):
         async with self.locks[raid_id]:
             await self.refresh_locked(raid_id)
@@ -124,6 +146,9 @@ class EventsCog(commands.Cog):
         if not embed:
             return
         ended = self.store.ended(event, time.time() if now is None else now)
+        code = event['share_token'] or (None if ended else self.store.share(raid_id))
+        if code and not event['share_token']:
+            event['share_token'] = code
         embed.add_field(name='Ends', value=f"<t:{event['time'] + event['duration']}:F>", inline=False)
         embed.set_footer(text='Cancelled' if event['cancelled'] else ('Event ended' if ended else 'Shared roster • Sign up from any linked server'))
         for copy in self.store.copies(raid_id):
@@ -134,21 +159,31 @@ class EventsCog(commands.Cog):
                 await thread.edit(name=self.title(event, copy['guild_id']), archived=False)
                 local_embed = embed.copy()
                 planning = self.bot.get_cog('PlanningCog')
-                if planning:
-                    template = planning.template(event, 'description')
-                    if template:
-                        try:
-                            local_embed.description = planning.render(event, template['body'], min(4096, 6000-len(local_embed)+(len(local_embed.description or ''))))
-                        except ValueError:
-                            log.warning('Description template exceeds embed budget for event %s', raid_id)
+                template = planning.template(event, 'description') if planning else None
+                footer_row = self.store.one('SELECT body FROM EventTemplates WHERE guild_id=? AND kind=?', (event['guild_id'], 'footer'))
+                invite_row = self.store.one('SELECT url FROM SourceInvites WHERE guild_id=?', (event['guild_id'],))
+                invite_url = invite_row['url'] if invite_row else None
+                budget = min(4096, 6000 - len(local_embed) + (len(local_embed.description or '')))
+                if template and planning:
+                    try:
+                        local_embed.description = planning.render(event, template['body'], budget)
+                    except ValueError:
+                        log.warning('Description template exceeds embed budget for event %s', raid_id)
+                else:
+                    footer_body = footer_row['body'] if footer_row else None
+                    local_embed.description = self.format_event_description(
+                        event,
+                        footer_text=footer_body,
+                        invite_url=invite_url,
+                        code=code,
+                    )[:budget]
                 owner = next((c for c in self.store.copies(raid_id) if c['guild_id']==event['guild_id']), None)
                 if owner and owner['voice_id']:
                     local_embed.add_field(name='Event voice channel', value=f"https://discord.com/channels/{event['guild_id']}/{owner['voice_id']}", inline=False)
                 elif not ended:
                     local_embed.add_field(name='Event voice channel', value='Created in the owning server when the event starts.', inline=False)
                 if copy['guild_id'] != event['guild_id']:
-                    invite=self.store.one('SELECT url FROM SourceInvites WHERE guild_id=?',(event['guild_id'],))
-                    local_embed.add_field(name='Join the event server',value=invite['url'] if invite else 'Invite unavailable. Ask the organizer to set server_invite_url in /setup in the owning server.',inline=False)
+                    local_embed.add_field(name='Join the event server',value=invite_url if invite_url else 'Invite unavailable. Ask the organizer to set server_invite_url in /setup in the owning server.',inline=False)
                 view = None if ended else (CreepView(self.raids) if event['creep'] else RaidView(self.raids))
                 await thread.get_partial_message(copy['message_id']).edit(
                     content=None, embed=local_embed, view=view, allowed_mentions=discord.AllowedMentions.none())
@@ -175,7 +210,7 @@ class EventsCog(commands.Cog):
             if not event:
                 return
             ended = self.store.ended(event, now)
-            if not ended and any(c['guild_id']!=event['guild_id'] and not c['locked'] for c in self.store.copies(raid_id)):
+            if not ended:
                 if not self.store.one('SELECT 1 FROM SourceInvites WHERE guild_id=?',(event['guild_id'],)):
                     try:
                         settings=self.store.settings(event['guild_id'])
@@ -184,7 +219,7 @@ class EventsCog(commands.Cog):
                         self.store.write('INSERT OR REPLACE INTO SourceInvites VALUES (?,?)',(event['guild_id'],str(invite.url)))
                         self.store.touch(raid_id)
                     except discord.HTTPException:
-                        log.warning('Cannot create owner-server invite for event %s; set /event-invite or grant Create Invite',raid_id)
+                        log.warning('Cannot create owner-server invite for event %s; set server_invite_url in /setup or grant Create Invite',raid_id)
             # Update the final embed before locking; the renderer removes controls.
             if ended:
                 for copy in self.store.copies(raid_id):

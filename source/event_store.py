@@ -76,6 +76,7 @@ class EventStore:
                 PRIMARY KEY (guild_id,source_channel_id));
         ''')
         conn.executescript('''
+            CREATE TABLE IF NOT EXISTS EventTemplates(guild_id INTEGER,kind TEXT,body TEXT NOT NULL,PRIMARY KEY(guild_id,kind));
             CREATE TABLE IF NOT EXISTS NetworkSettings(guild_id INTEGER PRIMARY KEY,push_id INTEGER);
             CREATE TABLE IF NOT EXISTS NetworkPush(raid_id INTEGER PRIMARY KEY,message_id INTEGER,error TEXT);
             CREATE TABLE IF NOT EXISTS PendingPublications(guild_id INTEGER,source_id INTEGER,message_id INTEGER,PRIMARY KEY(guild_id,source_id,message_id));
