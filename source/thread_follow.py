@@ -26,3 +26,22 @@ async def follow_signup(interaction, following):
                 ephemeral=True)
         except discord.HTTPException:
             logger.warning("Could not deliver thread membership warning", exc_info=True)
+
+
+async def unfollow_all(thread, *, bot=None):
+    """Remove every member from an event thread (e.g. when the raid is locked or deleted)."""
+    if not isinstance(thread, discord.Thread):
+        return
+    try:
+        members = await thread.fetch_members()
+    except discord.HTTPException:
+        logger.warning('Could not list members for thread %s', thread.id, exc_info=True)
+        return
+    bot_id = bot.id if bot else None
+    for member in members:
+        if bot_id and member.id == bot_id:
+            continue
+        try:
+            await thread.remove_user(member)
+        except discord.HTTPException:
+            logger.warning('Could not unfollow user %s from thread %s', member.id, thread.id, exc_info=True)

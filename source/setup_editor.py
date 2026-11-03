@@ -7,7 +7,7 @@ import discord
 class SetupDraft:
     __slots__ = (
         'raid_forum_id', 'announcement_id', 'panel_id', 'voice_category_id',
-        'forum_mode', 'instance_forum_id', 't1_forum_id', 't2_forum_id', 't3_forum_id',
+        'instance_forum_id', 't1_forum_id', 't2_forum_id', 't3_forum_id',
         't4_forum_id', 't5_forum_id', 'watch_channel_id', 'leader_role_id', 'kin_role_id',
         'calendar_id', 'rss_id', 'discord_events', 'kin_icon', 'server_timezone',
         'server_invite_url', 'duration_minutes', 'lock_delay_minutes',
@@ -18,7 +18,6 @@ class SetupDraft:
         self.announcement_id = 0
         self.panel_id = 0
         self.voice_category_id = 0
-        self.forum_mode = 'single'
         self.instance_forum_id = 0
         self.t1_forum_id = 0
         self.t2_forum_id = 0
@@ -44,7 +43,6 @@ def load_setup_draft(store, conn, guild_id) -> SetupDraft:
     if ev:
         draft.raid_forum_id = ev.get('forum_id') or 0
         draft.voice_category_id = ev.get('voice_category_id') or 0
-        draft.forum_mode = ev.get('forum_mode') or 'single'
         draft.instance_forum_id = ev.get('instance_forum_id') or 0
         draft.t1_forum_id = ev.get('t1_forum_id') or 0
         draft.t2_forum_id = ev.get('t2_forum_id') or 0
@@ -156,15 +154,14 @@ class SetupEditorView(discord.ui.View):
             self._text_select(2, 'Event panels', 'panel_id')
             self._category_select(3, 'Voice category', 'voice_category_id')
         elif self.page == 1:
-            self._mode_select(0)
-            self._forum_select(1, 'Instance forum (optional)', 'instance_forum_id', optional=True)
-            self._forum_select(2, 'T1 forum (optional)', 't1_forum_id', optional=True)
-            self._forum_select(3, 'T2 forum (optional)', 't2_forum_id', optional=True)
+            self._forum_select(0, 'Instance forum (optional)', 'instance_forum_id', optional=True)
+            self._forum_select(1, 'T1 forum (optional)', 't1_forum_id', optional=True)
+            self._forum_select(2, 'T2 forum (optional)', 't2_forum_id', optional=True)
+            self._forum_select(3, 'T3 forum (optional)', 't3_forum_id', optional=True)
         elif self.page == 2:
-            self._forum_select(0, 'T3 forum (optional)', 't3_forum_id', optional=True)
-            self._forum_select(1, 'T4 forum (optional)', 't4_forum_id', optional=True)
-            self._forum_select(2, 'T5 forum (optional)', 't5_forum_id', optional=True)
-            self._watch_select(3)
+            self._forum_select(0, 'T4 forum (optional)', 't4_forum_id', optional=True)
+            self._forum_select(1, 'T5 forum (optional)', 't5_forum_id', optional=True)
+            self._watch_select(2)
         elif self.page == 3:
             self._role_select(0, 'Raid leader role', 'leader_role_id')
             self._role_select(1, 'Kinship role', 'kin_role_id')
@@ -276,21 +273,6 @@ class SetupEditorView(discord.ui.View):
                 self._set_id(field, str(control.values[0].id))
             else:
                 self._set_id(field, '0')
-            await i.response.defer()
-
-        control.callback = chosen
-        self.add_item(control)
-
-    def _mode_select(self, row):
-        options = [
-            discord.SelectOption(label='Single channel', value='single', default=self.draft.forum_mode == 'single'),
-            discord.SelectOption(label='Instance + raid', value='instance_raid', default=self.draft.forum_mode == 'instance_raid'),
-            discord.SelectOption(label='Tiers', value='tiers', default=self.draft.forum_mode == 'tiers'),
-        ]
-        control = discord.ui.Select(row=row, placeholder='Forum layout mode', options=options)
-
-        async def chosen(i: discord.Interaction):
-            self.draft.forum_mode = control.values[0]
             await i.response.defer()
 
         control.callback = chosen

@@ -6,6 +6,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from event_store import InvalidShare, mirror_keys, extract_origin_badge
+from thread_follow import unfollow_all
 
 
 class NetworkCog(commands.Cog):
@@ -262,6 +263,7 @@ class NetworkCog(commands.Cog):
             try:
                 thread=await self.events.channel(c['thread_id'])
                 await thread.get_partial_message(c['message_id']).edit(content='Disconnected from shared event.',embed=None,view=None)
+                await unfollow_all(thread, bot=self.bot)
                 await thread.edit(locked=True,archived=True)
             except discord.HTTPException:
                 pass

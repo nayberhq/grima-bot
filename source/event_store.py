@@ -169,31 +169,29 @@ class EventStore:
         return None
 
     def configure(self, guild_id, forum_id, category_id, duration, lock_delay,
-                  forum_mode='single', instance_forum_id=0,
+                  instance_forum_id=0,
                   t1_forum_id=0, t2_forum_id=0, t3_forum_id=0, t4_forum_id=0, t5_forum_id=0):
         if not 900 <= duration <= 86400 or not 0 <= lock_delay <= 604800:
             raise ValueError('Duration must be 15–1440 minutes; lock delay 0–10080 minutes.')
+        # forum_mode is retained for older rows and is no longer consulted.
         self.write('''INSERT OR REPLACE INTO EventSettings
             (guild_id, forum_id, voice_category_id, duration, lock_delay,
              forum_mode, instance_forum_id, t1_forum_id, t2_forum_id, t3_forum_id, t4_forum_id, t5_forum_id)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
             (guild_id, forum_id, category_id, duration, lock_delay,
-             forum_mode, instance_forum_id, t1_forum_id, t2_forum_id, t3_forum_id, t4_forum_id, t5_forum_id))
+             'implied', instance_forum_id, t1_forum_id, t2_forum_id, t3_forum_id, t4_forum_id, t5_forum_id))
 
     @staticmethod
     def select_forum_id(settings, size=12, tier=None):
-        mode = settings.get('forum_mode') or 'single'
-        if mode == 'instance_raid':
-            if (size or 12) <= 6 and settings.get('instance_forum_id'):
-                return settings['instance_forum_id']
-            return settings['forum_id']
-        if mode == 'tiers':
-            digits = ''.join(filter(str.isdigit, str(tier or '')))
-            tier_num = int(digits) if digits else 0
-            col = f't{tier_num}_forum_id'
-            if 1 <= tier_num <= 5 and settings.get(col):
-                return settings[col]
-            return settings['forum_id']
+        """Tier forum, then instance forum for ≤6-player events, then the default raid forum."""
+        digits = ''.join(filter(str.isdigit, str(tier or '')))
+        tier_num = int(digits) if digits else 0
+        if 1 <= tier_num <= 5:
+            tier_forum = settings.get(f't{tier_num}_forum_id')
+            if tier_forum:
+                return tier_forum
+        if (size or 12) <= 6 and settings.get('instance_forum_id'):
+            return settings['instance_forum_id']
         return settings['forum_id']
 
     def event(self, raid_id):

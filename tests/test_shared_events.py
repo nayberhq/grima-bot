@@ -687,34 +687,29 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.cog.store.one('SELECT last_message_id FROM EventWatches WHERE guild_id=1')['last_message_id'], 999)
         self.assertIn('unchanged cursor', embed.description)
 
-    async def test_forum_mode_routing_single_instance_raid_and_tiers(self):
-        # 1. Single mode
-        self.cog.store.configure(1, 10, 11, 3600, 600, forum_mode='single')
-        s_single = self.cog.store.settings(1)
-        self.assertEqual(self.cog.store.select_forum_id(s_single, size=6, tier='T3'), 10)
-        self.assertEqual(self.cog.store.select_forum_id(s_single, size=12, tier='T5'), 10)
+    async def test_forum_routing_tier_then_instance_then_default(self):
+        self.cog.store.configure(1, 10, 11, 3600, 600)
+        default_only = self.cog.store.settings(1)
+        self.assertEqual(self.cog.store.select_forum_id(default_only, size=6, tier='T3'), 10)
+        self.assertEqual(self.cog.store.select_forum_id(default_only, size=12, tier='T5'), 10)
 
-        # 2. Instance + Raid mode (<=6 -> instance_forum_id, >=12 -> forum_id)
-        self.cog.store.configure(1, 10, 11, 3600, 600, forum_mode='instance_raid', instance_forum_id=15)
-        s_ir = self.cog.store.settings(1)
-        self.assertEqual(self.cog.store.select_forum_id(s_ir, size=3, tier='T3'), 15)
-        self.assertEqual(self.cog.store.select_forum_id(s_ir, size=6, tier='T5'), 15)
-        self.assertEqual(self.cog.store.select_forum_id(s_ir, size=12, tier='T1'), 10)
-        self.assertEqual(self.cog.store.select_forum_id(s_ir, size=24, tier=''), 10)
+        self.cog.store.configure(1, 10, 11, 3600, 600, instance_forum_id=15, t3_forum_id=103)
+        mixed = self.cog.store.settings(1)
+        self.assertEqual(self.cog.store.select_forum_id(mixed, size=6, tier='T3'), 103)
+        self.assertEqual(self.cog.store.select_forum_id(mixed, size=6, tier='T2'), 15)
+        self.assertEqual(self.cog.store.select_forum_id(mixed, size=12, tier='T2'), 10)
+        self.assertEqual(self.cog.store.select_forum_id(mixed, size=12, tier='T2c'), 10)
+        self.assertEqual(self.cog.store.select_forum_id(mixed, size=12, tier='T3'), 103)
+        self.assertEqual(self.cog.store.select_forum_id(mixed, size=24, tier=''), 10)
 
-        # 3. Tiers mode (T1..T5 -> t1_forum_id..t5_forum_id, untiered -> forum_id)
         self.cog.store.configure(
             1, 10, 11, 3600, 600,
-            forum_mode='tiers',
             t1_forum_id=101, t2_forum_id=102, t3_forum_id=103, t4_forum_id=104, t5_forum_id=105,
         )
-        s_tiers = self.cog.store.settings(1)
-        self.assertEqual(self.cog.store.select_forum_id(s_tiers, size=6, tier='T1'), 101)
-        self.assertEqual(self.cog.store.select_forum_id(s_tiers, size=12, tier='T2c'), 102)
-        self.assertEqual(self.cog.store.select_forum_id(s_tiers, size=12, tier='T3'), 103)
-        self.assertEqual(self.cog.store.select_forum_id(s_tiers, size=12, tier='T4'), 104)
-        self.assertEqual(self.cog.store.select_forum_id(s_tiers, size=12, tier='T5'), 105)
-        self.assertEqual(self.cog.store.select_forum_id(s_tiers, size=24, tier=''), 10)
+        tiers = self.cog.store.settings(1)
+        self.assertEqual(self.cog.store.select_forum_id(tiers, size=6, tier='T1'), 101)
+        self.assertEqual(self.cog.store.select_forum_id(tiers, size=12, tier='T2c'), 102)
+        self.assertEqual(self.cog.store.select_forum_id(tiers, size=12, tier='T5'), 105)
 
     async def test_announcement_and_description_templates_with_description_command(self):
         from network_cog import NetworkCog
