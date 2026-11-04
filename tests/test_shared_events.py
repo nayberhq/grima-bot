@@ -218,7 +218,7 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
             response=NS(send_message=AsyncMock(), defer=AsyncMock()))
         interaction.channel = Mock(spec=discord.Thread, id=200, send=AsyncMock(return_value=NS(delete=AsyncMock())))
         await view.sign_up_class(interaction, 'Warden')
-        interaction.channel.send.assert_awaited_once()
+        interaction.channel.send.assert_not_awaited()
         rows = self.conn.execute('SELECT raid_id,player_id,Warden FROM Players').fetchall()
         self.assertEqual(rows, [(100, 99, 1)])
         for thread_id in (100, 200):
@@ -423,7 +423,7 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         i=NS(user=NS(id=99,display_name='Warden',roles=[]),guild=NS(id=2),channel=self.thread,response=NS(edit_message=AsyncMock(),send_message=AsyncMock()))
         i.channel = Mock(spec=discord.Thread, id=100, send=AsyncMock(return_value=NS(delete=AsyncMock())))
         await picker.submit.callback(i)
-        i.channel.send.assert_awaited_once()
+        i.channel.send.assert_not_awaited()
         self.assertEqual(self.cog.store.one('SELECT raid_id,player_id,Warden FROM Players'),dict(raid_id=100,player_id=99,Warden=1))
         saved_spec = self.conn.execute('SELECT Warden FROM Specs WHERE player_id=99').fetchone()[0]
         for tier_idx in range(5):
@@ -449,7 +449,7 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         )
         interaction.channel = Mock(spec=discord.Thread, id=200, send=AsyncMock(return_value=NS(delete=AsyncMock())))
         await view.sign_up_all(interaction)
-        interaction.channel.send.assert_awaited_once()
+        interaction.channel.send.assert_not_awaited()
         # Should NOT prompt with SignupPicker; should immediately sign up on canonical raid 100
         self.assertIsNone(interaction.response.send_message.call_args.kwargs.get('view'))
         self.assertEqual(

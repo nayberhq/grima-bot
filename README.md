@@ -239,13 +239,7 @@ modals recheck the role when submitted. The signup row is ✅, ❌, Plan; openin
 Vanguard is available to participants. The two utility rows are consecutive, followed by three class rows.
 Plan, Raid Import and Refresh use blue buttons. Plan replies with the planner
 link because Discord direct-link buttons cannot have a colored background.
-Successful signup (including the class/spec picker) follows the clicked event
-thread via a silent mention (no “added to thread” system message). Unsigning up
-does not remove you from the thread; deleting the event clears thread membership.
-Notification preferences remain under
-the member’s control. Grima needs Send Messages in Threads to add members and
-Manage Threads (or thread ownership) to remove them. Membership failures preserve
-the signup change and show an ephemeral warning.
+Grima does not add signups to the event thread; members follow it themselves.
 The roster-edit button is removed; use Vanguard and Raid Import to edit plans.
 
 Each planned run is delivered as one embed card, containing all fellowship

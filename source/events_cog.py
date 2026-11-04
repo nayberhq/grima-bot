@@ -13,7 +13,6 @@ import pytz
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from thread_follow import unfollow_all
 from database import upsert
 from event_store import EventStore, forum_title, mirror_keys, extract_origin_badge, InvalidShare
 from time_cog import Time, time_zone_autocomplete
@@ -358,8 +357,6 @@ class EventsCog(commands.Cog):
                                 self.store.touch(raid_id)
                     if self.store.lock_due(event, now) and not copy['locked']:
                         thread = await self.channel(copy['thread_id'])
-                        if event['cancelled']:
-                            await unfollow_all(thread, bot=self.bot)
                         await thread.edit(locked=True, archived=True, reason='Event finished')
                         self.store.write('UPDATE EventCopies SET locked=1 WHERE thread_id=?', (copy['thread_id'],))
                 except discord.HTTPException:

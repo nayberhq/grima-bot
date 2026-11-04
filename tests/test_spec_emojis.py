@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'source'))
 builtins._ = getattr(builtins, '_', lambda value: value)
-from dev_cog import DevCog
 
 
 def emoji(name):
@@ -16,22 +15,24 @@ def emoji(name):
 
 
 class SpecEmojiTests(unittest.IsolatedAsyncioTestCase):
-    async def test_replaces_only_single_spec_names(self):
+    async def test_uploads_only_changed_single_spec_art(self):
+        import sqlite3
+        from raid_cog import RaidCog
         with tempfile.TemporaryDirectory() as folder:
             for stem in ('Warden_Blue', 'Lore-master_Red', 'Warden_Red_Blue', 'Warden'):
                 (Path(folder) / f'{stem}.webp').write_bytes(b'img')
-            old_blue, old_combo, old_plain = emoji('Warden_Blue'), emoji('Warden_Red_Blue'), emoji('Warden')
-            bot = NS(conn=None,
-                     fetch_application_emojis=AsyncMock(return_value=[old_blue, old_combo, old_plain]),
-                     create_application_emoji=AsyncMock())
-            replaced, failed = await DevCog(bot).replace_spec_emojis(['Warden', 'Loremaster'], folder)
-        self.assertEqual(sorted(replaced), ['Loremaster_Red', 'Warden_Blue'])
-        self.assertEqual(failed, [])
-        old_blue.delete.assert_awaited_once()
-        old_combo.delete.assert_not_awaited()
-        old_plain.delete.assert_not_awaited()
-        names = sorted(call.kwargs['name'] for call in bot.create_application_emoji.await_args_list)
-        self.assertEqual(names, ['Loremaster_Red', 'Warden_Blue'])
+            old_blue, old_combo = emoji('Warden_Blue'), emoji('Warden_Red_Blue')
+            raids = RaidCog.__new__(RaidCog)
+            raids.role_names = ['Warden', 'Loremaster']
+            raids.conn = sqlite3.connect(':memory:')
+            raids.bot = NS(fetch_application_emojis=AsyncMock(return_value=[old_blue, old_combo]),
+                           create_application_emoji=AsyncMock())
+            replaced = await raids.sync_spec_emojis(folder)
+            self.assertEqual(sorted(replaced), ['Loremaster_Red', 'Warden_Blue'])
+            old_blue.delete.assert_awaited_once()
+            old_combo.delete.assert_not_awaited()
+            raids.bot.fetch_application_emojis.return_value = [emoji('Warden_Blue'), emoji('Loremaster_Red')]
+            self.assertEqual(await raids.sync_spec_emojis(folder), [])
 
     async def test_reload_emojis_prefers_application_emojis(self):
         from raid_cog import RaidCog

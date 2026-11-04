@@ -2,7 +2,6 @@
 import time
 import discord
 from planning import CLASSES
-from thread_follow import follow_signup
 from database import upsert, select_one
 
 class SignupPicker(discord.ui.View):
@@ -47,6 +46,5 @@ class SignupPicker(discord.ui.View):
         upsert(self.raids.conn,'Players',['byname','timestamp','unavailable',self.class_name],[self.raids.process_name(i.guild.id,i.user),int(time.time()),False,True],['player_id','raid_id'],[i.user.id,self.raid_id])
         self.raids.conn.commit()
         await i.response.edit_message(content='Signed up. Your selection is shared across every linked server.',view=None)
-        await follow_signup(i, True)
         await self.raids.update_raid_post(self.raid_id,i.channel,delay=0)
         self.stop()

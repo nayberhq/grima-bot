@@ -7,8 +7,10 @@ from discord.ext import commands
 from discord.ext import tasks
 from enum import Enum
 import emoji as Emoji
+import hashlib
 import itertools
 import json
+from pathlib import Path
 import logging
 import random
 import re
@@ -19,7 +21,6 @@ from database import create_table, count, delete, read_config_key, select, selec
 from time_cog import Time
 from utils import get_match
 from event_store import EventStore
-from thread_follow import follow_signup
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -123,7 +124,47 @@ class RaidCog(commands.Cog):
         self.emojis_dict = {e.name: str(e) for e in self.class_emojis + self.creep_emojis + self.spec_emojis}
         return True
 
+    async def sync_spec_emojis(self, emoji_dir=Path(__file__).resolve().parents[1] / 'emojis'):
+        """Upload ring-style `{Class}_{Color}.webp` art as application emojis when it changed."""
+        if not hasattr(self.bot, 'create_application_emoji'):
+            return []
+        self.conn.execute('CREATE TABLE IF NOT EXISTS EmojiArt (name TEXT PRIMARY KEY, sha TEXT)')
+        known = dict(self.conn.execute('SELECT name, sha FROM EmojiArt').fetchall())
+        try:
+            existing = {}
+            for e in await self.bot.fetch_application_emojis():
+                existing.setdefault(e.name, []).append(e)
+        except discord.HTTPException:
+            logger.warning('Could not list application emojis', exc_info=True)
+            return []
+        files = {p.stem.replace('-', '').lower(): p for p in Path(emoji_dir).glob('*.webp')}
+        replaced = []
+        for role in self.role_names:
+            for color in ('Red', 'Blue', 'Yellow'):
+                name = f'{role}_{color}'
+                path = files.get(name.replace('-', '').lower())
+                if path is None:
+                    continue
+                data = path.read_bytes()
+                sha = hashlib.sha256(data).hexdigest()
+                if known.get(name) == sha and name in existing:
+                    continue
+                try:
+                    for old in existing.get(name, ()):
+                        await old.delete()
+                    await self.bot.create_application_emoji(name=name, image=data)
+                except discord.HTTPException:
+                    logger.warning('Could not replace emoji %s', name, exc_info=True)
+                    continue
+                self.conn.execute('INSERT OR REPLACE INTO EmojiArt (name, sha) VALUES (?, ?)', (name, sha))
+                replaced.append(name)
+        self.conn.commit()
+        if replaced:
+            logger.info('Uploaded ring-style emojis: %s', ', '.join(replaced))
+        return replaced
+
     async def cog_load(self):
+        await self.sync_spec_emojis()
         if await self.reload_emojis():
             self.bot.add_view(RaidView(self))
             self.bot.add_view(CreepView(self))
@@ -863,7 +904,6 @@ class RaidView(discord.ui.View):
                [byname, timestamp, False, sign_up], ['player_id', 'raid_id'], [i.user.id, raid_id])
         self.conn.commit()
         await i.response.send_message(msg, ephemeral=True, delete_after=sign_up_delay)
-        await follow_signup(i, True)
         await self.raid_cog.update_raid_post(raid_id, i.channel, delay=sign_up_delay)
 
     async def sign_up_all(self, i):
@@ -906,7 +946,6 @@ class RaidView(discord.ui.View):
             await i.response.send_message('Signed up with your saved specializations. Your selection is shared across linked servers.', ephemeral=True, delete_after=sign_up_delay)
         else:
             await i.response.defer()
-        await follow_signup(i, True)
         await self.raid_cog.update_raid_post(raid_id, i.channel, delay=0)
 
     async def sign_up_cancel(self, i):
@@ -943,7 +982,6 @@ class RaidView(discord.ui.View):
             upsert(self.conn, 'Players', ['byname', 'timestamp', 'unavailable'], [byname, timestamp, True],
                    ['player_id', 'raid_id'], [i.user.id, raid_id])
         self.conn.commit()
-        await follow_signup(i, False)
         await self.raid_cog.update_raid_post(raid_id, i.channel, delay=0)
 
 
