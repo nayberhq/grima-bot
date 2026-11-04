@@ -10,18 +10,29 @@ from thread_follow import follow_signup, unfollow_all
 
 
 class ThreadFollowTests(unittest.IsolatedAsyncioTestCase):
-    async def test_http_failure_warns_without_raising(self):
-        for following in (True, False):
-            channel = Mock(spec=discord.Thread, id=123,
-                           add_user=AsyncMock(), remove_user=AsyncMock())
-            method = channel.add_user if following else channel.remove_user
-            method.side_effect = discord.Forbidden(NS(status=403, reason='Forbidden'), 'denied')
-            i = NS(channel=channel, user=NS(id=9), followup=NS(send=AsyncMock()))
-            with self.assertLogs('thread_follow', level='WARNING'):
-                await follow_signup(i, following)
-            method.assert_awaited_once_with(i.user)
-            self.assertIn('signup change was saved', i.followup.send.call_args.args[0])
-            self.assertTrue(i.followup.send.call_args.kwargs['ephemeral'])
+    async def test_signup_uses_silent_mention_then_deletes(self):
+        msg = NS(delete=AsyncMock())
+        channel = Mock(spec=discord.Thread, id=123, send=AsyncMock(return_value=msg))
+        i = NS(channel=channel, user=NS(id=9), followup=NS(send=AsyncMock()))
+        await follow_signup(i, True)
+        channel.send.assert_awaited_once()
+        self.assertIn('9', channel.send.call_args.args[0])
+        self.assertTrue(channel.send.call_args.kwargs.get('silent'))
+        msg.delete.assert_awaited_once()
+
+    async def test_signup_http_failure_warns_without_raising(self):
+        channel = Mock(spec=discord.Thread, id=123, send=AsyncMock(
+            side_effect=discord.Forbidden(NS(status=403, reason='Forbidden'), 'denied')))
+        i = NS(channel=channel, user=NS(id=9), followup=NS(send=AsyncMock()))
+        with self.assertLogs('thread_follow', level='WARNING'):
+            await follow_signup(i, True)
+        self.assertIn('signup change was saved', i.followup.send.call_args.args[0])
+        self.assertTrue(i.followup.send.call_args.kwargs['ephemeral'])
+
+    async def test_unsignup_does_not_remove_from_thread(self):
+        channel = Mock(spec=discord.Thread, id=123, remove_user=AsyncMock())
+        await follow_signup(NS(channel=channel, user=NS(id=9)), False)
+        channel.remove_user.assert_not_called()
 
     async def test_ordinary_channel_is_untouched(self):
         channel = Mock(spec=discord.TextChannel)

@@ -277,7 +277,8 @@ class EventsCog(commands.Cog):
                                 self.store.touch(raid_id)
                     if self.store.lock_due(event, now) and not copy['locked']:
                         thread = await self.channel(copy['thread_id'])
-                        await unfollow_all(thread, bot=self.bot)
+                        if event['cancelled']:
+                            await unfollow_all(thread, bot=self.bot)
                         await thread.edit(locked=True, archived=True, reason='Event finished')
                         self.store.write('UPDATE EventCopies SET locked=1 WHERE thread_id=?', (copy['thread_id'],))
                 except discord.HTTPException:

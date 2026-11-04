@@ -240,7 +240,9 @@ Vanguard is available to participants. The two utility rows are consecutive, fol
 Plan, Raid Import and Refresh use blue buttons. Plan replies with the planner
 link because Discord direct-link buttons cannot have a colored background.
 Successful signup (including the class/spec picker) follows the clicked event
-thread; withdrawal unfollows that thread. Notification preferences remain under
+thread via a silent mention (no “added to thread” system message). Unsigning up
+does not remove you from the thread; deleting the event clears thread membership.
+Notification preferences remain under
 the member’s control. Grima needs Send Messages in Threads to add members and
 Manage Threads (or thread ownership) to remove them. Membership failures preserve
 the signup change and show an ephemeral warning.
