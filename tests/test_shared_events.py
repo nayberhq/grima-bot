@@ -460,11 +460,33 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
     async def test_calendar_includes_mirror_and_omits_ended_events(self):
         self.cog.store.add_copy(100, 2, 200, 200, 22)
         calendar = CalendarCog(self.bot)
-        embed = calendar.calendar_embed(2)
-        self.assertEqual(len(embed.fields), 1)
-        self.assertIn('/2/200/200', embed.fields[0].value)
+        runs = calendar.calendar_embeds(2)[-1]
+        self.assertEqual(len(runs.fields), 1)
+        self.assertIn('/2/200/200', runs.fields[0].value)
         self.cog.store.write('UPDATE Raids SET time=?', (int(time.time())-5000,))
-        self.assertEqual(len(calendar.calendar_embed(2).fields), 0)
+        self.assertEqual(len(calendar.calendar_embeds(2)[-1].fields), 0)
+
+    async def test_calendar_server_links_embed_for_mirrored_hosts(self):
+        self.cog.store.add_copy(100, 2, 200, 200, 22)
+        self.cog.store.write('INSERT OR REPLACE INTO SourceInvites VALUES (1, ?)', ('https://discord.gg/host',))
+        calendar = CalendarCog(self.bot)
+        embeds = calendar.calendar_embeds(2)
+        self.assertEqual(len(embeds), 2)
+        self.assertEqual(embeds[0].title, 'Server links')
+        self.assertIn('https://discord.gg/host', embeds[0].description)
+        self.cog.store.write('UPDATE SharedEvents SET cancelled=1 WHERE raid_id=100')
+        after_cancel = calendar.calendar_embeds(2)
+        self.assertEqual(len(after_cancel), 1)
+        self.assertEqual(after_cancel[0].title, 'Scheduled runs:')
+        self.assertEqual(len(after_cancel[0].fields), 0)
+
+    async def test_cancel_refreshes_calendars_on_owner_and_mirrors(self):
+        self.make_thread(200)
+        self.cog.store.add_copy(100, 2, 200, 200, 22)
+        self.raids.calendar_cog.update_calendar.reset_mock()
+        await self.cog.cancel(100)
+        updated = {call.args[0] for call in self.raids.calendar_cog.update_calendar.await_args_list}
+        self.assertEqual(updated, {1, 2})
 
     async def test_all_cluster_presets_build_views_and_deploy_in_release_order(self):
         from events_cog import PRESETS
@@ -793,12 +815,12 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         await self.cog.scan_watches()
 
         calendar = CalendarCog(self.bot)
-        embed_with_icon = calendar.calendar_embed(2)
+        embed_with_icon = calendar.calendar_embeds(2)[-1]
         self.assertIn('<:net_one_180672:1542002113201180672> [Folly]', embed_with_icon.fields[0].value)
 
         # Fallback to kin name when emoji is absent
         self.cog.store.write("UPDATE GuildIdentity SET emoji=NULL WHERE guild_id=1")
-        embed_with_name = calendar.calendar_embed(2)
+        embed_with_name = calendar.calendar_embeds(2)[-1]
         self.assertIn('**[One]** [Folly]', embed_with_name.fields[0].value)
 
 

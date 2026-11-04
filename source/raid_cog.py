@@ -1253,7 +1253,11 @@ class ConfigureModal(discord.ui.Modal):
         await self.raid_cog.update_raid_post(self.raid_id, interaction.channel)
         source_guild_id = select_one(self.conn, 'Raids', ['guild_id'], ['raid_id'], [self.raid_id])
         source_guild = self.raid_cog.bot.get_guild(source_guild_id)
-        await self.calendar_cog.update_calendar(source_guild_id)
+        events = self.raid_cog.bot.get_cog('EventsCog')
+        if events:
+            await events.refresh_calendars_for_raid(self.raid_id)
+        elif source_guild_id:
+            await self.calendar_cog.update_calendar(source_guild_id)
         if source_guild:
             await self.calendar_cog.modify_guild_event(source_guild, self.raid_id)
         self.stop()

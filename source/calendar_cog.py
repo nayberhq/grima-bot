@@ -37,10 +37,10 @@ class CalendarCog(commands.Cog):
         return False
 
     async def post_calendar(self, guild_id, channel):
-        embed = self.calendar_embed(guild_id)
-        msg = await channel.send(embed=embed)
+        embeds = self.calendar_embeds(guild_id)
+        msg = await channel.send(embeds=embeds)
         ids = "{0}/{1}".format(channel.id, msg.id)
-        res = upsert(self.conn, 'Settings', ['calendar'], [ids], ['guild_id'], [guild_id])
+        upsert(self.conn, 'Settings', ['calendar'], [ids], ['guild_id'], [guild_id])
         self.conn.commit()
 
     async def update_calendar(self, guild_id):
@@ -61,9 +61,9 @@ class CalendarCog(commands.Cog):
                 conn.commit()
             return
 
-        embed = self.calendar_embed(guild_id)
+        embeds = self.calendar_embeds(guild_id)
         try:
-            await msg.edit(embed=embed)
+            await msg.edit(embeds=embeds)
         except discord.Forbidden:
             logger.warning("Calendar access restricted for guild {0}.".format(guild_id))
             return
@@ -77,17 +77,49 @@ class CalendarCog(commands.Cog):
             logger.warning(e)
             return
 
-    def calendar_embed(self, guild_id):
+    def _calendar_raids(self, guild_id):
         conn = self.bot.conn
-        store = EventStore(conn)
-        raids = conn.execute('''SELECT r.channel_id,r.raid_id,r.name,r.tier,r.time,r.guild_id FROM Raids r
+        return conn.execute('''SELECT r.channel_id,r.raid_id,r.name,r.tier,r.time,r.guild_id FROM Raids r
             LEFT JOIN SharedEvents e USING (raid_id) WHERE r.guild_id=?
             AND (e.raid_id IS NULL OR (e.cancelled=0 AND r.time+e.duration>CAST(strftime('%s','now') AS INTEGER)))
             UNION ALL SELECT c.thread_id,c.message_id,r.name,r.tier,r.time,r.guild_id
             FROM EventCopies c JOIN Raids r USING (raid_id) JOIN SharedEvents e USING (raid_id)
             WHERE c.guild_id=? AND r.guild_id!=? AND e.cancelled=0
-            AND r.time+e.duration>CAST(strftime('%s','now') AS INTEGER) ORDER BY 5''', (guild_id,guild_id,guild_id)).fetchall()
+            AND r.time+e.duration>CAST(strftime('%s','now') AS INTEGER) ORDER BY 5''', (guild_id, guild_id, guild_id)).fetchall()
 
+    def calendar_server_links_embed(self, guild_id, raids):
+        shown = raids[:20]
+        host_ids = []
+        seen = set()
+        if any(r[5] == guild_id for r in shown):
+            host_ids.append(guild_id)
+            seen.add(guild_id)
+        for raid in shown:
+            source_guild_id = raid[5]
+            if source_guild_id not in seen:
+                host_ids.append(source_guild_id)
+                seen.add(source_guild_id)
+        if not host_ids:
+            return None
+        store = EventStore(self.conn)
+        lines = []
+        for source_guild_id in host_ids:
+            invite_row = store.one('SELECT url FROM SourceInvites WHERE guild_id=?', (source_guild_id,))
+            url = invite_row['url'] if invite_row else _('Invite unavailable')
+            source_guild = self.bot.get_guild(source_guild_id) if hasattr(self.bot, 'get_guild') else None
+            fallback_name = getattr(source_guild, 'name', None) if source_guild else None
+            name = fallback_name or f'Server {source_guild_id}'
+            badge = store.guild_badge(source_guild_id, fallback_name=fallback_name)
+            prefix = f"{badge} " if badge else ""
+            lines.append(f"{prefix}**{name}**: {url}")
+        return discord.Embed(
+            title=_('Server links'),
+            description='\n'.join(lines),
+            colour=discord.Colour(0x3498db),
+        )
+
+    def calendar_runs_embed(self, guild_id, raids):
+        store = EventStore(self.conn)
         title = _("Scheduled runs:")
         desc = _("Click the link to sign up!")
         embed = discord.Embed(title=title, description=desc, colour=discord.Colour(0x3498db))
@@ -109,6 +141,18 @@ class CalendarCog(commands.Cog):
         embed.set_footer(text=_("Last updated"))
         embed.timestamp = datetime.now()
         return embed
+
+    def calendar_embeds(self, guild_id):
+        raids = self._calendar_raids(guild_id)
+        embeds = []
+        links = self.calendar_server_links_embed(guild_id, raids)
+        if links is not None:
+            embeds.append(links)
+        embeds.append(self.calendar_runs_embed(guild_id, raids))
+        return embeds
+
+    def calendar_embed(self, guild_id):
+        return self.calendar_runs_embed(guild_id, self._calendar_raids(guild_id))
 
     async def create_guild_event(self, guild, raid_id):
         conn = self.bot.conn

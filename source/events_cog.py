@@ -265,6 +265,19 @@ class EventsCog(commands.Cog):
     async def cancel(self, raid_id):
         self.store.write('UPDATE SharedEvents SET cancelled=1, share_token=NULL, revision=revision+1 WHERE raid_id=?', (raid_id,))
         await self.reconcile(raid_id)
+        await self.refresh_calendars_for_raid(raid_id)
+
+    async def refresh_calendars_for_raid(self, raid_id):
+        if not self.raids or not self.raids.calendar_cog:
+            return
+        event = self.store.event(raid_id)
+        guild_ids = set()
+        if event:
+            guild_ids.add(event['guild_id'])
+        for copy in self.store.copies(raid_id):
+            guild_ids.add(copy['guild_id'])
+        for guild_id in guild_ids:
+            await self.raids.calendar_cog.update_calendar(guild_id)
 
     async def reconcile(self, raid_id, now=None):
         now = time.time() if now is None else now

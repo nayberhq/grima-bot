@@ -265,6 +265,8 @@ class NetworkCog(commands.Cog):
                 await thread.edit(locked=True,archived=True)
             except discord.HTTPException:
                 pass
+        if self.events.raids and self.events.raids.calendar_cog:
+            await self.events.raids.calendar_cog.update_calendar(target)
         await interaction.followup.send('Server disconnected and blocked from rejoining this event.',ephemeral=True)
 
     @app_commands.command(name='event-repair',description='Repair or reconnect a server’s event copy using its sharing code.')
