@@ -102,6 +102,13 @@ for ((i=0;i<40;i++)); do
   state=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$NAME")
   if [[ "$state" == healthy ]]; then
     printf '%s\n' "$IMAGE" > "$ROOT/image"
+    # Keep only the running image and the one it replaced for rollback.
+    repo=${IMAGE%%[:@]*}
+    docker images --no-trunc --format '{{.ID}} {{.Repository}}:{{.Tag}}' "$repo" |
+      while read -r id ref; do
+        [[ "$id" == "$CANDIDATE" || "$id" == "$OLD" ]] || docker rmi "$ref" >/dev/null 2>&1 || true
+      done
+    docker image prune -f >/dev/null 2>&1 || true
     echo 'Grima connected and ready.'
     if [[ "$REBOOT" == 1 && -f /var/run/reboot-required ]]; then shutdown -r +1; fi
     exit 0
