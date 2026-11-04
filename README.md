@@ -8,7 +8,7 @@ GPL-3.0 licensing are preserved.
 ## Quick Setup & Operations
 
 - **Server setup (`/setup`)** and **paged settings (`/settings`)**: `/setup` runs the full permission smoke test from slash parameters (forums, push/pull channels, panels, voice, roles, calendar/RSS). `/settings` opens a private multi-page editor prefilled from saved configuration; saving runs the same smoke test and only reposts cluster panels when the panel channel changes.
-- **Default Event Footer (`/description`)**: Copy any Discord message link into `/description message_link:<url>` to set your server's reusable event description footer.
+- **Event description template (`/settings` or `/setup`)**: On `/settings` page 5, use **Set description template…** with a Discord message link (see the placeholder example on that page). Optional on `/setup`: `description_message_link`. Per-event Aim text still comes from event creation; the template sits between Aim and the kin invite block.
 - **In-Discord Setup Guide (`/help`)**: Displays step-by-step instructions for setting up raid forums, announcement push/pull sync, and class/role channels.
 - **Pi Deployment (`./deploy.sh`)**: See [DEPLOYMENT.md](DEPLOYMENT.md) for testing, building, and deploying container releases to a 64-bit Raspberry Pi.
 

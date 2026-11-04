@@ -116,8 +116,8 @@ class ConfigCog(commands.Cog):
                     "**Step B — Optional Forums (routing is implied)**\n"
                     "Events use the first forum that applies: a matching tier forum (`t1_forum`–`t5_forum`), then `instance_forum` for ≤6-player events, then `raid_forum`. A T3 instance uses `t3_forum` when that is set; a T2 instance uses `instance_forum` when T2 has no forum; a T2 raid uses `raid_forum` unless `t2_forum` is set.\n\n"
                     "**Step C — Run `/setup` or `/settings` (Includes Permission Smoke Test)**\n"
-                    "• **`/setup`** — one-shot configuration with slash parameters (`raid_forum`, `announcement_channel`, `panel_channel`, `voice_category`, optional instance and tier forums, watch channel, roles, calendar/RSS, timings).\n"
-                    "• **`/settings`** — paged editor prefilled from saved configuration; use **Save** when finished.\n"
+                    "• **`/setup`** — one-shot configuration with slash parameters (`raid_forum`, `announcement_channel`, `panel_channel`, `voice_category`, optional instance and tier forums, watch channel, roles, calendar/RSS, timings, optional `description_message_link`).\n"
+                    "• **`/settings`** — paged editor prefilled from saved configuration; page 5 sets the event description template from a message link (with placeholder tag examples); use **Save** when finished.\n"
                     "• If any permission or channel flag is missing, the command halts with an exact checklist of what to fix.\n"
                     "• On first setup (or when the panel channel changes), Gríma posts all **8 LOTRO Cluster Panels** (with LOTRO Wiki artwork) in chronological release order and keeps them sticky at the bottom of the panel channel. Re-running with the same panel channel leaves existing panels in place."
                 ),

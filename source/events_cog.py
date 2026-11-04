@@ -20,6 +20,7 @@ from time_cog import Time, time_zone_autocomplete
 
 log = logging.getLogger(__name__)
 PRESETS = json.loads(Path(__file__).with_name('event_panels.json').read_text())
+DESCRIPTION_SEP = '----------------------------------------------'
 
 
 class EventsCog(commands.Cog):
@@ -111,18 +112,20 @@ class EventsCog(commands.Cog):
             auto_archive_duration=10080, reason='Create raid forum')
         return result.thread, result.message, settings
 
-    def format_event_description(self, event, footer_text=None, invite_url=None, code=None):
+    @staticmethod
+    def _append_template_section(lines, template_text):
+        lines.extend(['', DESCRIPTION_SEP, '', template_text.strip(), '', DESCRIPTION_SEP])
+
+    def format_event_description(self, event, template_text=None, invite_url=None, code=None):
         header = f"{event['name']} {event['tier']}".strip() if event.get('tier') else event['name']
         lines = [header]
         if event.get('boss'):
             lines.append(event['boss'])
-        lines.append('')
-        lines.append('----------------------------------------------')
-        if footer_text and footer_text.strip():
-            lines.append('')
-            lines.append(footer_text.strip())
-            lines.append('')
-            lines.append('----------------------------------------------')
+        template = (template_text or '').strip()
+        if template:
+            self._append_template_section(lines, template)
+        else:
+            lines.extend(['', DESCRIPTION_SEP])
         guild = self.bot.get_guild(event['guild_id'])
         kinship = guild.name if guild and getattr(guild, 'name', None) else 'host'
         lines.append('')
@@ -132,6 +135,63 @@ class EventsCog(commands.Cog):
             lines.append('')
             lines.append(f'mirrorkey:{code}')
         return '\n'.join(lines)
+
+    async def resolve_template_from_link(self, guild, message_link: str) -> str:
+        message_link = message_link.strip()
+        m = re.search(r'discord(?:app)?\.com/channels/(\d+)/(\d+)/(\d+)', message_link)
+        if m:
+            link_guild_id, link_channel_id, link_message_id = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            if link_guild_id != guild.id:
+                raise ValueError('The template message link must be from a channel in this server.')
+            try:
+                channel = await self.channel(link_channel_id)
+                msg = await channel.fetch_message(link_message_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+                raise ValueError(
+                    'Could not fetch that message. Ensure the bot has View Channel and Read Message History in that channel.'
+                ) from exc
+            parts = []
+            if getattr(msg, 'content', None) and msg.content.strip():
+                parts.append(msg.content.strip())
+            for emb in getattr(msg, 'embeds', None) or ():
+                if getattr(emb, 'description', None) and emb.description.strip():
+                    parts.append(emb.description.strip())
+            body = '\n\n'.join(parts).strip()
+            if not body:
+                raise ValueError('The linked message has no text content to copy.')
+        else:
+            body = message_link
+        if len(body) > 2500:
+            raise ValueError('The template text must be 2500 characters or fewer.')
+        return body
+
+    def guild_description_template_body(self, guild_id):
+        row = self.store.one("SELECT body FROM EventTemplates WHERE guild_id=? AND kind='description'", (guild_id,))
+        if row:
+            return row['body']
+        legacy = self.store.one("SELECT body FROM EventTemplates WHERE guild_id=? AND kind='footer'", (guild_id,))
+        return legacy['body'] if legacy else None
+
+    async def persist_description_template(self, guild_id, body: str | None):
+        """Save or clear the server event description template and refresh active events."""
+        if body:
+            self.store.write("DELETE FROM EventTemplates WHERE guild_id=? AND kind='footer'", (guild_id,))
+            self.store.write(
+                'INSERT OR REPLACE INTO EventTemplates VALUES (?,?,?)',
+                (guild_id, 'description', body),
+            )
+        else:
+            self.store.write(
+                "DELETE FROM EventTemplates WHERE guild_id=? AND kind IN ('description', 'footer')",
+                (guild_id,),
+            )
+        self.store.write(
+            'UPDATE SharedEvents SET revision=revision+1 WHERE raid_id IN (SELECT raid_id FROM Raids WHERE guild_id=?)',
+            (guild_id,),
+        )
+        for r in self.store.rows('SELECT raid_id FROM Raids WHERE guild_id=?', (guild_id,)):
+            if self.store.event(r['raid_id']):
+                await self.refresh(r['raid_id'])
 
     async def refresh(self, raid_id):
         async with self.locks[raid_id]:
@@ -159,23 +219,24 @@ class EventsCog(commands.Cog):
                 thread = await self.channel(copy['thread_id'])
                 await thread.edit(name=self.title(event, copy['guild_id']), archived=False)
                 local_embed = embed.copy()
-                footer_row = self.store.one("SELECT body FROM EventTemplates WHERE guild_id=? AND kind='footer'", (event['guild_id'],))
-                if not footer_row:
-                    footer_row = self.store.one("SELECT body FROM EventTemplates WHERE guild_id=? AND kind='description'", (event['guild_id'],))
+                template_body = self.guild_description_template_body(event['guild_id'])
                 invite_row = self.store.one('SELECT url FROM SourceInvites WHERE guild_id=?', (event['guild_id'],))
                 invite_url = invite_row['url'] if invite_row else None
                 budget = min(4096, 6000 - len(local_embed) + (len(local_embed.description or '')))
-                footer_body = footer_row['body'] if footer_row else None
-                if footer_body:
+                if template_body:
                     planning = self.bot.get_cog('PlanningCog')
                     if planning:
                         try:
-                            footer_body = planning.render(event, footer_body, budget)
+                            template_body = planning.render(event, template_body, budget)
                         except ValueError:
-                            pass
+                            log.warning(
+                                'Could not render event description template for guild %s; using raw template',
+                                event['guild_id'],
+                                exc_info=True,
+                            )
                 local_embed.description = self.format_event_description(
                     event,
-                    footer_text=footer_body,
+                    template_text=template_body,
                     invite_url=invite_url,
                     code=code,
                 )[:budget]
@@ -608,6 +669,7 @@ class EventsCog(commands.Cog):
             server_invite_url=draft.server_invite_url.strip() or None,
             duration_minutes=draft.duration_minutes,
             lock_delay_minutes=draft.lock_delay_minutes,
+            description_template=draft.description_template,
         )
 
     async def smoke_test_and_apply_setup(
@@ -634,6 +696,7 @@ class EventsCog(commands.Cog):
         server_invite_url: str | None = None,
         duration_minutes: int = 180,
         lock_delay_minutes: int = 60,
+        description_template: str | None = None,
     ) -> tuple[bool, discord.Embed]:
         guild = interaction.guild
         me = guild.me
@@ -888,6 +951,12 @@ class EventsCog(commands.Cog):
         if verified_invite_url is not None:
             self.store.write('INSERT OR REPLACE INTO SourceInvites VALUES (?,?)', (guild.id, verified_invite_url))
             self.store.write('UPDATE SharedEvents SET revision=revision+1 WHERE raid_id IN (SELECT raid_id FROM Raids WHERE guild_id=?)', (guild.id,))
+        if description_template is not None:
+            await self.persist_description_template(guild.id, description_template or None)
+            if description_template:
+                checks.append('**Event description template:** updated from message link')
+            else:
+                checks.append('**Event description template:** cleared')
         self.bot.conn.commit()
 
         network = self.bot.get_cog('NetworkCog')
@@ -946,6 +1015,7 @@ class EventsCog(commands.Cog):
         server_invite_url='Optional: Non-expiring invite URL to this server for cross-server voice links.',
         duration_minutes='Optional: Default raid duration in minutes (15–1440, default 180).',
         lock_delay_minutes='Optional: Minutes after event end before locking forum threads (0–10080, default 60).',
+        description_message_link='Optional: Discord message link copied into the reusable event description template (see `/settings`).',
     )
     async def setup_command(
         self,
@@ -971,8 +1041,12 @@ class EventsCog(commands.Cog):
         server_invite_url: str | None = None,
         duration_minutes: app_commands.Range[int, 15, 1440] = 180,
         lock_delay_minutes: app_commands.Range[int, 0, 10080] = 60,
+        description_message_link: str | None = None,
     ):
         await interaction.response.defer(ephemeral=True)
+        description_template = None
+        if description_message_link is not None and description_message_link.strip():
+            description_template = await self.resolve_template_from_link(interaction.guild, description_message_link)
         _, embed = await self.smoke_test_and_apply_setup(
             interaction=interaction,
             raid_forum=raid_forum,
@@ -996,6 +1070,7 @@ class EventsCog(commands.Cog):
             server_invite_url=server_invite_url,
             duration_minutes=duration_minutes,
             lock_delay_minutes=lock_delay_minutes,
+            description_template=description_template,
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
 

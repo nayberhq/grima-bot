@@ -721,24 +721,13 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         network = NetworkCog(self.bot)
         self.bot.get_cog = lambda name: {'RaidCog': self.raids, 'EventsCog': self.cog, 'PlanningCog': planning, 'NetworkCog': network, 'TimeCog': NS(get_server_timezone=lambda guild_id: 'UTC')}.get(name)
 
-        # Mock template message for /description
-        self.channels[555] = NS(
-            id=555,
-            fetch_message=AsyncMock(return_value=NS(id=888, content='Must have tier 3 deed and Discord voice.', embeds=[])),
+        self.cog.store.write(
+            'INSERT OR REPLACE INTO EventTemplates VALUES (?,?,?)',
+            (1, 'description', 'Must have tier 3 deed and Discord voice.'),
         )
-        interaction = NS(
-            guild_id=1,
-            response=NS(defer=AsyncMock(), send_message=AsyncMock()),
-            followup=NS(send=AsyncMock()),
-        )
-        await PlanningCog.description_command.callback(
-            planning,
-            interaction,
-            message_link='https://discord.com/channels/1/555/888',
-            clear=False,
-        )
-        saved_footer = self.cog.store.one("SELECT body FROM EventTemplates WHERE guild_id=1 AND kind='footer'")
-        self.assertEqual(saved_footer['body'], 'Must have tier 3 deed and Discord voice.')
+        await self.cog.refresh(100)
+        saved = self.cog.store.one("SELECT body FROM EventTemplates WHERE guild_id=1 AND kind='description'")
+        self.assertEqual(saved['body'], 'Must have tier 3 deed and Discord voice.')
 
         # Verify event embed description matches description.txt template
         edit_kwargs = self.thread.get_partial_message.return_value.edit.call_args.kwargs
@@ -760,6 +749,17 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('<#100>', ann_body)
         self.assertIn('Not in the Vanguard discord? join here!\nhttps://discord.gg/vanguard', ann_body)
         self.assertIn('mirrorkey:', ann_body)
+
+    def test_format_event_description_sections(self):
+        event = dict(name='Folly', tier='T3', guild_id=1, boss='Bring consumables')
+        desc = self.cog.format_event_description(
+            event,
+            template_text='Must have deed.',
+            invite_url='https://discord.gg/x',
+        )
+        self.assertIn('Folly T3\nBring consumables', desc)
+        self.assertIn('Must have deed.', desc)
+        self.assertIn('Not in the', desc)
 
     async def test_calendar_displays_network_embed_emoji_or_kin_name_fallback(self):
         from event_store import extract_origin_badge

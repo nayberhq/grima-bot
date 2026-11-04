@@ -3,6 +3,19 @@ from __future__ import annotations
 
 import discord
 
+DESCRIPTION_TEMPLATE_EXAMPLE = (
+    "Post a message like this in a channel, then paste its link in **Set description template…**:\n"
+    "```\n"
+    "Requirements: voice in Discord, consumables ready.\n"
+    "When: {start} · Ends: {end}\n"
+    "Aim: {description}\n"
+    "Signups so far: {signup_count}\n"
+    "Questions: ping {organizer}\n"
+    "```\n"
+    "Placeholders: `{title}` `{tier}` `{description}` `{start}` `{end}` `{organizer}` `{signup_count}` "
+    "(`{description}` is the per-event Aim from creation)."
+)
+
 
 class SetupDraft:
     __slots__ = (
@@ -11,6 +24,7 @@ class SetupDraft:
         't4_forum_id', 't5_forum_id', 'watch_channel_id', 'leader_role_id', 'kin_role_id',
         'calendar_id', 'rss_id', 'discord_events', 'kin_icon', 'server_timezone',
         'server_invite_url', 'duration_minutes', 'lock_delay_minutes',
+        'description_template_preview', 'description_template',
     )
 
     def __init__(self):
@@ -35,6 +49,8 @@ class SetupDraft:
         self.server_invite_url = ''
         self.duration_minutes = 180
         self.lock_delay_minutes = 60
+        self.description_template_preview = ''
+        self.description_template = None
 
 
 def load_setup_draft(store, conn, guild_id) -> SetupDraft:
@@ -77,6 +93,11 @@ def load_setup_draft(store, conn, guild_id) -> SetupDraft:
     invite = store.one('SELECT url FROM SourceInvites WHERE guild_id=?', (guild_id,))
     if invite and invite.get('url'):
         draft.server_invite_url = invite['url']
+    desc = store.one("SELECT body FROM EventTemplates WHERE guild_id=? AND kind='description'", (guild_id,))
+    if not desc:
+        desc = store.one("SELECT body FROM EventTemplates WHERE guild_id=? AND kind='footer'", (guild_id,))
+    if desc and desc.get('body'):
+        draft.description_template_preview = desc['body']
     return draft
 
 
@@ -114,6 +135,32 @@ class SetupTextModal(discord.ui.Modal, title='Setup text options'):
         )
 
 
+class SetupDescriptionTemplateModal(discord.ui.Modal, title='Event description template'):
+    message_link = discord.ui.TextInput(
+        label='Discord message link',
+        placeholder='https://discord.com/channels/… (same server)',
+        required=True,
+        max_length=200,
+    )
+
+    def __init__(self, editor: 'SetupEditorView'):
+        super().__init__()
+        self.editor = editor
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            body = await self.editor.cog.resolve_template_from_link(interaction.guild, self.message_link.value)
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        self.editor.draft.description_template = body
+        self.editor.draft.description_template_preview = body
+        await interaction.response.edit_message(
+            embed=self.editor.embed(),
+            view=self.editor,
+        )
+
+
 class SetupEditorView(discord.ui.View):
     PAGE_TITLES = (
         'Core channels',
@@ -137,7 +184,7 @@ class SetupEditorView(discord.ui.View):
             f"Timezone: `{d.server_timezone or 'default'}` · Duration: {d.duration_minutes}m · "
             f"Lock: {d.lock_delay_minutes}m · Discord events: {'on' if d.discord_events else 'off'}"
         )
-        return discord.Embed(
+        embed = discord.Embed(
             title='Server setup',
             description=(
                 f"**{self.PAGE_TITLES[self.page]}** (page {self.page + 1}/{len(self.PAGE_TITLES)})\n"
@@ -145,6 +192,15 @@ class SetupEditorView(discord.ui.View):
             ),
             colour=discord.Colour(0x3498db),
         )
+        if self.page == len(self.PAGE_TITLES) - 1:
+            preview = d.description_template_preview.strip()
+            if preview:
+                snippet = preview if len(preview) <= 200 else preview[:197] + '…'
+                embed.add_field(name='Saved template', value=snippet, inline=False)
+            else:
+                embed.add_field(name='Saved template', value='*(not set)*', inline=False)
+            embed.add_field(name='How to write the template message', value=DESCRIPTION_TEMPLATE_EXAMPLE, inline=False)
+        return embed
 
     def reload(self):
         self.clear_items()
@@ -169,7 +225,13 @@ class SetupEditorView(discord.ui.View):
             self._text_select(3, 'RSS (optional)', 'rss_id', optional=True)
         else:
             self._events_select(0)
-            btn = discord.ui.Button(label='Edit text fields…', style=discord.ButtonStyle.secondary, row=1)
+            set_btn = discord.ui.Button(label='Set description template…', style=discord.ButtonStyle.primary, row=1)
+            set_btn.callback = self.open_description_modal
+            self.add_item(set_btn)
+            clear_btn = discord.ui.Button(label='Clear description template', style=discord.ButtonStyle.danger, row=1)
+            clear_btn.callback = self.clear_description_template
+            self.add_item(clear_btn)
+            btn = discord.ui.Button(label='Edit text fields…', style=discord.ButtonStyle.secondary, row=2)
             btn.callback = self.open_text_modal
             self.add_item(btn)
         self._nav_row()
@@ -328,6 +390,14 @@ class SetupEditorView(discord.ui.View):
 
     async def open_text_modal(self, interaction: discord.Interaction):
         await interaction.response.send_modal(SetupTextModal(self))
+
+    async def open_description_modal(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(SetupDescriptionTemplateModal(self))
+
+    async def clear_description_template(self, interaction: discord.Interaction):
+        self.draft.description_template = ''
+        self.draft.description_template_preview = ''
+        await interaction.response.edit_message(embed=self.embed(), view=self)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
