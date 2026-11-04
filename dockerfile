@@ -4,6 +4,7 @@ WORKDIR /app
 COPY requirements.txt LICENSE.md lotro-com-chain.pem ./
 RUN pip install --no-cache-dir -r requirements.txt
 COPY source /app/source
+COPY emojis /app/emojis
 COPY tests /app/tests
 COPY deploy /app/deploy
 COPY deploy.sh /app/deploy.sh

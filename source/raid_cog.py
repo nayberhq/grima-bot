@@ -102,26 +102,33 @@ class RaidCog(commands.Cog):
         singles = [s for s in singles if s]
         return ''.join(singles) or self.emojis_dict.get(name, f"[{name}]")
 
+    async def reload_emojis(self):
+        """Prefer application emojis over host-guild emojis; returns True when any were loaded."""
+        if not hasattr(self.bot, 'fetch_application_emojis'):
+            return False
+        try:
+            app_emojis = await self.bot.fetch_application_emojis()
+        except discord.HTTPException:
+            app_emojis = []
+        if not app_emojis:
+            return False
+        by_name = {e.name: e for e in app_emojis}
+        for e in self.class_emojis + self.creep_emojis + self.spec_emojis:
+            by_name.setdefault(e.name, e)
+        specs = ["Red", "Blue", "Red_Blue", "Yellow", "Red_Yellow", "Blue_Yellow", "Triple"]
+        spec_names = ["_".join(element) for element in itertools.product(self.role_names, specs)]
+        self.class_emojis = [by_name[name] for name in self.role_names if name in by_name]
+        self.creep_emojis = [by_name[name] for name in (self.creep_names or ()) if name in by_name]
+        self.spec_emojis = [by_name[name] for name in spec_names if name in by_name]
+        self.emojis_dict = {e.name: str(e) for e in self.class_emojis + self.creep_emojis + self.spec_emojis}
+        return True
+
     async def cog_load(self):
-        if hasattr(self.bot, 'fetch_application_emojis'):
-            try:
-                app_emojis = await self.bot.fetch_application_emojis()
-            except discord.HTTPException:
-                app_emojis = []
-            if app_emojis:
-                by_name = {e.name: e for e in app_emojis}
-                for e in self.class_emojis + self.creep_emojis + self.spec_emojis:
-                    by_name.setdefault(e.name, e)
-                specs = ["Red", "Blue", "Red_Blue", "Yellow", "Red_Yellow", "Blue_Yellow", "Triple"]
-                spec_names = ["_".join(element) for element in itertools.product(self.role_names, specs)]
-                self.class_emojis = [by_name[name] for name in self.role_names if name in by_name]
-                self.creep_emojis = [by_name[name] for name in (self.creep_names or ()) if name in by_name]
-                self.spec_emojis = [by_name[name] for name in spec_names if name in by_name]
-                self.emojis_dict = {e.name: str(e) for e in self.class_emojis + self.creep_emojis + self.spec_emojis}
-                self.bot.add_view(RaidView(self))
-                self.bot.add_view(CreepView(self))
-                self.conn.execute('UPDATE SharedEvents SET revision=revision+1')
-                self.conn.commit()
+        if await self.reload_emojis():
+            self.bot.add_view(RaidView(self))
+            self.bot.add_view(CreepView(self))
+            self.conn.execute('UPDATE SharedEvents SET revision=revision+1')
+            self.conn.commit()
         self.background_task.start()
 
     async def cog_unload(self):

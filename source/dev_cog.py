@@ -1,9 +1,11 @@
+from pathlib import Path
 from subprocess import Popen, PIPE
 from discord.ext import commands
 import datetime
 import discord
 import logging
 import psutil
+import time
 
 from database import delete, select
 from utils import chunks
@@ -174,6 +176,57 @@ class DevCog(commands.Cog):
         lines.append('Removed global duplicates — each command should appear once per server.')
         logger.info('Synced slash commands for %s guild(s).', len(counts))
         await ctx.send('Synced bot commands.\n' + '\n'.join(lines))
+
+    async def replace_spec_emojis(self, role_names, emoji_dir):
+        """Replace single-spec application emojis from `{Class}_{Color}.webp` files."""
+        existing = {}
+        for e in await self.bot.fetch_application_emojis():
+            existing.setdefault(e.name, []).append(e)
+        files = {p.stem.replace('-', '').lower(): p for p in Path(emoji_dir).glob('*.webp')}
+        replaced, failed = [], []
+        for role in role_names:
+            for color in ('Red', 'Blue', 'Yellow'):
+                name = f'{role}_{color}'
+                path = files.get(name.replace('-', '').lower())
+                if path is None:
+                    continue
+                try:
+                    for old in existing.get(name, ()):
+                        await old.delete()
+                    await self.bot.create_application_emoji(name=name, image=path.read_bytes())
+                    replaced.append(name)
+                except discord.HTTPException as exc:
+                    logger.warning('Could not replace emoji %s: %s', name, exc)
+                    failed.append(name)
+        return replaced, failed
+
+    @commands.command(hidden=True)
+    @commands.is_owner()
+    async def spec_emojis(self, ctx):
+        raids = self.bot.get_cog('RaidCog')
+        events = self.bot.get_cog('EventsCog')
+        emoji_dir = Path(__file__).resolve().parents[1] / 'emojis'
+        await ctx.send('Replacing single-spec emojis…')
+        try:
+            replaced, failed = await self.replace_spec_emojis(raids.role_names, emoji_dir)
+        except discord.HTTPException as exc:
+            await ctx.send(f'Could not list application emojis: {exc}')
+            return
+        await raids.reload_emojis()
+        refreshed = 0
+        if events:
+            now = time.time()
+            for row in events.store.rows('SELECT raid_id FROM SharedEvents'):
+                event = events.store.event(row['raid_id'])
+                if event and not events.store.ended(event, now):
+                    events.store.touch(row['raid_id'])
+                    await events.refresh(row['raid_id'])
+                    refreshed += 1
+        msg = f'Replaced {len(replaced)} emojis, refreshed {refreshed} events.'
+        if failed:
+            msg += '\nFailed: ' + ', '.join(failed)
+        await ctx.send(msg)
+
 
 async def setup(bot):
     await bot.add_cog(DevCog(bot))
