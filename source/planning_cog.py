@@ -131,12 +131,34 @@ class PlanningCog(commands.Cog):
     def pages(self, event, plan):
         return ['\n'.join([card.title, card.description]+[f"{f.name}\n{f.value}" for f in card.fields]) for card in self.cards(event, plan)]
 
+    INLINE_CARD_LIMIT = 9
+    INLINE_CHAR_BUDGET = 4000
+
+    def split_cards(self, event, plan):
+        """Split run cards into those shown on the event post and overflow messages."""
+        cards = self.cards(event, plan) if plan else []
+        inline, total = [], 0
+        for index, card in enumerate(cards):
+            if len(inline) >= self.INLINE_CARD_LIMIT or total + len(card) > self.INLINE_CHAR_BUDGET:
+                return inline, cards[index:]
+            inline.append(card)
+            total += len(card)
+        return inline, []
+
     async def sync(self, raid_id):
+        if not self.store.event(raid_id):
+            return
+        self.store.touch(raid_id)
+        await self.events.refresh(raid_id)
+        await self.sync_overflow(raid_id)
+
+    async def sync_overflow(self, raid_id):
         async with self.lock:
             event, plan = self.store.event(raid_id), self.plan(raid_id)
-            if not event or not plan:
+            if not event:
                 return
-            cards = self.cards(event, plan)
+            inline, overflow = self.split_cards(event, plan)
+            offset = len(inline)
             for copy in self.store.copies(raid_id):
                 if copy['locked']:
                     continue
@@ -147,7 +169,9 @@ class PlanningCog(commands.Cog):
                     if thread.archived:
                         await thread.edit(archived=False)
                     old = {r['page']:r for r in self.store.rows('SELECT * FROM PlanMessages WHERE thread_id=?', (copy['thread_id'],))}
-                    for index, card in enumerate(cards):
+                    if not overflow and not old:
+                        continue
+                    for index, card in enumerate(overflow, offset):
                         body = json.dumps(card.to_dict(), sort_keys=True)
                         key=f"roster:{copy['thread_id']}:{index}:{hashlib.sha256(body.encode()).hexdigest()}"
                         row = old.pop(index, None)
@@ -184,7 +208,7 @@ class PlanningCog(commands.Cog):
     async def refresh_plans(self):
         for row in self.store.rows('SELECT raid_id FROM EventPlans'):
             try:
-                await self.sync(row['raid_id'])
+                await self.sync_overflow(row['raid_id'])
             except Exception:
                 log.exception('Roster refresh failed; continuing other events')
 

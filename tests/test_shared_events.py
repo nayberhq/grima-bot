@@ -275,7 +275,7 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         await self.cog.reconcile(100,now)
         self.guilds[1].create_voice_channel.assert_awaited_once()
         self.guilds[2].create_voice_channel.assert_not_awaited()
-        embed=mirror.get_partial_message.return_value.edit.call_args.kwargs['embed']
+        embed=mirror.get_partial_message.return_value.edit.call_args.kwargs['embeds'][0]
         values=[f.value for f in embed.fields]
         self.assertIn('https://discord.com/channels/1/500',values)
         self.assertIn('https://discord.gg/owner',values)
@@ -788,7 +788,7 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
 
         # Verify event embed description matches description.txt template
         edit_kwargs = self.thread.get_partial_message.return_value.edit.call_args.kwargs
-        desc = edit_kwargs['embed'].description
+        desc = edit_kwargs['embeds'][0].description
         self.assertIn('Folly T3\nBring consumables', desc)
         self.assertIn('----------------------------------------------\n\nMust have tier 3 deed and Discord voice.\n\n----------------------------------------------', desc)
         self.assertIn('Not in the Vanguard discord? join here!\nhttps://discord.gg/vanguard', desc)
@@ -806,6 +806,19 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('<#100>', ann_body)
         self.assertIn('Not in the Vanguard discord? join here!\nhttps://discord.gg/vanguard', ann_body)
         self.assertIn('mirrorkey:', ann_body)
+
+    async def test_roster_cards_are_embedded_in_event_post(self):
+        import json
+        from planning_cog import PlanningCog
+        planning = PlanningCog(self.bot)
+        self.bot.get_cog = lambda name: {'RaidCog': self.raids, 'EventsCog': self.cog, 'PlanningCog': planning, 'TimeCog': NS(get_server_timezone=lambda guild_id: 'UTC')}.get(name)
+        team = dict(label='Folly', members=[])
+        self.cog.store.write('INSERT INTO EventPlans VALUES (100,1,?)', (json.dumps([team, team]),))
+        await planning.sync(100)
+        embeds = self.thread.get_partial_message.return_value.edit.call_args.kwargs['embeds']
+        self.assertEqual(len(embeds), 3)
+        self.assertTrue(embeds[1].title.startswith('Run 1'))
+        self.assertLessEqual(sum(len(e) for e in embeds), 6000)
 
     def test_format_event_description_sections(self):
         event = dict(name='Folly', tier='T3', guild_id=1, boss='Bring consumables')

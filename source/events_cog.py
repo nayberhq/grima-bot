@@ -212,6 +212,14 @@ class EventsCog(commands.Cog):
             event['share_token'] = code
         embed.add_field(name='Ends', value=f"<t:{event['time'] + event['duration']}:F>", inline=False)
         embed.set_footer(text='Cancelled' if event['cancelled'] else ('Event ended' if ended else 'Shared roster • Sign up from any linked server'))
+        roster_cards = []
+        planning = self.bot.get_cog('PlanningCog')
+        if planning:
+            plan = planning.plan(raid_id)
+            if plan:
+                roster_cards, _ = planning.split_cards(event, plan)
+        # Later fields (voice and invite links) are added after the description is sized.
+        cards_room = sum(len(card) for card in roster_cards) + (300 if roster_cards else 0)
         for copy in self.store.copies(raid_id):
             if copy['locked'] or copy['revision'] == event['revision']:
                 continue
@@ -222,9 +230,8 @@ class EventsCog(commands.Cog):
                 template_body = self.guild_description_template_body(event['guild_id'])
                 invite_row = self.store.one('SELECT url FROM SourceInvites WHERE guild_id=?', (event['guild_id'],))
                 invite_url = invite_row['url'] if invite_row else None
-                budget = min(4096, 6000 - len(local_embed) + (len(local_embed.description or '')))
+                budget = min(4096, 6000 - cards_room - len(local_embed) + (len(local_embed.description or '')))
                 if template_body:
-                    planning = self.bot.get_cog('PlanningCog')
                     if planning:
                         try:
                             template_body = planning.render(event, template_body, budget)
@@ -249,7 +256,7 @@ class EventsCog(commands.Cog):
                     local_embed.add_field(name='Join the event server',value=invite_url if invite_url else 'Invite unavailable. Ask the organizer to set server_invite_url in /setup in the owning server.',inline=False)
                 view = None if ended else (CreepView(self.raids) if event['creep'] else RaidView(self.raids, raid_id=raid_id))
                 await thread.get_partial_message(copy['message_id']).edit(
-                    content=None, embed=local_embed, view=view, allowed_mentions=discord.AllowedMentions.none())
+                    content=None, embeds=[local_embed, *roster_cards], view=view, allowed_mentions=discord.AllowedMentions.none())
                 if copy['voice_id'] and copy['guild_id']==event['guild_id']:
                     try:
                         voice = await self.channel(copy['voice_id'])

@@ -98,16 +98,45 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.store.event=Mock(return_value={**EVENT, 'cancelled':0, 'lock_delay':600, 'time':9999999999})
         self.store.copies=Mock(return_value=[dict(thread_id=1,locked=0),dict(thread_id=2,locked=0),dict(thread_id=3,locked=1)])
         self.channels={i:NS(id=i,archived=False,fetch_message=AsyncMock(),send=AsyncMock(return_value=NS(id=i*10)),get_partial_message=Mock(return_value=NS(edit=AsyncMock(),delete=AsyncMock()))) for i in (1,2,3)}
-        events=NS(store=self.store,channel=AsyncMock(side_effect=lambda i:self.channels[i]))
-        self.cog=PlanningCog(NS(conn=self.conn,get_cog=lambda _:events))
+        self.events=NS(store=self.store,channel=AsyncMock(side_effect=lambda i:self.channels[i]),refresh=AsyncMock())
+        self.cog=PlanningCog(NS(conn=self.conn,get_cog=lambda _:self.events))
         self.cog.players=Mock(return_value=PLAYERS)
         self.cog.specs=Mock(return_value={})
         self.event=self.store.event(100)
 
+    def force_overflow(self):
+        """Route every card to separate messages so overflow delivery is exercised."""
+        cards=self.cog.cards
+        self.cog.split_cards=lambda event,plan:([],cards(event,plan) if plan else [])
+
     async def asyncTearDown(self):
         self.conn.close()
 
+    async def test_inline_cards_refresh_main_post_without_messages(self):
+        teams=import_plan(dict(format='vanguard-raid-planner-session',version=7,teams=[TEAM]),EVENT,PLAYERS)
+        self.cog.save(self.event,[teams[0],teams[0]],0)
+        inline,overflow=self.cog.split_cards(self.event,self.cog.plan(100))
+        self.assertEqual((len(inline),len(overflow)),(2,0))
+        self.store.write('INSERT INTO PlanMessages VALUES (1,0,555,?)',('old card',))
+        await self.cog.sync(100)
+        self.events.refresh.assert_awaited_once_with(100)
+        for i in (1,2): self.channels[i].send.assert_not_awaited()
+        self.channels[1].get_partial_message.return_value.delete.assert_awaited()
+        self.assertIsNone(self.store.one('SELECT * FROM PlanMessages WHERE thread_id=1'))
+
+    def test_split_cards_limits(self):
+        import discord
+        small=[discord.Embed(title=f'Run {n}',description='x') for n in range(12)]
+        self.cog.cards=Mock(return_value=small)
+        inline,overflow=self.cog.split_cards(self.event,{'body':'[]'})
+        self.assertEqual((len(inline),len(overflow)),(9,3))
+        big=[discord.Embed(title='Run',description='x'*1500) for _ in range(4)]
+        self.cog.cards=Mock(return_value=big)
+        inline,overflow=self.cog.split_cards(self.event,{'body':'[]'})
+        self.assertEqual((len(inline),len(overflow)),(2,2))
+
     async def test_revision_and_all_mirrors(self):
+        self.force_overflow()
         teams=import_plan(dict(format='vanguard-raid-planner-session',version=7,teams=[TEAM]),EVENT,PLAYERS)
         self.assertEqual(self.cog.save(self.event,teams,0),1)
         with self.assertRaises(ValueError): self.cog.save(self.event,teams,0)
@@ -121,6 +150,7 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('LEFT SIGNUPS', str(self.channels[1].get_partial_message.return_value.edit.call_args.kwargs['embed'].to_dict()))
 
     async def test_one_embed_per_run_with_all_groups_and_icons(self):
+        self.force_overflow()
         members=[dict(id=str(100+i),name='Player',c='Guardian',spec='Blue',role='Tank') for i in range(24)]
         teams=[dict(label='Run one',members=members,time=0,fellowship_sizes=[6,6,6,6]),dict(label='Run two',members=members[:6],time=1,fellowship_sizes=[6])]
         event={**self.event,'size':24}
@@ -148,6 +178,7 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.store.one('SELECT * FROM PlanMessages WHERE thread_id=1 AND page=5'))
 
     async def test_failed_delivery_retries(self):
+        self.force_overflow()
         import discord
         teams=import_plan(dict(format='vanguard-raid-planner-session',version=7,teams=[TEAM]),EVENT,PLAYERS)
         self.cog.save(self.event,teams,0)
@@ -160,11 +191,13 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.channels[2].send.assert_awaited_once()
 
     async def test_restart_uses_saved_messages(self):
+        self.force_overflow()
         teams=import_plan(dict(format='vanguard-raid-planner-session',version=7,teams=[TEAM]),EVENT,PLAYERS)
         self.cog.save(self.event,teams,0)
         await self.cog.sync(100)
         restarted=PlanningCog(self.cog.bot)
         restarted.players=self.cog.players
+        restarted.split_cards=self.cog.split_cards
         await restarted.sync(100)
         self.channels[1].send.assert_awaited_once()
 
@@ -195,6 +228,7 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('CLASS WITHDRAWN',self.cog.pages(self.event,self.cog.plan(100))[0])
 
     async def test_deleted_unchanged_roster_is_recreated(self):
+        self.force_overflow()
         import discord
         teams=import_plan(dict(format='vanguard-raid-planner-session',version=7,teams=[TEAM]),EVENT,PLAYERS)
         self.cog.save(self.event,teams,0)
