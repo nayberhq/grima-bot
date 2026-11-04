@@ -574,8 +574,13 @@ class RaidCog(commands.Cog):
                         i = i + 1
                         if row[i]:
                             # No specs for creeps
-                            if tier_digits and i < len(self.role_names) + 3 and specs and specs[i-3]:
-                                spec = (specs[i-3] >> (tier_num - 1) * 3) & 0b111
+                            if i < len(self.role_names) + 3 and specs and specs[i-3]:
+                                if tier_digits:
+                                    spec = (specs[i-3] >> (tier_num - 1) * 3) & 0b111
+                                else:
+                                    spec = 0
+                                    for t in range(5):
+                                        spec |= (specs[i-3] >> t * 3) & 0b111
                                 if spec:
                                     player_string += self.spec_icon(name, spec)
                                 else:

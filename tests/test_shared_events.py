@@ -475,6 +475,17 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         self.raids.emojis_dict = {'Warden': 'W'}
         self.assertEqual(self.raids.spec_icon('Warden', 0b011), 'W')
 
+    def test_untiered_roster_uses_specs_from_any_tier(self):
+        self.raids.specs = ['', 'Red', 'Blue', 'Red_Blue', 'Yellow', 'Red_Yellow', 'Blue_Yellow', 'Triple']
+        self.raids.emojis_dict = {'Warden': 'W', 'Warden_Red': 'R', 'Warden_Blue': 'B'}
+        self.conn.execute("INSERT INTO Players(raid_id,player_id,byname,timestamp,unavailable,Warden) VALUES (100,99,'Bob',1,0,1)")
+        self.conn.execute('INSERT INTO Specs(player_id,Warden) VALUES (99,?)', (2 << 3,))
+        self.assertIn('Bob B', ''.join(self.raids.build_raid_players(100)))
+        self.conn.execute('UPDATE Specs SET Warden=? WHERE player_id=99', (1 | (2 << 6),))
+        self.assertIn('Bob RB', ''.join(self.raids.build_raid_players(100)))
+        self.conn.execute("UPDATE Raids SET tier='T2' WHERE raid_id=100")
+        self.assertIn('Bob W', ''.join(self.raids.build_raid_players(100)))
+
     async def test_calendar_groups_runs_by_server_day(self):
         calendar = CalendarCog(self.bot)
         base = int(time.time()) + 86400 * 3
