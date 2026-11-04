@@ -94,6 +94,14 @@ class RaidCog(commands.Cog):
         self.bot.add_view(RaidView(self))
         self.bot.add_view(CreepView(self))
 
+    def spec_icon(self, name, mask):
+        combined = self.emojis_dict.get(name + "_" + self.specs[mask])
+        if combined:
+            return combined
+        singles = [self.emojis_dict.get(f"{name}_{color}") for bit, color in ((1, 'Red'), (2, 'Blue'), (4, 'Yellow')) if mask & bit]
+        singles = [s for s in singles if s]
+        return ''.join(singles) or self.emojis_dict.get(name, f"[{name}]")
+
     async def cog_load(self):
         if hasattr(self.bot, 'fetch_application_emojis'):
             try:
@@ -569,8 +577,7 @@ class RaidCog(commands.Cog):
                             if tier_digits and i < len(self.role_names) + 3 and specs and specs[i-3]:
                                 spec = (specs[i-3] >> (tier_num - 1) * 3) & 0b111
                                 if spec:
-                                    emoji = name + "_" + self.specs[spec]
-                                    player_string += self.emojis_dict.get(emoji, self.emojis_dict.get(name, f"[{name}]"))
+                                    player_string += self.spec_icon(name, spec)
                                 else:
                                     player_string += self.emojis_dict.get(name, f"[{name}]")
                             else:

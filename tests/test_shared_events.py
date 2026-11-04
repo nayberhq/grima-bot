@@ -466,6 +466,15 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         self.cog.store.write('UPDATE Raids SET time=?', (int(time.time())-5000,))
         self.assertEqual(len(calendar.calendar_embeds(2)[-1].fields), 0)
 
+    def test_spec_icon_fallbacks(self):
+        self.raids.specs = ['', 'Red', 'Blue', 'Red_Blue', 'Yellow', 'Red_Yellow', 'Blue_Yellow', 'Triple']
+        self.raids.emojis_dict = {'Warden': 'W', 'Warden_Red': 'R', 'Warden_Blue': 'B'}
+        self.assertEqual(self.raids.spec_icon('Warden', 0b011), 'RB')
+        self.raids.emojis_dict['Warden_Red_Blue'] = 'RB2'
+        self.assertEqual(self.raids.spec_icon('Warden', 0b011), 'RB2')
+        self.raids.emojis_dict = {'Warden': 'W'}
+        self.assertEqual(self.raids.spec_icon('Warden', 0b011), 'W')
+
     async def test_calendar_groups_runs_by_server_day(self):
         calendar = CalendarCog(self.bot)
         base = int(time.time()) + 86400 * 3
