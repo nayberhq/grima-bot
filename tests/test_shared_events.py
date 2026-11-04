@@ -466,6 +466,21 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         self.cog.store.write('UPDATE Raids SET time=?', (int(time.time())-5000,))
         self.assertEqual(len(calendar.calendar_embeds(2)[-1].fields), 0)
 
+    async def test_calendar_groups_runs_by_server_day(self):
+        calendar = CalendarCog(self.bot)
+        base = int(time.time()) + 86400 * 3
+        base -= base % 86400
+        raids = [
+            (10, 1, 'Folly', 'T1', base + 3600, 1),
+            (11, 2, 'Palace', '', base + 7200, 1),
+            (12, 3, 'Garden', 'T2', base + 86400 + 3600, 1),
+        ]
+        embed = calendar.calendar_runs_embed(1, raids)
+        self.assertEqual(len(embed.fields), 2)
+        self.assertEqual(len(embed.fields[0].value.split('\n')), 2)
+        self.assertIn(f'<t:{base + 3600}:t> · ', embed.fields[0].value)
+        self.assertIn('[Garden T2]', embed.fields[1].value)
+
     async def test_calendar_server_links_embed_for_mirrored_hosts(self):
         self.cog.store.add_copy(100, 2, 200, 200, 22)
         self.cog.store.write('INSERT OR REPLACE INTO SourceInvites VALUES (1, ?)', ('https://discord.gg/host',))

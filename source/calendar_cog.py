@@ -118,26 +118,48 @@ class CalendarCog(commands.Cog):
             colour=discord.Colour(0x3498db),
         )
 
+    def _server_tz(self, guild_id):
+        name = None
+        time_cog = self.bot.get_cog('TimeCog') if hasattr(self.bot, 'get_cog') else None
+        if time_cog:
+            name = time_cog.get_server_timezone(guild_id)
+        name = name or getattr(self.bot, 'server_tz', None) or 'UTC'
+        try:
+            return pytz.timezone(name)
+        except pytz.UnknownTimeZoneError:
+            return pytz.utc
+
+    def _run_line(self, guild_id, raid, store):
+        source_guild_id = raid[5]
+        source_guild = self.bot.get_guild(source_guild_id) if hasattr(self.bot, 'get_guild') else None
+        fallback_name = getattr(source_guild, 'name', None) if source_guild else None
+        badge = store.guild_badge(source_guild_id, fallback_name=fallback_name)
+        prefix = f"{badge} " if badge else ""
+        label = f"{raid[2]} {raid[3]}" if raid[3] else raid[2]
+        link = f"https://discord.com/channels/{guild_id}/{raid[0]}/{raid[1]}"
+        return f"<t:{int(raid[4])}:t> · {prefix}[{label}](<{link}>)"
+
     def calendar_runs_embed(self, guild_id, raids):
         store = EventStore(self.conn)
         title = _("Scheduled runs:")
         desc = _("Click the link to sign up!")
         embed = discord.Embed(title=title, description=desc, colour=discord.Colour(0x3498db))
+        tz = self._server_tz(guild_id)
+        days = []
         for raid in raids[:20]:
-            timestamp = int(raid[4])
-            tier = raid[3]
-            source_guild_id = raid[5]
-            source_guild = self.bot.get_guild(source_guild_id) if hasattr(self.bot, 'get_guild') else None
-            fallback_name = getattr(source_guild, 'name', None) if source_guild else None
-            badge = store.guild_badge(source_guild_id, fallback_name=fallback_name)
-            prefix = f"{badge} " if badge else ""
-            if tier:
-                msg = "{prefix}[{name} {tier}](<https://discord.com/channels/{guild}/{channel}/{msg}>)\n".format(
-                prefix=prefix, guild=guild_id, channel=raid[0], msg=raid[1], name=raid[2], tier=raid[3])
-            else:
-                msg = "{prefix}[{name}](<https://discord.com/channels/{guild}/{channel}/{msg}>)\n".format(
-                prefix=prefix, guild=guild_id, channel=raid[0], msg=raid[1], name=raid[2])
-            embed.add_field(name=f"<t:{timestamp}:F>", value=msg, inline=False)
+            day = datetime.fromtimestamp(int(raid[4]), tz)
+            header = f"{day.strftime('%A, %b')} {day.day}"
+            if not days or days[-1][0] != header:
+                days.append((header, []))
+            days[-1][1].append(self._run_line(guild_id, raid, store))
+        for header, lines in days:
+            name, value = header, ''
+            for line in lines:
+                if value and len(value) + 1 + len(line) > 1024:
+                    embed.add_field(name=name, value=value, inline=False)
+                    name, value = f"{header} (cont.)", ''
+                value = f"{value}\n{line}" if value else line
+            embed.add_field(name=name, value=value, inline=False)
         embed.set_footer(text=_("Last updated"))
         embed.timestamp = datetime.now()
         return embed
