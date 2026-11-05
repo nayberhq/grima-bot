@@ -112,7 +112,8 @@ def table_sqls(table):
                         "twitter integer, "
                         "rss integer, "
                         "last_command integer, "
-                        "slash_count integer"
+                        "slash_count integer, "
+                        "calendar_event_id integer"
                         ");",
 
             'twitter':  "create table if not exists Twitter ("

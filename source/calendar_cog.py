@@ -22,6 +22,9 @@ class CalendarCog(commands.Cog):
         self.bot = bot
         self.conn = bot.conn
         EventStore(self.conn)
+        if 'calendar_event_id' not in {r[1] for r in self.conn.execute('PRAGMA table_info(Settings)')}:
+            self.conn.execute('ALTER TABLE Settings ADD COLUMN calendar_event_id INTEGER')
+            self.conn.commit()
         self.time_cog = bot.get_cog('TimeCog')
         self.upcoming_events = None
         self.cached_events_at = None
@@ -42,6 +45,7 @@ class CalendarCog(commands.Cog):
         ids = "{0}/{1}".format(channel.id, msg.id)
         upsert(self.conn, 'Settings', ['calendar'], [ids], ['guild_id'], [guild_id])
         self.conn.commit()
+        await self.ensure_calendar_event(channel.guild)
 
     async def update_calendar(self, guild_id):
         conn = self.bot.conn
@@ -59,6 +63,7 @@ class CalendarCog(commands.Cog):
             res = upsert(conn, 'Settings', ['calendar'], [None], ['guild_id'], [guild_id])
             if res:
                 conn.commit()
+            await self._drop_calendar_event(guild_id)
             return
 
         embeds = self.calendar_embeds(guild_id)
@@ -71,11 +76,17 @@ class CalendarCog(commands.Cog):
             logger.warning("Calendar post not found for guild {0}.".format(guild_id))
             upsert(conn, 'Settings', ['calendar'], [None], ['guild_id'], [guild_id])
             conn.commit()
+            await self._drop_calendar_event(guild_id)
             return
         except discord.HTTPException as e:
             logger.warning("Failed to update calendar for guild {0}.".format(guild_id))
             logger.warning(e)
             return
+
+    async def _drop_calendar_event(self, guild_id):
+        guild = self.bot.get_guild(guild_id)
+        if guild:
+            await self.remove_calendar_event(guild)
 
     def _calendar_raids(self, guild_id):
         conn = self.bot.conn
@@ -176,66 +187,98 @@ class CalendarCog(commands.Cog):
     def calendar_embed(self, guild_id):
         return self.calendar_runs_embed(guild_id, self._calendar_raids(guild_id))
 
-    async def create_guild_event(self, guild, raid_id):
-        conn = self.bot.conn
-        res = select_one(conn, 'Settings', ['guild_events'], ['guild_id'], [guild.id])
-        if not res:
-            return 0
-        channel_id, name, tier, description, timestamp = select_one(conn, 'Raids', ['channel_id', 'name', 'tier', 'boss', 'time'], ['raid_id'], [raid_id])
+    CALENDAR_EVENT_NAME = "Raid calendar"
+    CALENDAR_EVENT_SPAN = timedelta(days=30)
+    CALENDAR_EVENT_RENEW = timedelta(days=7)
 
-        location = f"https://discord.com/channels/{guild.id}/{channel_id}/{raid_id}"
-        start_time = datetime.fromtimestamp(timestamp, tz=timezone.utc)
-        shared = EventStore(conn).event(raid_id)
-        end_time = datetime.fromtimestamp(timestamp+(shared['duration'] if shared else 7200), tz=timezone.utc)
-        if tier:
-            event_name = " ".join([name, tier])
-        else:
-            event_name = name
+    def calendar_event_description(self, channel_id):
+        return (f"All upcoming runs are listed in <#{channel_id}>, grouped by day. "
+                "Open a run there to sign up. This event stays here permanently and links to the calendar.")
 
+    async def ensure_calendar_event(self, guild):
+        """Keep one always-live scheduled event pointing at the calendar, or remove it."""
+        row = self.conn.execute('SELECT guild_events, calendar, calendar_event_id FROM Settings WHERE guild_id=?',
+                                (guild.id,)).fetchone()
+        if not row or not row[0] or not row[1] or '/' not in str(row[1]):
+            await self.remove_calendar_event(guild)
+            return
+        channel_id, msg_id = str(row[1]).split('/')
+        location = f"https://discord.com/channels/{guild.id}/{channel_id}/{msg_id}"
+        description = self.calendar_event_description(channel_id)
+        now = datetime.now(timezone.utc)
+        end_time = now + self.CALENDAR_EVENT_SPAN
+        event = None
+        if row[2]:
+            try:
+                event = await guild.fetch_scheduled_event(row[2], with_counts=False)
+            except discord.NotFound:
+                event = None
+            except discord.HTTPException:
+                logger.warning("Could not fetch calendar event for guild %s", guild.id, exc_info=True)
+                return
+        if event is not None and event.status in (discord.EventStatus.ended, discord.EventStatus.cancelled):
+            event = None
         try:
-            event = await guild.create_scheduled_event(name=event_name, start_time=start_time, end_time=end_time, entity_type=discord.EntityType.external, privacy_level=discord.PrivacyLevel.guild_only, location=location, description=description)
+            if event is None:
+                event = await guild.create_scheduled_event(
+                    name=self.CALENDAR_EVENT_NAME, start_time=now + timedelta(minutes=1), end_time=end_time,
+                    entity_type=discord.EntityType.external, privacy_level=discord.PrivacyLevel.guild_only,
+                    location=location, description=description)
+                upsert(self.conn, 'Settings', ['calendar_event_id'], [event.id], ['guild_id'], [guild.id])
+                self.conn.commit()
+                await event.start()
+                return
+            changes = {}
+            if event.location != location:
+                changes['location'] = location
+            if event.description != description:
+                changes['description'] = description
+            if event.end_time is None or event.end_time - now < self.CALENDAR_EVENT_RENEW:
+                changes['end_time'] = end_time
+            if event.status == discord.EventStatus.scheduled:
+                changes['status'] = discord.EventStatus.active
+            if changes:
+                await event.edit(**changes)
         except discord.Forbidden:
             logger.warning("Missing manage events permission for guild {0}".format(guild.id))
-            event_id = None
-        else:
-            event_id = event.id
-        return event_id
+        except discord.HTTPException:
+            logger.warning("Could not update calendar event for guild %s", guild.id, exc_info=True)
 
-    async def modify_guild_event(self, guild, raid_id):
-        conn = self.bot.conn
-        res = select_one(conn, 'Settings', ['guild_events'], ['guild_id'], [guild.id])
-        if not res:
-            return
-        event_id, name, tier, description, timestamp = select_one(conn, 'Raids', ['event_id', 'name', 'tier', 'boss', 'time'], ['raid_id'], [raid_id])
+    async def remove_calendar_event(self, guild):
+        event_id = select_one(self.conn, 'Settings', ['calendar_event_id'], ['guild_id'], [guild.id])
         if not event_id:
             return
-
-        # discord.py does not have partial event
-        event = await guild.fetch_scheduled_event(event_id, with_counts=False)
-        start_time = datetime.fromtimestamp(timestamp, tz=timezone.utc)
-        shared = EventStore(conn).event(raid_id)
-        end_time = datetime.fromtimestamp(timestamp+(shared['duration'] if shared else 7200), tz=timezone.utc)
-        if tier:
-            event_name = " ".join([name, tier])
-        else:
-            event_name = name
         try:
-            await event.edit(name=event_name, description=description, start_time=start_time, end_time=end_time)
-        except discord.Forbidden:
-            logger.warning("Missing manage events permission for guild {0}".format(guild.id))
-
-    async def delete_guild_event(self, guild, raid_id):
-        conn = self.bot.conn
-        event_id = select_one(conn, 'Raids', ['event_id'], ['raid_id'], [raid_id])
-        if not event_id:
-            return
-
-        # discord.py does not have partial event
-        event = await guild.fetch_scheduled_event(event_id, with_counts=False)
-        try:
+            event = await guild.fetch_scheduled_event(event_id, with_counts=False)
             await event.delete()
-        except discord.Forbidden:
-            logger.warning("Missing manage events permission for guild {0}".format(guild.id))
+        except discord.NotFound:
+            pass
+        except discord.HTTPException:
+            logger.warning("Could not delete calendar event for guild %s", guild.id, exc_info=True)
+            return
+        upsert(self.conn, 'Settings', ['calendar_event_id'], [None], ['guild_id'], [guild.id])
+        self.conn.commit()
+
+    async def ensure_all_calendar_events(self):
+        for guild in self.bot.guilds:
+            await self.ensure_calendar_event(guild)
+
+    async def remove_legacy_raid_events(self):
+        """Delete per-raid scheduled events left by older versions."""
+        rows = self.conn.execute('SELECT raid_id, guild_id, event_id FROM Raids WHERE event_id IS NOT NULL').fetchall()
+        for raid_id, guild_id, event_id in rows:
+            guild = self.bot.get_guild(guild_id)
+            if guild:
+                try:
+                    event = await guild.fetch_scheduled_event(event_id, with_counts=False)
+                    await event.delete()
+                except discord.NotFound:
+                    pass
+                except discord.HTTPException:
+                    logger.warning("Could not delete legacy event %s", event_id, exc_info=True)
+                    continue
+            self.conn.execute('UPDATE Raids SET event_id=NULL WHERE raid_id=?', (raid_id,))
+        self.conn.commit()
 
     async def get_events(self):
         current_time = datetime.now().timestamp()

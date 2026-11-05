@@ -170,6 +170,8 @@ class RaidCog(commands.Cog):
             self.bot.add_view(CreepView(self))
             self.conn.execute('UPDATE SharedEvents SET revision=revision+1')
             self.conn.commit()
+        if self.calendar_cog:
+            await self.calendar_cog.remove_legacy_raid_events()
         self.background_task.start()
 
     async def cog_unload(self):
@@ -383,23 +385,12 @@ class RaidCog(commands.Cog):
             embed = self.build_raid_message(raid_id, "\u200B", None)
             await post.edit(embed=embed, view=CreepView(self))
         self.raids.append(raid_id)
-        await self.create_guild_event(channel, raid_id)
         self.conn.commit()
         logger.info("Created new raid: {0} at {1} for guild {2}.".format(full_name, raid_time, guild_id))
         await self.calendar_cog.update_calendar(guild_id)
         if origin:
             await events.refresh(raid_id)
         return raid_id
-
-    async def create_guild_event(self, channel, raid_id):
-        event_id = await self.calendar_cog.create_guild_event(channel.guild, raid_id)
-        if event_id == 0:
-            return
-        if not event_id:
-            err_msg = _("Failed to create the discord event. Please check the bot has the manage event permission.")
-            await channel.send(err_msg, delete_after=20)
-        else:
-            upsert(self.conn, 'Raids', ['event_id'], [event_id], ['raid_id'], [raid_id])
 
     def roster_init(self, raid_id, raid_size):
         available = _("<Open>")
@@ -688,6 +679,8 @@ class RaidCog(commands.Cog):
     @tasks.loop(seconds=300)
     async def background_task(self):
         bot = self.bot
+        if self.calendar_cog:
+            await self.calendar_cog.ensure_all_calendar_events()
         expiry_time = 7200  # Delete raids after 2 hours.
         notify_time = 300  # Notify raiders 5 minutes before.
         current_time = datetime.datetime.now().timestamp()
@@ -1315,8 +1308,6 @@ class ConfigureModal(discord.ui.Modal):
             await events.refresh_calendars_for_raid(self.raid_id)
         elif source_guild_id:
             await self.calendar_cog.update_calendar(source_guild_id)
-        if source_guild:
-            await self.calendar_cog.modify_guild_event(source_guild, self.raid_id)
         self.stop()
 
     async def delete_raid(self, interaction: discord.Interaction):
@@ -1325,12 +1316,7 @@ class ConfigureModal(discord.ui.Modal):
         if events and events.store.event(self.raid_id):
             event = events.store.event(self.raid_id)
             await events.cancel(self.raid_id)
-            guild = self.raid_cog.bot.get_guild(event['guild_id'])
-            if guild:
-                await self.calendar_cog.delete_guild_event(guild, self.raid_id)
             return
-        # Delete the guild event
-        await self.calendar_cog.delete_guild_event(interaction.guild, self.raid_id)
         # remove from memory first
         await self.raid_cog.cleanup_old_raid(self.raid_id, "Raid deleted via button.")
         # so deletion doesn't trigger another clean up

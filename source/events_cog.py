@@ -857,9 +857,10 @@ class EventsCog(commands.Cog):
                     checks.append(f"**Calendar Channel:** {calendar_channel.mention} (permissions verified)")
         if discord_events:
             if not getattr(me.guild_permissions, 'manage_events', False):
-                errors.append('**Discord Scheduled Events (`discord_events=True`):** Bot is missing the server-wide `Manage Events` permission.')
+                errors.append('**Calendar Event (`discord_events=True`):** Bot is missing the server-wide `Manage Events` permission.')
             else:
-                checks.append('**Discord Scheduled Events:** Enabled (`Manage Events` verified)')
+                checks.append('**Calendar Event:** Enabled (`Manage Events` verified)'
+                              + ('' if calendar_channel is not None else '; set a calendar channel for it to appear'))
 
         # 8. Optional: RSS Channel
         if rss_channel is not None:
@@ -994,6 +995,8 @@ class EventsCog(commands.Cog):
                 await self.raids.calendar_cog.post_calendar(guild.id, calendar_channel)
             else:
                 checks.append(f"**Calendar Channel:** {calendar_channel.mention} (unchanged)")
+        if self.raids and self.raids.calendar_cog:
+            await self.raids.calendar_cog.ensure_calendar_event(guild)
 
         checks.append(f"**Event Timings:** {duration_minutes}m default duration, {lock_delay_minutes}m post-event lock delay")
         embed = discord.Embed(
@@ -1026,7 +1029,7 @@ class EventsCog(commands.Cog):
         kin_role='Optional: Role used to distinguish kinship members on raid signups.',
         kin_icon='Optional: Emoji badge displayed next to kinship members on raid signups.',
         calendar_channel='Optional: Channel where the live auto-updating raid calendar embed is posted.',
-        discord_events='Optional: Also create native Discord Scheduled Events for hosted raids.',
+        discord_events='Optional: Keep one Discord event that links to the calendar (needs calendar_channel).',
         rss_channel='Optional: Channel where official LOTRO forum RSS announcements are posted.',
         server_timezone='Optional: Default server timezone (e.g. America/New_York).',
         server_invite_url='Optional: Non-expiring invite URL to this server for cross-server voice links.',
@@ -1169,9 +1172,6 @@ class EventsCog(commands.Cog):
         self.store.write('UPDATE SharedEvents SET duration=?, revision=revision+1 WHERE raid_id=?', (minutes * 60, event['raid_id']))
         await interaction.response.defer(ephemeral=True)
         await self.reconcile(event['raid_id'])
-        guild = self.bot.get_guild(event['guild_id'])
-        if guild:
-            await self.raids.calendar_cog.modify_guild_event(guild, event['raid_id'])
         await interaction.followup.send(f'Event duration is now {minutes} minutes.', ephemeral=True)
 
     async def cog_app_command_error(self, interaction, error):

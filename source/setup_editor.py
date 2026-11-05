@@ -182,7 +182,7 @@ class SetupEditorView(discord.ui.View):
         d = self.draft
         extra = (
             f"Timezone: `{d.server_timezone or 'default'}` · Duration: {d.duration_minutes}m · "
-            f"Lock: {d.lock_delay_minutes}m · Discord events: {'on' if d.discord_events else 'off'}"
+            f"Lock: {d.lock_delay_minutes}m · Calendar event: {'on' if d.discord_events else 'off'}"
         )
         embed = discord.Embed(
             title='Server setup',
@@ -342,10 +342,10 @@ class SetupEditorView(discord.ui.View):
 
     def _events_select(self, row):
         options = [
-            discord.SelectOption(label='Discord scheduled events off', value='0', default=not self.draft.discord_events),
-            discord.SelectOption(label='Discord scheduled events on', value='1', default=self.draft.discord_events),
+            discord.SelectOption(label='Calendar event off', value='0', default=not self.draft.discord_events),
+            discord.SelectOption(label='Calendar event on (needs a calendar channel)', value='1', default=self.draft.discord_events),
         ]
-        control = discord.ui.Select(row=row, placeholder='Native Discord events', options=options)
+        control = discord.ui.Select(row=row, placeholder='Discord calendar event', options=options)
 
         async def chosen(i: discord.Interaction):
             self.draft.discord_events = control.values[0] == '1'

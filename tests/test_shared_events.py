@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 import asyncio
 import builtins
 import os
@@ -132,7 +133,7 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         self.raids.spec_emojis = []
         self.raids.emojis_dict = {'Warden': 'W'}
         self.raids.specs = ['', 'Red', 'Blue', 'Red_Blue', 'Yellow']
-        self.raids.calendar_cog = NS(update_calendar=AsyncMock(),
+        self.raids.calendar_cog = NS(update_calendar=AsyncMock(), ensure_calendar_event=AsyncMock(),
             is_raid_leader=lambda member, guild: getattr(member, 'leader', False))
         cogs = {'RaidCog': self.raids, 'TimeCog': NS(get_server_timezone=lambda guild_id: 'UTC')}
         self.bot = NS(conn=self.conn, get_channel=lambda cid: self.channels.get(cid),
@@ -872,7 +873,68 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('**[One]** [Folly]', embed_with_name.fields[0].value)
 
 
+def not_found():
+    return discord.NotFound(Mock(status=404, reason='nf'), 'missing')
 
+
+class CalendarEventTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.conn = sqlite3.connect(':memory:')
+        self.conn.execute('CREATE TABLE Settings (guild_id INTEGER PRIMARY KEY, guild_events INTEGER, calendar TEXT)')
+        self.cog = CalendarCog(NS(conn=self.conn, get_cog=lambda name: None, guilds=[]))
+        self.created = NS(id=77, start=AsyncMock())
+        self.guild = NS(id=1, create_scheduled_event=AsyncMock(return_value=self.created),
+                        fetch_scheduled_event=AsyncMock())
+
+    def settings(self, events, calendar, event_id=None):
+        self.conn.execute('INSERT OR REPLACE INTO Settings (guild_id, guild_events, calendar, calendar_event_id) VALUES (1,?,?,?)',
+                          (events, calendar, event_id))
+
+    def stored_id(self):
+        return self.conn.execute('SELECT calendar_event_id FROM Settings WHERE guild_id=1').fetchone()[0]
+
+    async def test_creates_live_event_linking_to_calendar(self):
+        self.settings(1, '5/6')
+        await self.cog.ensure_calendar_event(self.guild)
+        kwargs = self.guild.create_scheduled_event.await_args.kwargs
+        self.assertEqual(kwargs['location'], 'https://discord.com/channels/1/5/6')
+        self.assertIn('<#5>', kwargs['description'])
+        self.created.start.assert_awaited_once()
+        self.assertEqual(self.stored_id(), 77)
+
+    async def test_skips_without_setting_or_calendar(self):
+        for events, calendar in ((0, '5/6'), (1, None)):
+            self.settings(events, calendar)
+            await self.cog.ensure_calendar_event(self.guild)
+        self.guild.create_scheduled_event.assert_not_awaited()
+
+    async def test_extends_end_time_when_close(self):
+        self.settings(1, '5/6', 77)
+        event = NS(status=discord.EventStatus.active, location='https://discord.com/channels/1/5/6',
+                   description=self.cog.calendar_event_description('5'),
+                   end_time=datetime.now(timezone.utc) + timedelta(days=2), edit=AsyncMock())
+        self.guild.fetch_scheduled_event.return_value = event
+        await self.cog.ensure_calendar_event(self.guild)
+        self.assertEqual(set(event.edit.await_args.kwargs), {'end_time'})
+        event.end_time = datetime.now(timezone.utc) + timedelta(days=20)
+        event.edit.reset_mock()
+        await self.cog.ensure_calendar_event(self.guild)
+        event.edit.assert_not_awaited()
+
+    async def test_recreates_missing_event(self):
+        self.settings(1, '5/6', 50)
+        self.guild.fetch_scheduled_event.side_effect = not_found()
+        await self.cog.ensure_calendar_event(self.guild)
+        self.guild.create_scheduled_event.assert_awaited_once()
+        self.assertEqual(self.stored_id(), 77)
+
+    async def test_disabling_removes_event(self):
+        self.settings(0, '5/6', 77)
+        event = NS(delete=AsyncMock())
+        self.guild.fetch_scheduled_event.return_value = event
+        await self.cog.ensure_calendar_event(self.guild)
+        event.delete.assert_awaited_once()
+        self.assertIsNone(self.stored_id())
 
 
 

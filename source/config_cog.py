@@ -161,7 +161,7 @@ class ConfigCog(commands.Cog):
                     "**Step B — Configure Raid Leader, Kinship & Optional Channels in `/setup`**\n"
                     "• **Raid Leader Role (`leader_role` in `/setup`):** Members with this role can create events from the cluster panels, edit raid settings, build/edit rosters (`/roster-create`, `/roster-manage`, `/roster-edit`, `/roster-swap`), and run `/event-sync`.\n"
                     "• **Kinship Role & Icon (`kin_role` & `kin_icon` in `/setup`):** Badges kinship members on raid signups.\n"
-                    "• **Optional Live Calendar & RSS (`calendar_channel`, `discord_events`, `rss_channel` in `/setup`):** Posts an auto-updating raid summary embed, creates native Discord Scheduled Events, and/or posts official LOTRO forum RSS news."
+                    "• **Optional Live Calendar & RSS (`calendar_channel`, `discord_events`, `rss_channel` in `/setup`):** Posts an auto-updating raid summary embed, keeps one Discord event linking to the calendar, and/or posts official LOTRO forum RSS news."
                 ),
             )
             embeds.append(roles_embed)
