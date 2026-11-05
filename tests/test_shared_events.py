@@ -881,6 +881,8 @@ class CalendarEventTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.conn = sqlite3.connect(':memory:')
         self.conn.execute('CREATE TABLE Settings (guild_id INTEGER PRIMARY KEY, guild_events INTEGER, calendar TEXT)')
+        self.conn.execute('CREATE TABLE Raids (raid_id INTEGER PRIMARY KEY, channel_id INTEGER, guild_id INTEGER, '
+                          'name TEXT, tier TEXT, boss TEXT, time INTEGER)')
         self.cog = CalendarCog(NS(conn=self.conn, get_cog=lambda name: None, guilds=[]))
         self.created = NS(id=77)
         self.guild = NS(id=1, create_scheduled_event=AsyncMock(return_value=self.created),
@@ -898,7 +900,7 @@ class CalendarEventTests(unittest.IsolatedAsyncioTestCase):
         await self.cog.ensure_calendar_event(self.guild)
         kwargs = self.guild.create_scheduled_event.await_args.kwargs
         self.assertEqual(kwargs['location'], 'https://discord.com/channels/1/5/6')
-        self.assertIn('<#5>', kwargs['description'])
+        self.assertIn('Full calendar: https://discord.com/channels/1/5/6', kwargs['description'])
         lead = kwargs['start_time'] - datetime.now(timezone.utc)
         self.assertTrue(timedelta(hours=23) < lead <= timedelta(days=1))
         self.assertEqual(self.stored_id(), 77)
@@ -912,7 +914,7 @@ class CalendarEventTests(unittest.IsolatedAsyncioTestCase):
     async def test_pushes_start_back_to_tomorrow_when_close(self):
         self.settings(1, '5/6', 77)
         event = NS(status=discord.EventStatus.scheduled, location='https://discord.com/channels/1/5/6',
-                   description=self.cog.calendar_event_description('5'),
+                   description=self.cog.calendar_event_description(1, '5', '6'),
                    start_time=datetime.now(timezone.utc) + timedelta(hours=2), edit=AsyncMock())
         self.guild.fetch_scheduled_event.return_value = event
         await self.cog.ensure_calendar_event(self.guild)
@@ -977,6 +979,16 @@ class LiveEventTests(unittest.IsolatedAsyncioTestCase):
         await self.cog.sync_live_events(self.guild)
         self.live.delete.assert_awaited_once()
         self.assertEqual(self.conn.execute('SELECT count(*) FROM LiveEvents').fetchone()[0], 0)
+
+    async def test_description_lists_next_five_unstarted_runs(self):
+        self.raid(10, -600)
+        for n in range(7):
+            self.raid(20 + n, 3600 * (n + 1))
+        text = self.cog.calendar_event_description(1, 5, 6)
+        self.assertLessEqual(len(text), 1000)
+        self.assertNotIn('/5/10', text)
+        self.assertEqual([n for n in range(20, 27) if f'/5/{n}' in text], [20, 21, 22, 23, 24])
+        self.assertTrue(text.endswith('Full calendar: https://discord.com/channels/1/5/6'))
 
     async def test_disabled_server_gets_no_live_events(self):
         self.conn.execute('UPDATE Settings SET guild_events=0')

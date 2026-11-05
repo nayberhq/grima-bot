@@ -72,6 +72,9 @@ class CalendarCog(commands.Cog):
         embeds = self.calendar_embeds(guild_id)
         try:
             await msg.edit(embeds=embeds)
+            guild = self.bot.get_guild(guild_id) if hasattr(self.bot, 'get_guild') else None
+            if guild:
+                await self.ensure_calendar_event(guild)
         except discord.Forbidden:
             logger.warning("Calendar access restricted for guild {0}.".format(guild_id))
             return
@@ -195,9 +198,25 @@ class CalendarCog(commands.Cog):
     CALENDAR_EVENT_RENEW = timedelta(hours=12)
     CALENDAR_EVENT_LENGTH = timedelta(hours=1)
 
-    def calendar_event_description(self, channel_id):
-        return (f"All upcoming runs are listed in <#{channel_id}>, grouped by day. "
-                "Open a run there to sign up. This event always stays scheduled for tomorrow and links to the calendar.")
+    CALENDAR_EVENT_UPCOMING = 5
+    EVENT_DESCRIPTION_LIMIT = 1000
+
+    def calendar_event_description(self, guild_id, channel_id, msg_id):
+        """Next runs that have not started, plus the full calendar link, within Discord's limit."""
+        now = datetime.now(timezone.utc).timestamp()
+        tz = self._server_tz(guild_id)
+        calendar = f"https://discord.com/channels/{guild_id}/{channel_id}/{msg_id}"
+        footer = f"Full calendar: {calendar}"
+        upcoming = [r for r in self._calendar_raids(guild_id) if r[4] > now][:self.CALENDAR_EVENT_UPCOMING]
+        lines = []
+        for raid in upcoming:
+            when = datetime.fromtimestamp(raid[4], tz=tz).strftime('%a %d %b %H:%M %Z')
+            label = f"{raid[2]} {raid[3]}" if raid[3] else raid[2]
+            lines.append(f"{when} · {label}\nhttps://discord.com/channels/{guild_id}/{raid[0]}/{raid[1]}")
+        header = "Next runs:" if lines else "No upcoming runs yet."
+        while lines and len("\n\n".join([header, *lines, footer])) > self.EVENT_DESCRIPTION_LIMIT:
+            lines.pop()
+        return "\n\n".join([header, *lines, footer])[:self.EVENT_DESCRIPTION_LIMIT]
 
     async def ensure_calendar_event(self, guild):
         """Keep one event scheduled for tomorrow pointing at the calendar, or remove it."""
@@ -208,7 +227,7 @@ class CalendarCog(commands.Cog):
             return
         channel_id, msg_id = str(row[1]).split('/')
         location = f"https://discord.com/channels/{guild.id}/{channel_id}/{msg_id}"
-        description = self.calendar_event_description(channel_id)
+        description = self.calendar_event_description(guild.id, channel_id, msg_id)
         now = datetime.now(timezone.utc)
         start_time = now + self.CALENDAR_EVENT_LEAD
         end_time = start_time + self.CALENDAR_EVENT_LENGTH
