@@ -25,6 +25,9 @@ class CalendarCog(commands.Cog):
         if 'calendar_event_id' not in {r[1] for r in self.conn.execute('PRAGMA table_info(Settings)')}:
             self.conn.execute('ALTER TABLE Settings ADD COLUMN calendar_event_id INTEGER')
             self.conn.commit()
+        self.conn.execute('CREATE TABLE IF NOT EXISTS LiveEvents (guild_id INTEGER, raid_id INTEGER, event_id INTEGER, '
+                          'PRIMARY KEY (guild_id, raid_id))')
+        self.conn.commit()
         self.time_cog = bot.get_cog('TimeCog')
         self.upcoming_events = None
         self.cached_events_at = None
@@ -264,6 +267,54 @@ class CalendarCog(commands.Cog):
     async def ensure_all_calendar_events(self):
         for guild in self.bot.guilds:
             await self.ensure_calendar_event(guild)
+            await self.sync_live_events(guild)
+
+    def _live_runs(self, guild_id, now):
+        return self.conn.execute('''SELECT r.raid_id, r.channel_id, r.raid_id, r.name, r.tier, r.boss,
+                r.time + COALESCE(e.duration, 7200) FROM Raids r LEFT JOIN SharedEvents e USING (raid_id)
+            WHERE r.guild_id=? AND COALESCE(e.cancelled, 0)=0 AND r.time<=? AND r.time+COALESCE(e.duration, 7200)>?
+            UNION ALL SELECT r.raid_id, c.thread_id, c.message_id, r.name, r.tier, r.boss, r.time+e.duration
+            FROM EventCopies c JOIN Raids r USING (raid_id) JOIN SharedEvents e USING (raid_id)
+            WHERE c.guild_id=? AND r.guild_id!=? AND e.cancelled=0 AND r.time<=? AND r.time+e.duration>?''',
+            (guild_id, now, now, guild_id, guild_id, now, now)).fetchall()
+
+    async def sync_live_events(self, guild):
+        """Show a live Discord event only while a run on this server's calendar is happening."""
+        now = datetime.now(timezone.utc)
+        enabled = select_one(self.conn, 'Settings', ['guild_events'], ['guild_id'], [guild.id])
+        live = {row[0]: row for row in self._live_runs(guild.id, int(now.timestamp()))} if enabled else {}
+        tracked = dict(self.conn.execute('SELECT raid_id, event_id FROM LiveEvents WHERE guild_id=?', (guild.id,)).fetchall())
+        for raid_id, event_id in tracked.items():
+            if raid_id in live:
+                continue
+            try:
+                event = await guild.fetch_scheduled_event(event_id, with_counts=False)
+                await event.delete()
+            except discord.NotFound:
+                pass
+            except discord.HTTPException:
+                logger.warning("Could not remove live event %s", event_id, exc_info=True)
+                continue
+            self.conn.execute('DELETE FROM LiveEvents WHERE guild_id=? AND raid_id=?', (guild.id, raid_id))
+        for raid_id, (_raid, channel_id, msg_id, name, tier, boss, end_ts) in live.items():
+            if raid_id in tracked:
+                continue
+            try:
+                event = await guild.create_scheduled_event(
+                    name=" ".join(filter(None, [name, tier])), start_time=now + timedelta(minutes=1),
+                    end_time=datetime.fromtimestamp(end_ts, tz=timezone.utc),
+                    entity_type=discord.EntityType.external, privacy_level=discord.PrivacyLevel.guild_only,
+                    location=f"https://discord.com/channels/{guild.id}/{channel_id}/{msg_id}",
+                    description=boss or None)
+                await event.start()
+            except discord.Forbidden:
+                logger.warning("Missing manage events permission for guild {0}".format(guild.id))
+                break
+            except discord.HTTPException:
+                logger.warning("Could not create live event for raid %s", raid_id, exc_info=True)
+                continue
+            self.conn.execute('INSERT OR REPLACE INTO LiveEvents VALUES (?,?,?)', (guild.id, raid_id, event.id))
+        self.conn.commit()
 
     async def remove_legacy_raid_events(self):
         """Delete per-raid scheduled events left by older versions."""

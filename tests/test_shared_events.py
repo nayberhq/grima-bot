@@ -946,6 +946,45 @@ class CalendarEventTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.stored_id())
 
 
+class LiveEventTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.conn = sqlite3.connect(':memory:')
+        self.conn.executescript("""
+            CREATE TABLE Settings (guild_id INTEGER PRIMARY KEY, guild_events INTEGER, calendar TEXT);
+            CREATE TABLE Raids (raid_id INTEGER PRIMARY KEY, channel_id INTEGER, guild_id INTEGER,
+                                name TEXT, tier TEXT, boss TEXT, time INTEGER);
+            INSERT INTO Settings VALUES (1, 1, NULL);
+        """)
+        self.cog = CalendarCog(NS(conn=self.conn, get_cog=lambda name: None, guilds=[]))
+        self.live = NS(id=88, start=AsyncMock(), delete=AsyncMock())
+        self.guild = NS(id=1, create_scheduled_event=AsyncMock(return_value=self.live),
+                        fetch_scheduled_event=AsyncMock(return_value=self.live))
+
+    def raid(self, raid_id, offset):
+        now = int(datetime.now(timezone.utc).timestamp())
+        self.conn.execute('INSERT INTO Raids VALUES (?,5,1,?,?,NULL,?)', (raid_id, 'Run', 'T2', now + offset))
+
+    async def test_only_running_events_go_live_and_are_removed_after(self):
+        self.raid(10, -600)
+        self.raid(11, 7 * 86400)
+        await self.cog.sync_live_events(self.guild)
+        self.guild.create_scheduled_event.assert_awaited_once()
+        self.assertEqual(self.guild.create_scheduled_event.await_args.kwargs['name'], 'Run T2')
+        self.live.start.assert_awaited_once()
+        await self.cog.sync_live_events(self.guild)
+        self.guild.create_scheduled_event.assert_awaited_once()
+        self.conn.execute('UPDATE Raids SET time=time-86400 WHERE raid_id=10')
+        await self.cog.sync_live_events(self.guild)
+        self.live.delete.assert_awaited_once()
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM LiveEvents').fetchone()[0], 0)
+
+    async def test_disabled_server_gets_no_live_events(self):
+        self.conn.execute('UPDATE Settings SET guild_events=0')
+        self.raid(10, -600)
+        await self.cog.sync_live_events(self.guild)
+        self.guild.create_scheduled_event.assert_not_awaited()
+
+
 
 if __name__ == '__main__':
     unittest.main()
