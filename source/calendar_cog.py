@@ -188,15 +188,16 @@ class CalendarCog(commands.Cog):
         return self.calendar_runs_embed(guild_id, self._calendar_raids(guild_id))
 
     CALENDAR_EVENT_NAME = "Raid calendar"
-    CALENDAR_EVENT_SPAN = timedelta(days=30)
-    CALENDAR_EVENT_RENEW = timedelta(days=7)
+    CALENDAR_EVENT_LEAD = timedelta(days=1)
+    CALENDAR_EVENT_RENEW = timedelta(hours=12)
+    CALENDAR_EVENT_LENGTH = timedelta(hours=1)
 
     def calendar_event_description(self, channel_id):
         return (f"All upcoming runs are listed in <#{channel_id}>, grouped by day. "
-                "Open a run there to sign up. This event stays here permanently and links to the calendar.")
+                "Open a run there to sign up. This event always stays scheduled for tomorrow and links to the calendar.")
 
     async def ensure_calendar_event(self, guild):
-        """Keep one always-live scheduled event pointing at the calendar, or remove it."""
+        """Keep one event scheduled for tomorrow pointing at the calendar, or remove it."""
         row = self.conn.execute('SELECT guild_events, calendar, calendar_event_id FROM Settings WHERE guild_id=?',
                                 (guild.id,)).fetchone()
         if not row or not row[0] or not row[1] or '/' not in str(row[1]):
@@ -206,7 +207,8 @@ class CalendarCog(commands.Cog):
         location = f"https://discord.com/channels/{guild.id}/{channel_id}/{msg_id}"
         description = self.calendar_event_description(channel_id)
         now = datetime.now(timezone.utc)
-        end_time = now + self.CALENDAR_EVENT_SPAN
+        start_time = now + self.CALENDAR_EVENT_LEAD
+        end_time = start_time + self.CALENDAR_EVENT_LENGTH
         event = None
         if row[2]:
             try:
@@ -216,27 +218,27 @@ class CalendarCog(commands.Cog):
             except discord.HTTPException:
                 logger.warning("Could not fetch calendar event for guild %s", guild.id, exc_info=True)
                 return
-        if event is not None and event.status in (discord.EventStatus.ended, discord.EventStatus.cancelled):
-            event = None
         try:
+            if event is not None and event.status != discord.EventStatus.scheduled:
+                if event.status == discord.EventStatus.active:
+                    await event.delete()
+                event = None
             if event is None:
                 event = await guild.create_scheduled_event(
-                    name=self.CALENDAR_EVENT_NAME, start_time=now + timedelta(minutes=1), end_time=end_time,
+                    name=self.CALENDAR_EVENT_NAME, start_time=start_time, end_time=end_time,
                     entity_type=discord.EntityType.external, privacy_level=discord.PrivacyLevel.guild_only,
                     location=location, description=description)
                 upsert(self.conn, 'Settings', ['calendar_event_id'], [event.id], ['guild_id'], [guild.id])
                 self.conn.commit()
-                await event.start()
                 return
             changes = {}
             if event.location != location:
                 changes['location'] = location
             if event.description != description:
                 changes['description'] = description
-            if event.end_time is None or event.end_time - now < self.CALENDAR_EVENT_RENEW:
+            if event.start_time - now < self.CALENDAR_EVENT_RENEW:
+                changes['start_time'] = start_time
                 changes['end_time'] = end_time
-            if event.status == discord.EventStatus.scheduled:
-                changes['status'] = discord.EventStatus.active
             if changes:
                 await event.edit(**changes)
         except discord.Forbidden:
