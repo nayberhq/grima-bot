@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import discord
 
+with open('common_timezones.txt', 'r') as f:
+    COMMON_TIMEZONES = f.read().splitlines()[:25]
+
 DESCRIPTION_TEMPLATE_EXAMPLE = (
     "Post a message like this in a channel, then paste its link in **Set description template…**:\n"
     "```\n"
@@ -225,6 +228,7 @@ class SetupEditorView(discord.ui.View):
             self._text_select(3, 'RSS (optional)', 'rss_id', optional=True)
         else:
             self._events_select(0)
+            self._timezone_select(3)
             set_btn = discord.ui.Button(label='Set description template…', style=discord.ButtonStyle.primary, row=1)
             set_btn.callback = self.open_description_modal
             self.add_item(set_btn)
@@ -350,6 +354,24 @@ class SetupEditorView(discord.ui.View):
         async def chosen(i: discord.Interaction):
             self.draft.discord_events = control.values[0] == '1'
             await i.response.defer()
+
+        control.callback = chosen
+        self.add_item(control)
+
+    def _timezone_select(self, row):
+        current = self.draft.server_timezone
+        zones = list(COMMON_TIMEZONES)
+        if current and current not in zones:
+            zones = [current, *zones[:24]]
+        options = [discord.SelectOption(label=tz, value=tz, default=tz == current) for tz in zones]
+        control = discord.ui.Select(row=row, placeholder='Server timezone (calendar days, "server" times)',
+                                    options=options)
+
+        async def chosen(i: discord.Interaction):
+            self.draft.server_timezone = control.values[0]
+            for option in control.options:
+                option.default = option.value == control.values[0]
+            await i.response.edit_message(embed=self.embed(), view=self)
 
         control.callback = chosen
         self.add_item(control)

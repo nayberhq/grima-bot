@@ -994,7 +994,8 @@ class EventsCog(commands.Cog):
             if old_cal_channel != calendar_channel.id:
                 await self.raids.calendar_cog.post_calendar(guild.id, calendar_channel)
             else:
-                checks.append(f"**Calendar Channel:** {calendar_channel.mention} (unchanged)")
+                await self.raids.calendar_cog.update_calendar(guild.id)
+                checks.append(f"**Calendar Channel:** {calendar_channel.mention} (unchanged, refreshed)")
         if self.raids and self.raids.calendar_cog:
             await self.raids.calendar_cog.ensure_calendar_event(guild)
 
