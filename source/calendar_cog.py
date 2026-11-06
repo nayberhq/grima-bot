@@ -154,7 +154,7 @@ class CalendarCog(commands.Cog):
         prefix = f"{badge} " if badge else ""
         label = f"{raid[2]} {raid[3]}" if raid[3] else raid[2]
         link = f"https://discord.com/channels/{guild_id}/{raid[0]}/{raid[1]}"
-        return f"<t:{int(raid[4])}:t> · {prefix}[{label}](<{link}>)"
+        return f"<t:{int(raid[4])}:f> · {prefix}[{label}](<{link}>)"
 
     def calendar_runs_embed(self, guild_id, raids):
         store = EventStore(self.conn)
@@ -165,7 +165,7 @@ class CalendarCog(commands.Cog):
         days = []
         for raid in raids[:20]:
             day = datetime.fromtimestamp(int(raid[4]), tz)
-            header = f"{day.strftime('%A, %b')} {day.day}"
+            header = f"{day.strftime('%A, %b')} {day.day} ({day.strftime('%Z')})"
             if not days or days[-1][0] != header:
                 days.append((header, []))
             days[-1][1].append(self._run_line(guild_id, raid, store))
@@ -204,15 +204,15 @@ class CalendarCog(commands.Cog):
     def calendar_event_description(self, guild_id, channel_id, msg_id):
         """Next runs that have not started, plus the full calendar link, within Discord's limit."""
         now = datetime.now(timezone.utc).timestamp()
-        tz = self._server_tz(guild_id)
         calendar = f"https://discord.com/channels/{guild_id}/{channel_id}/{msg_id}"
         footer = f"Full calendar: {calendar}"
-        upcoming = [r for r in self._calendar_raids(guild_id) if r[4] > now][:self.CALENDAR_EVENT_UPCOMING]
+        upcoming = [r for r in self._calendar_raids(guild_id) if int(r[4]) > now][:self.CALENDAR_EVENT_UPCOMING]
         lines = []
         for raid in upcoming:
-            when = datetime.fromtimestamp(raid[4], tz=tz).strftime('%a %d %b %H:%M %Z')
+            start = int(raid[4])
             label = f"{raid[2]} {raid[3]}" if raid[3] else raid[2]
-            lines.append(f"{when} · {label}\nhttps://discord.com/channels/{guild_id}/{raid[0]}/{raid[1]}")
+            lines.append(f"<t:{start}:f> (<t:{start}:R>) · {label}\n"
+                         f"https://discord.com/channels/{guild_id}/{raid[0]}/{raid[1]}")
         header = "Next runs:" if lines else "No upcoming runs yet."
         while lines and len("\n\n".join([header, *lines, footer])) > self.EVENT_DESCRIPTION_LIMIT:
             lines.pop()

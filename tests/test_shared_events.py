@@ -499,7 +499,7 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         embed = calendar.calendar_runs_embed(1, raids)
         self.assertEqual(len(embed.fields), 2)
         self.assertEqual(len(embed.fields[0].value.split('\n')), 2)
-        self.assertIn(f'<t:{base + 3600}:t> · ', embed.fields[0].value)
+        self.assertIn(f'<t:{base + 3600}:f> · ', embed.fields[0].value)
         self.assertIn('[Garden T2]', embed.fields[1].value)
 
     async def test_calendar_server_links_embed_for_mirrored_hosts(self):
