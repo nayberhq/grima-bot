@@ -157,7 +157,7 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
     async def test_persistent_creation_buttons(self):
         panel = CreationView(self.cog, 'cluster')
         self.assertTrue(panel.is_persistent())
-        self.assertEqual([button.label for button in panel.children], ['Folly', 'Wailing Hold', 'Palace', 'Garden', 'Hunter Dailies', 'SI Farm'])
+        self.assertEqual([button.label for button in panel.children], ['Folly', 'Wailing Hold', 'Palace', 'Garden', 'Hunter Dailies', 'SI Farm', 'Caves (3m)'])
 
     async def test_duplicate_concurrent_sync_creates_one_post(self):
         token = self.cog.store.share(100)

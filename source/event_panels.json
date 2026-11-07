@@ -78,7 +78,8 @@
       {"label": "Palace", "name": "Ekal-nêbi, the Fallen Palace", "size": 6},
       {"label": "Garden", "name": "Pagru-kirít, the Garden of Corpses", "size": 6},
       {"label": "Hunter Dailies", "name": "Hunter Dailies", "size": 6},
-      {"label": "SI Farm", "name": "SI Farm", "size": 6}
+      {"label": "SI Farm", "name": "SI Farm", "size": 6},
+      {"label": "Caves (3m)", "name": "The Treasure Caves of Hurum Kâna", "size": 3}
     ]
   },
   "misc": {
