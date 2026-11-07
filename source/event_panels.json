@@ -64,8 +64,7 @@
     "image": "https://lotro-wiki.com/images/thumb/d/d0/Depths_of_M%C3%A2khda_Khorbo.jpg/600px-Depths_of_M%C3%A2khda_Khorbo.jpg",
     "buttons": [
       {"label": "Depths of Mâkhda Khorbo", "name": "Depths of Mâkhda Khorbo", "size": 12},
-      {"label": "Temple of Utug-bûr", "name": "Temple of Utug-bûr", "size": 12},
-      {"label": "Treasure Caves (3m)", "name": "The Treasure Caves of Hurum Kâna", "size": 3}
+      {"label": "Temple of Utug-bûr", "name": "Temple of Utug-bûr", "size": 12}
     ]
   },
   "cluster": {
