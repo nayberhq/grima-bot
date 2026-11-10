@@ -67,6 +67,19 @@
       {"label": "Temple of Utug-bûr", "name": "Temple of Utug-bûr", "size": 12}
     ]
   },
+  "seasonal": {
+    "title": "Seasonal & PvMP",
+    "description": "Create a PvMP creep raid, skirmish, or seasonal boss run",
+    "image": "https://lotro-wiki.com/images/thumb/c/cd/Ettenmoors.jpg/600px-Ettenmoors.jpg",
+    "buttons": [
+      {"label": "Creep / Ettenmoors", "name": "Ettenmoors", "size": 24, "creep": true},
+      {"label": "Skirmish Raid", "name": "Skirmish Raid", "size": 12},
+      {"label": "Featured Instance", "name": "Featured Instance", "size": 12},
+      {"label": "Storvâgûn", "name": "Storvâgûn", "size": 6},
+      {"label": "Naruhel", "name": "Naruhel the Red-maid", "size": 6},
+      {"label": "Thrâng", "name": "Thrâng", "size": 6}
+    ]
+  },
   "cluster": {
     "title": "Level 160: 160 Instance Cluster",
     "description": "Create an event for level 160 content",
@@ -82,19 +95,15 @@
     ]
   },
   "misc": {
-    "title": "Custom, Seasonal & PvMP Content",
-    "description": "Create a custom event, PvMP creep raid, skirmish, or seasonal boss run",
-    "image": "https://lotro-wiki.com/images/thumb/c/cd/Ettenmoors.jpg/600px-Ettenmoors.jpg",
+    "title": "Custom",
+    "description": "Create a custom event, or a poll for the event or the time",
+    "image": "https://lotro-wiki.com/images/thumb/a/a8/Tower_of_Orthanc.jpg/600px-Tower_of_Orthanc.jpg",
     "buttons": [
       {"label": "12 man", "name": "12-player event", "size": 12},
       {"label": "6 man", "name": "6-player event", "size": 6},
       {"label": "3 man", "name": "3-player event", "size": 3},
-      {"label": "Creep / Ettenmoors", "name": "Ettenmoors", "size": 24, "creep": true},
-      {"label": "Skirmish Raid", "name": "Skirmish Raid", "size": 12},
-      {"label": "Featured Instance", "name": "Featured Instance", "size": 12},
-      {"label": "Storvâgûn", "name": "Storvâgûn", "size": 6},
-      {"label": "Naruhel", "name": "Naruhel the Red-maid", "size": 6},
-      {"label": "Thrâng", "name": "Thrâng", "size": 6}
+      {"label": "Poll", "poll": true},
+      {"label": "Time poll", "time_poll": true}
     ]
   }
 }

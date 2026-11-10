@@ -99,10 +99,13 @@ class CalendarCog(commands.Cog):
         return conn.execute('''SELECT r.channel_id,r.raid_id,r.name,r.tier,r.time,r.guild_id FROM Raids r
             LEFT JOIN SharedEvents e USING (raid_id) WHERE r.guild_id=?
             AND (e.raid_id IS NULL OR (e.cancelled=0 AND r.time+e.duration>CAST(strftime('%s','now') AS INTEGER)))
+            AND NOT EXISTS (SELECT 1 FROM EventPolls tp WHERE tp.raid_id=r.raid_id AND tp.kind='time' AND tp.resolved=0)
             UNION ALL SELECT c.thread_id,c.message_id,r.name,r.tier,r.time,r.guild_id
             FROM EventCopies c JOIN Raids r USING (raid_id) JOIN SharedEvents e USING (raid_id)
             WHERE c.guild_id=? AND r.guild_id!=? AND e.cancelled=0
-            AND r.time+e.duration>CAST(strftime('%s','now') AS INTEGER) ORDER BY 5''', (guild_id, guild_id, guild_id)).fetchall()
+            AND r.time+e.duration>CAST(strftime('%s','now') AS INTEGER)
+            AND NOT EXISTS (SELECT 1 FROM EventPolls tp WHERE tp.raid_id=r.raid_id AND tp.kind='time' AND tp.resolved=0)
+            ORDER BY 5''', (guild_id, guild_id, guild_id)).fetchall()
 
     def calendar_server_links_embed(self, guild_id, raids):
         shown = raids[:20]

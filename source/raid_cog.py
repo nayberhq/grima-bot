@@ -771,15 +771,15 @@ class RaidCog(commands.Cog):
 
 
 class RaidView(discord.ui.View):
-    def __init__(self, raid_cog, raid_id=None, planner_url=None):
+    def __init__(self, raid_cog, raid_id=None, planner_url=None, show_poll=True):
         super().__init__(timeout=None)
         self.raid_cog = raid_cog
         self.conn = raid_cog.conn
-        self._init_planner_buttons(raid_id=raid_id, planner_url=planner_url)
+        self._init_planner_buttons(raid_id=raid_id, planner_url=planner_url, show_poll=show_poll)
         for index, emoji in enumerate(raid_cog.class_emojis):
             row = 2 + index//4
             self.add_item(EmojiButton(emoji, row))
-        order = {'raid_view:settings':0, 'raid_view:import':1, 'raid_view:refresh':2,
+        order = {'raid_view:settings':0, 'raid_view:import':1, 'raid_view:refresh':2, 'raid_view:poll':3,
                  'raid_view:check':0, 'raid_view:cancel':1, 'raid_view:vanguard':2}
         items = sorted(self.children, key=lambda c: (c.row or 0, order.get(c.custom_id, 2)))
         self.clear_items()
@@ -804,7 +804,11 @@ class RaidView(discord.ui.View):
     async def green_check(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.sign_up_all(interaction)
 
-    def _init_planner_buttons(self, raid_id=None, planner_url=None):
+    def _init_planner_buttons(self, raid_id=None, planner_url=None, show_poll=True):
+        if show_poll:
+            poll_btn = discord.ui.Button(label='Poll', style=discord.ButtonStyle.secondary, custom_id='raid_view:poll', row=0)
+            poll_btn.callback = self.convert_poll
+            self.add_item(poll_btn)
         btn = discord.ui.Button(emoji="\U0001F4CB", style=discord.ButtonStyle.primary, custom_id='raid_view:vanguard', row=1)
         btn.callback = self.vanguard
         self.add_item(btn)
@@ -814,6 +818,27 @@ class RaidView(discord.ui.View):
         refresh_btn = discord.ui.Button(emoji="\U0001F504", style=discord.ButtonStyle.primary, custom_id='raid_view:refresh', row=0)
         refresh_btn.callback = self.refresh_post
         self.add_item(refresh_btn)
+
+    async def convert_poll(self, interaction: discord.Interaction):
+        if not await self.require_leader(interaction):
+            return
+        from events_cog import CONVERT_CUTOFF, ConvertChoicesView
+        raid_id = self.raid_cog.resolve_raid_id(interaction.message.id)
+        event = self.raid_cog.event_store.event(raid_id)
+        if not event or self.raid_cog.event_store.ended(event, time.time()):
+            await interaction.response.send_message('This event has ended.', ephemeral=True)
+            return
+        if self.raid_cog.event_store.poll_open(raid_id):
+            await interaction.response.send_message('This event is already a poll.', ephemeral=True)
+            return
+        if time.time() > int(event['time']) - CONVERT_CUTOFF:
+            await interaction.response.send_message('It is too late to change this event.', ephemeral=True)
+            return
+        events = self.raid_cog.bot.get_cog('EventsCog')
+        view = ConvertChoicesView(events, interaction.user.id, raid_id)
+        await interaction.response.send_message(
+            'Pick what this event could become. Choose at least 2 and at most 25.',
+            view=view, ephemeral=True)
 
     async def require_leader(self, interaction):
         raid_id = self.raid_cog.resolve_raid_id(interaction.message.id)
@@ -1291,6 +1316,9 @@ class ConfigureModal(discord.ui.Modal):
                     raid_values.pop(time_index)
                 else:
                     raid_values[time_index] = timestamp
+                    events = self.raid_cog.bot.get_cog('EventsCog')
+                    if events:
+                        events.store.write('UPDATE SharedEvents SET convert_closed=0 WHERE raid_id=?', (self.raid_id,))
         else:
             raid_columns.pop(time_index)
             raid_values.pop(time_index)

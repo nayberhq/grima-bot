@@ -25,7 +25,10 @@ builtins._ = lambda value: value
 import discord
 from database import create_table
 from event_store import EventStore, forum_title, mirror_keys
-from events_cog import EventsCog, CreationView
+from events_cog import (
+    POLL_LEAD, CreationView, EventsCog, PollModal, choices_from_values, find_template,
+    parse_hour_range, poll_select_options,
+)
 from raid_cog import RaidCog, RaidView
 from calendar_cog import CalendarCog
 
@@ -51,7 +54,7 @@ def database():
 
 
 def insert_raid(store, raid_id=100, start=None):
-    start = int(time.time()) + 600 if start is None else start
+    start = int(time.time()) + 7200 if start is None else start
     store.write('''INSERT INTO Raids
         (raid_id,channel_id,guild_id,organizer_id,name,time,roster,size)
         VALUES (?,100,1,9,'Folly',?,0,12)''', (raid_id, start))
@@ -111,6 +114,35 @@ class StoreTests(unittest.TestCase):
         second = EventStore(self.conn)
         self.assertEqual(second.event(100)['name'], 'Folly')
 
+    def test_hour_range_uses_evening_for_plain_numbers(self):
+        self.assertEqual(parse_hour_range('5-10'), list(range(17, 23)))
+        self.assertEqual(parse_hour_range('5pm - 10pm'), list(range(17, 23)))
+        self.assertEqual(parse_hour_range('17-22'), list(range(17, 23)))
+        self.assertEqual(parse_hour_range('9am-11am'), [9, 10, 11])
+        with self.assertRaises(ValueError):
+            parse_hour_range('10-5')
+        self.assertIsNone(find_template('poll'))
+        self.assertEqual(find_template('Garden')['name'], 'Pagru-kirít, the Garden of Corpses')
+        self.assertEqual(find_template('Thrâng')['size'], 6)
+
+    def test_poll_tie_keeps_the_first_listed_choice(self):
+        self.store.add_poll(100, [
+            {'name': 'Garden', 'size': 6, 'creep': 0},
+            {'name': 'Caves', 'size': 3, 'creep': 0},
+        ])
+        self.assertTrue(self.store.poll_open(100))
+        self.assertIsNone(self.store.winning_choice(100))
+        self.store.replace_votes(100, 1, [0])
+        self.store.replace_votes(100, 2, [1])
+        self.assertEqual(self.store.winning_choice(100)['name'], 'Garden')
+        self.store.replace_votes(100, 3, [1])
+        self.assertEqual(self.store.winning_choice(100)['name'], 'Caves')
+        self.store.replace_votes(100, 2, [0])
+        self.assertEqual(self.store.winning_choice(100)['name'], 'Garden')
+        self.assertEqual(
+            {row['position'] for row in self.store.rows('SELECT position FROM PollVotes WHERE user_id=2')},
+            {0})
+
     def test_outbox_snapshots_destinations(self):
         self.store.add_copy(100, 2, 200, 200, 22)
         self.store.queue_announcement(100, 'Starting soon', 9)
@@ -154,6 +186,220 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         self.channels[thread_id] = thread
         return thread
 
+    async def test_poll_button_lists_every_template_within_menu_limits(self):
+        early, later = poll_select_options()
+        self.assertLessEqual(len(early), 25)
+        self.assertLessEqual(len(later), 25)
+        self.assertGreaterEqual(len(early) + len(later), 2)
+        modal = PollModal(self.cog)
+        self.assertEqual(len(modal.children), 5)
+        modal.to_components()
+        panel = CreationView(self.cog, 'misc')
+        self.assertEqual([button.label for button in panel.children[-2:]], ['Poll', 'Time poll'])
+        self.assertTrue(panel.is_persistent())
+        chosen = choices_from_values([early[1].value, later[0].value, early[0].value])
+        self.assertEqual(chosen[0]['name'], early[0].description)
+        self.assertEqual(chosen[1]['name'], early[1].description)
+        self.assertEqual(len(chosen), 3)
+        self.assertTrue(any(getattr(child, 'component', None) and child.component.custom_id == 'poll-tiers' for child in modal.children))
+
+    async def test_same_event_can_be_offered_at_several_tiers(self):
+        later = poll_select_options()[1]
+        palace = next(option for option in later if option.label == 'Palace')
+        garden = next(option for option in later if option.label == 'Garden')
+        chosen = choices_from_values([garden.value, palace.value], ['T3', 'T2'])
+        self.assertEqual([(choice['name'], choice['tier']) for choice in chosen], [
+            ('Ekal-nêbi, the Fallen Palace', 'T2'),
+            ('Ekal-nêbi, the Fallen Palace', 'T3'),
+            ('Pagru-kirít, the Garden of Corpses', 'T2'),
+            ('Pagru-kirít, the Garden of Corpses', 'T3'),
+        ])
+        start = int(time.time()) + 100000
+        self.cog.store.write('UPDATE Raids SET time=? WHERE raid_id=100', (start,))
+        self.cog.store.add_poll(100, chosen)
+        await self.cog.reconcile(100, start - POLL_LEAD - 5)
+        shown = self.thread.get_partial_message.return_value.edit.await_args.kwargs['embed'].fields[0].value
+        self.assertIn('Ekal-nêbi, the Fallen Palace T2', shown)
+        self.assertIn('Pagru-kirít, the Garden of Corpses T3', shown)
+        self.cog.store.replace_votes(100, 1, [3])
+        await self.cog.reconcile(100, start - POLL_LEAD)
+        event = self.cog.store.event(100)
+        self.assertEqual(event['name'], 'Pagru-kirít, the Garden of Corpses')
+        self.assertEqual(event['tier'], 'T3')
+
+    async def test_held_choices_keep_their_tiers(self):
+        later = poll_select_options()[1]
+        palace = next(option for option in later if option.label == 'Palace')
+        garden = next(option for option in later if option.label == 'Garden')
+        held = choices_from_values([palace.value, garden.value], ['T2', 'T3'])
+        start = int(time.time()) + 200000
+        self.cog.store.write('UPDATE Raids SET time=? WHERE raid_id=100', (start,))
+        self.cog.store.add_poll(100, [
+            {'name': '5:00 PM', 'size': 0, 'creep': 0, 'starts': start},
+            {'name': '6:00 PM', 'size': 0, 'creep': 0, 'starts': start + 3600},
+        ], kind='time', closes_at=int(time.time()) - 1, held=held)
+        self.cog.store.replace_votes(100, 4, [0])
+        await self.cog.reconcile(100, time.time())
+        self.assertEqual(
+            [(choice['name'], choice['tier']) for choice in self.cog.store.poll_choices(100)],
+            [(choice['name'], choice['tier']) for choice in held])
+
+    async def test_poll_converts_winner_into_the_same_signup(self):
+        start = int(time.time()) + 100000
+        self.cog.store.write('UPDATE Raids SET time=? WHERE raid_id=100', (start,))
+        self.cog.store.add_poll(100, [
+            {'name': 'Pagru-kirít, the Garden of Corpses', 'size': 6, 'creep': 0},
+            {'name': 'The Treasure Caves of Hurum Kâna', 'size': 3, 'creep': 0},
+        ])
+        self.cog.store.replace_votes(100, 1, [0])
+        self.cog.store.replace_votes(100, 2, [0, 1])
+        await self.cog.reconcile(100, start - POLL_LEAD - 5)
+        self.assertTrue(self.cog.store.poll_open(100))
+        self.assertIsNone(self.cog.store.event(100)['share_token'])
+        edited = self.thread.get_partial_message.return_value.edit.await_args.kwargs
+        self.assertNotIn('mirrorkey', edited['embed'].description)
+        self.assertIn('Garden', edited['embed'].fields[0].value)
+        await self.cog.reconcile(100, start - POLL_LEAD)
+        event = self.cog.store.event(100)
+        self.assertEqual(event['name'], 'Pagru-kirít, the Garden of Corpses')
+        self.assertEqual(event['size'], 6)
+        self.assertFalse(self.cog.store.poll_open(100))
+        self.assertTrue(event['share_token'])
+        view = self.thread.get_partial_message.return_value.edit.await_args.kwargs['view']
+        self.assertIsInstance(view, RaidView)
+
+    async def test_poll_without_votes_is_cancelled_and_not_mirrored(self):
+        from network_cog import NetworkCog
+        start = int(time.time()) + 100000
+        self.cog.store.write('UPDATE Raids SET time=? WHERE raid_id=100', (start,))
+        self.cog.store.add_poll(100, [
+            {'name': 'Garden', 'size': 6, 'creep': 0},
+            {'name': 'Caves', 'size': 3, 'creep': 0},
+        ])
+        self.channels[800] = NS(id=800, send=AsyncMock(return_value=NS(id=801)))
+        self.cog.store.write('INSERT INTO NetworkSettings VALUES (1,800)')
+        await self.cog.reconcile(100, start - POLL_LEAD)
+        await NetworkCog(self.bot).tick()
+        event = self.cog.store.event(100)
+        self.assertTrue(event['cancelled'])
+        self.assertIsNone(event['share_token'])
+        self.assertFalse(self.cog.store.poll_open(100))
+        self.channels[800].send.assert_not_awaited()
+        description = self.thread.get_partial_message.return_value.edit.await_args.kwargs['embeds'][0].description
+        self.assertIn('no votes', description)
+
+    async def test_poll_announcement_has_no_mirror_code_until_conversion(self):
+        from network_cog import NetworkCog
+        start = int(time.time()) + 100000
+        self.cog.store.write('UPDATE Raids SET time=? WHERE raid_id=100', (start,))
+        self.cog.store.add_poll(100, [
+            {'name': 'Garden', 'size': 6, 'creep': 0},
+            {'name': 'Caves', 'size': 3, 'creep': 0},
+        ])
+        self.cog.store.replace_votes(100, 5, [0])
+        self.channels[800] = NS(id=800, send=AsyncMock(return_value=NS(id=801)))
+        self.cog.store.write('INSERT INTO NetworkSettings VALUES (1,800)')
+        network = NetworkCog(self.bot)
+        await self.cog.deliver_poll_announcements()
+        await network.tick()
+        self.assertEqual(self.channels[800].send.await_count, 1)
+        self.assertNotIn('mirrorkey', self.channels[800].send.call_args.args[0])
+        self.assertIn('raid poll', self.channels[800].send.call_args.args[0])
+        self.assertIsNone(self.cog.store.event(100)['share_token'])
+        await self.cog.reconcile(100, start - POLL_LEAD)
+        await network.tick()
+        self.assertEqual(self.channels[800].send.await_count, 2)
+        self.assertIn('mirrorkey', self.channels[800].send.call_args.args[0])
+
+    async def test_time_poll_becomes_the_named_event(self):
+        start = int(time.time()) + 100000
+        self.cog.store.write('UPDATE Raids SET time=? WHERE raid_id=100', (start,))
+        self.cog.store.add_poll(100, [
+            {'name': '5:00 PM', 'size': 0, 'creep': 0, 'starts': start},
+            {'name': '6:00 PM', 'size': 0, 'creep': 0, 'starts': start + 3600},
+        ], kind='time', closes_at=int(time.time()) - 1, template={'name': 'Garden', 'size': 6, 'creep': 0})
+        self.cog.store.replace_votes(100, 1, [0])
+        self.cog.store.replace_votes(100, 2, [0])
+        self.cog.store.replace_votes(100, 3, [1])
+        self.channels[800] = NS(id=800, send=AsyncMock(return_value=NS(id=801)))
+        self.cog.store.write('INSERT INTO NetworkSettings VALUES (1,800)')
+        from network_cog import NetworkCog
+        network = NetworkCog(self.bot)
+        network.invite_check_at = time.time() + 3600
+        await self.cog.deliver_poll_announcements()
+        await network.tick()
+        self.assertNotIn('mirrorkey', self.channels[800].send.call_args.args[0])
+        self.assertIn(f'<t:{start}:t>', self.channels[800].send.call_args.args[0])
+        await self.cog.reconcile(100, time.time())
+        event = self.cog.store.event(100)
+        self.assertEqual(event['name'], 'Garden')
+        self.assertEqual(event['size'], 6)
+        self.assertEqual(int(event['time']), start)
+        self.assertFalse(self.cog.store.poll_open(100))
+        self.assertTrue(event['share_token'])
+        await network.tick()
+        self.assertIn('mirrorkey', self.channels[800].send.call_args.args[0])
+
+    async def test_time_poll_becomes_content_poll_before_the_event(self):
+        from network_cog import NetworkCog
+        start = int(time.time()) + 200000
+        self.cog.store.write('UPDATE Raids SET time=? WHERE raid_id=100', (start,))
+        self.cog.store.add_poll(100, [
+            {'name': '5:00 PM', 'size': 0, 'creep': 0, 'starts': start},
+            {'name': '6:00 PM', 'size': 0, 'creep': 0, 'starts': start + 3600},
+        ], kind='time', closes_at=int(time.time()) - 1, held=[
+            {'name': 'Garden', 'size': 6, 'creep': 0},
+            {'name': 'Caves', 'size': 3, 'creep': 0},
+        ])
+        self.cog.store.replace_votes(100, 4, [1])
+        self.channels[800] = NS(id=800, send=AsyncMock(return_value=NS(id=801)))
+        self.cog.store.write('INSERT INTO NetworkSettings VALUES (1,800)')
+        network = NetworkCog(self.bot)
+        network.invite_check_at = time.time() + 3600
+        await self.cog.deliver_poll_announcements()
+        await self.cog.reconcile(100, time.time())
+        poll = self.cog.store.poll_row(100)
+        self.assertEqual(poll['kind'], 'content')
+        self.assertFalse(poll['resolved'])
+        self.assertEqual([choice['name'] for choice in self.cog.store.poll_choices(100)], ['Garden', 'Caves'])
+        self.assertEqual(int(self.cog.store.event(100)['time']), start + 3600)
+        self.assertIsNone(self.cog.store.event(100)['share_token'])
+        await self.cog.deliver_poll_announcements()
+        self.assertEqual(self.channels[800].send.await_count, 2)
+        self.assertNotIn('mirrorkey', self.channels[800].send.call_args.args[0])
+        self.cog.store.replace_votes(100, 4, [0])
+        await self.cog.reconcile(100, start + 3600 - POLL_LEAD)
+        event = self.cog.store.event(100)
+        self.assertEqual(event['name'], 'Garden')
+        self.assertTrue(event['share_token'])
+        await network.tick()
+        self.assertIn('mirrorkey', self.channels[800].send.call_args.args[0])
+
+    async def test_open_time_poll_stays_off_the_calendar(self):
+        start = int(time.time()) + 100000
+        self.cog.store.write('UPDATE Raids SET time=? WHERE raid_id=100', (start,))
+        self.cog.store.add_poll(100, [
+            {'name': '5:00 PM', 'size': 0, 'creep': 0, 'starts': start},
+            {'name': '6:00 PM', 'size': 0, 'creep': 0, 'starts': start + 3600},
+        ], kind='time', closes_at=start, template={'name': 'Garden', 'size': 6, 'creep': 0})
+        calendar = CalendarCog(self.bot)
+        self.assertNotIn(100, [row[1] for row in calendar._calendar_raids(1)])
+
+    async def test_missing_cards_are_posted_into_an_existing_panel_channel(self):
+        from network_cog import NetworkCog
+        self.cog.store.write("INSERT INTO CreationPanels VALUES (1, 777, 1, 'misc')")
+        sent = []
+
+        async def send(*args, **kwargs):
+            sent.append(kwargs['embed'].title)
+            return NS(id=7000 + len(sent))
+
+        self.channels[777] = NS(id=777, send=AsyncMock(side_effect=send),
+                                get_partial_message=Mock(return_value=NS(delete=AsyncMock())))
+        await NetworkCog(self.bot).post_missing_panels()
+        self.assertIn('Seasonal & PvMP', sent)
+        self.assertNotIn('Custom', sent)
+
     async def test_persistent_creation_buttons(self):
         panel = CreationView(self.cog, 'cluster')
         self.assertTrue(panel.is_persistent())
@@ -186,10 +432,10 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
     async def test_button_rows_order_and_denied_leader_callbacks(self):
         self.raids.class_emojis = [discord.PartialEmoji(name=f'Class{n}',id=123456789012345678+n) for n in range(12)]
         view = RaidView(self.raids, planner_url='https://nayberhq.github.io/vanguard-raid-planner/')
-        self.assertEqual([c.custom_id for c in view.children if c.row==0], ['raid_view:settings','raid_view:import','raid_view:refresh'])
+        self.assertEqual([c.custom_id for c in view.children if c.row==0], ['raid_view:settings','raid_view:import','raid_view:refresh','raid_view:poll'])
         self.assertEqual([c.custom_id for c in view.children if c.row==1], ['raid_view:check','raid_view:cancel','raid_view:vanguard'])
         self.assertNotIn('raid_view:select', [c.custom_id for c in view.children])
-        self.assertEqual([len([c for c in view.children if c.row==row]) for row in range(5)], [3,3,4,4,4])
+        self.assertEqual([len([c for c in view.children if c.row==row]) for row in range(5)], [4,3,4,4,4])
         for cid in ('raid_view:vanguard','raid_view:import','raid_view:refresh'):
             self.assertEqual(next(c for c in view.children if c.custom_id==cid).style, discord.ButtonStyle.primary)
 
@@ -242,15 +488,19 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await self.raids.check_signup(interaction))
         interaction.response.send_message.assert_awaited_once()
 
-    async def test_voice_created_at_start_then_locked_after_delay(self):
+    async def test_voice_created_hour_before_start_then_locked_after_delay(self):
         now = int(time.time())
         self.cog.store.write('UPDATE Raids SET time=?', (now,))
         voice = NS(id=500, name='event-100', members=[NS(id=99)], delete=AsyncMock(), edit=AsyncMock())
         self.channels[500] = voice
         self.channels[11] = NS(voice_channels=[])
         self.guilds[1].create_voice_channel = AsyncMock(return_value=voice)
-        await self.cog.reconcile(100, now-1)
+        await self.cog.reconcile(100, now-3601)
         self.guilds[1].create_voice_channel.assert_not_awaited()
+        await self.cog.reconcile(100, now-3600)
+        self.guilds[1].create_voice_channel.assert_awaited_once()
+        await self.cog.reconcile(100, now-1)
+        voice.delete.assert_not_awaited()
         await self.cog.reconcile(100, now)
         await self.cog.reconcile(100, now+1)
         self.guilds[1].create_voice_channel.assert_awaited_once()
@@ -502,6 +752,57 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(f'<t:{base + 3600}:f> · ', embed.fields[0].value)
         self.assertIn('[Garden T2]', embed.fields[1].value)
 
+    async def test_event_poll_keeps_signups_and_updates_the_mirror(self):
+        from events_cog import CONVERT_LENGTH
+        start = int(time.time()) + 6 * 3600
+        self.cog.store.write('UPDATE Raids SET time=? WHERE raid_id=100', (start,))
+        self.conn.execute("INSERT INTO Players(raid_id,player_id,byname,timestamp,unavailable,Warden) VALUES (100,99,'Bob',1,0,1)")
+        mirror = self.make_thread(200)
+        self.cog.store.add_copy(100, 2, 200, 200, 22)
+        token = self.cog.store.share(100)
+        await self.cog.reconcile(100, time.time())
+        view = self.thread.get_partial_message.return_value.edit.await_args.kwargs['view']
+        self.assertIn('raid_view:poll', [child.custom_id for child in view.children])
+        await self.cog.convert_to_poll(100, [
+            {'name': 'Garden', 'size': 6, 'creep': 0},
+            {'name': 'Caves', 'size': 3, 'creep': 0},
+        ])
+        self.assertIn('<@99>', self.thread.send.await_args.args[0])
+        self.assertIn('<@99>', mirror.send.await_args.args[0])
+        self.assertEqual(self.cog.store.event(100)['share_token'], token)
+        self.assertEqual(self.cog.store.event(100)['name'], 'Folly')
+        self.cog.store.replace_votes(100, 5, [0])
+        await self.cog.reconcile(100, time.time() + CONVERT_LENGTH)
+        event = self.cog.store.event(100)
+        self.assertEqual(event['name'], 'Garden')
+        self.assertEqual(event['size'], 6)
+        self.assertEqual(event['share_token'], token)
+        self.assertEqual(self.conn.execute('SELECT byname FROM Players WHERE raid_id=100').fetchone()[0], 'Bob')
+        self.assertGreater(mirror.get_partial_message.return_value.edit.await_count, 0)
+
+    async def test_event_poll_with_no_votes_keeps_the_original_event(self):
+        from events_cog import CONVERT_LENGTH
+        start = int(time.time()) + 6 * 3600
+        self.cog.store.write('UPDATE Raids SET time=? WHERE raid_id=100', (start,))
+        self.conn.execute("INSERT INTO Players(raid_id,player_id,byname,timestamp,unavailable,Warden) VALUES (100,99,'Bob',1,0,1)")
+        await self.cog.convert_to_poll(100, [
+            {'name': 'Garden', 'size': 6, 'creep': 0},
+            {'name': 'Caves', 'size': 3, 'creep': 0},
+        ])
+        await self.cog.reconcile(100, time.time() + CONVERT_LENGTH)
+        event = self.cog.store.event(100)
+        self.assertEqual(event['name'], 'Folly')
+        self.assertFalse(event['cancelled'])
+        self.assertFalse(self.cog.store.poll_open(100))
+        self.assertEqual(self.conn.execute('SELECT byname FROM Players WHERE raid_id=100').fetchone()[0], 'Bob')
+
+    async def test_poll_button_hides_inside_four_hours(self):
+        start = int(time.time()) + 3 * 3600
+        self.cog.store.write('UPDATE Raids SET time=? WHERE raid_id=100', (start,))
+        await self.cog.reconcile(100, time.time())
+        view = self.thread.get_partial_message.return_value.edit.await_args.kwargs['view']
+        self.assertNotIn('raid_view:poll', [child.custom_id for child in view.children])
+
     async def test_calendar_server_links_embed_for_mirrored_hosts(self):
         self.cog.store.add_copy(100, 2, 200, 200, 22)
         self.cog.store.write('INSERT OR REPLACE INTO SourceInvites VALUES (1, ?)', ('https://discord.gg/host',))
@@ -527,7 +828,7 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
     async def test_all_cluster_presets_build_views_and_deploy_in_release_order(self):
         from events_cog import PRESETS
         from network_cog import NetworkCog
-        expected_order = ['angmar', 'moria_mirkwood', 'isengard_rohan', 'helms_mordor', 'morgul_gundabad', 'umbar_morgoth', 'cluster', 'misc']
+        expected_order = ['angmar', 'moria_mirkwood', 'isengard_rohan', 'helms_mordor', 'morgul_gundabad', 'umbar_morgoth', 'seasonal', 'cluster', 'misc']
         self.assertEqual(list(PRESETS.keys()), expected_order)
         for key in expected_order:
             self.assertTrue(PRESETS[key].get('image', '').startswith('https://lotro-wiki.com/images/'))
@@ -640,7 +941,7 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.cog.store.one('SELECT push_id FROM NetworkSettings WHERE guild_id=1')['push_id'], 12)
         self.assertEqual(self.cog.store.one('SELECT source_channel_id FROM EventWatches WHERE guild_id=1')['source_channel_id'], 14)
         self.assertEqual(self.conn.execute('SELECT raid_leader, priority, server FROM Settings WHERE guild_id=1').fetchone(), (55, 66, 'America/New_York'))
-        self.assertEqual(len(self.cog.store.rows('SELECT * FROM CreationPanels WHERE guild_id=1')), 8)
+        self.assertEqual(len(self.cog.store.rows('SELECT * FROM CreationPanels WHERE guild_id=1')), 9)
 
     async def test_setup_skips_panel_redeploy_when_unchanged(self):
         from events_cog import PRESETS

@@ -5,8 +5,10 @@ import logging
 import re
 import time
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 
+import dateparser
 import discord
 import emoji as Emoji
 import pytz
@@ -19,7 +21,151 @@ from time_cog import Time, time_zone_autocomplete
 
 log = logging.getLogger(__name__)
 PRESETS = json.loads(Path(__file__).with_name('event_panels.json').read_text())
+VOICE_LEAD = 3600
+POLL_LEAD = 86400
+POLL_TIERS = ('T1', 'T2', 'T2C', 'T3', 'T4', 'T5')
+CONVERT_CUTOFF = 4 * 3600
+CONVERT_LENGTH = 2 * 3600
 DESCRIPTION_SEP = '----------------------------------------------'
+EARLY_PRESETS = ('angmar', 'moria_mirkwood', 'isengard_rohan', 'helms_mordor', 'morgul_gundabad')
+LATER_PRESETS = ('umbar_morgoth', 'seasonal', 'cluster', 'misc')
+
+
+def iter_templates(presets):
+    for preset in presets:
+        for index, button in enumerate(PRESETS[preset]['buttons']):
+            if button.get('poll') or button.get('time_poll'):
+                continue
+            yield preset, index, button
+
+
+def poll_select_options():
+    def options(presets):
+        return [
+            discord.SelectOption(label=button['label'][:100], value=f'{preset}:{index}', description=button['name'][:100])
+            for preset, index, button in iter_templates(presets)
+        ]
+    return options(EARLY_PRESETS), options(LATER_PRESETS)
+
+
+def tier_select():
+    return discord.ui.Select(
+        placeholder='Tiers (optional)',
+        min_values=0,
+        max_values=len(POLL_TIERS),
+        options=[
+            discord.SelectOption(label='T2c' if tier == 'T2C' else tier, value=tier)
+            for tier in POLL_TIERS
+        ],
+    )
+
+
+def choice_label(choice):
+    tier = (choice.get('tier') or '').strip()
+    shown = 'T2c' if tier == 'T2C' else tier
+    return f"{choice['name']} {shown}".strip()
+
+
+def choices_from_values(values, tiers=None):
+    """Catalog order, then T1 through T5, so a tie keeps the choice listed first."""
+    wanted = set(values)
+    selected = {str(tier).strip().upper() for tier in (tiers or [])}
+    ordered = [tier for tier in POLL_TIERS if tier in selected] or ['']
+    found = 0
+    choices = []
+    for preset, index, button in iter_templates(EARLY_PRESETS + LATER_PRESETS):
+        if f'{preset}:{index}' not in wanted:
+            continue
+        found += 1
+        for tier in ordered:
+            choices.append({
+                'name': button['name'],
+                'size': int(button['size']),
+                'creep': int(bool(button.get('creep'))),
+                'tier': tier,
+            })
+    if found != len(wanted):
+        raise ValueError('Choose events from the lists.')
+    if not 2 <= len(choices) <= 25:
+        raise ValueError('Choose between 2 and 25 choices.')
+    return choices
+
+
+def _clock_hour(hour, marker, fallback):
+    if not 0 <= hour <= 23:
+        raise ValueError('Use an hour from 0 to 23.')
+    marker = (marker or fallback or '').lower()
+    if marker == 'am':
+        if hour == 12:
+            return 0
+        if hour > 12:
+            raise ValueError('Use an hour from 1 to 12 with am or pm.')
+        return hour
+    if marker == 'pm':
+        if hour == 12:
+            return 12
+        if not 1 <= hour <= 11:
+            raise ValueError('Use an hour from 1 to 12 with am or pm.')
+        return hour + 12
+    if 1 <= hour <= 11:
+        return hour + 12
+    return hour
+
+
+def parse_hour_range(text):
+    """Inclusive hours. Plain 1–11 means evening, so 5-10 is 5:00 PM through 10:00 PM."""
+    match = re.fullmatch(r'\s*(\d{1,2})\s*(am|pm)?\s*-\s*(\d{1,2})\s*(am|pm)?\s*', text.strip(), re.I)
+    if not match:
+        raise ValueError('Hours look like 5-10 or 17-22.')
+    start = _clock_hour(int(match.group(1)), match.group(2), match.group(4))
+    end = _clock_hour(int(match.group(3)), match.group(4), match.group(2))
+    if end <= start:
+        raise ValueError('The later hour has to be later on the same day.')
+    return list(range(start, end + 1))
+
+
+def parse_poll_day(text, tz):
+    settings = {
+        'PREFER_DATES_FROM': 'future',
+        'TIMEZONE': getattr(tz, 'zone', str(tz)),
+        'RETURN_AS_TIMEZONE_AWARE': True,
+        'RELATIVE_BASE': datetime.now(tz).replace(tzinfo=None),
+    }
+    parsed = dateparser.parse(text, settings=settings)
+    if parsed is None:
+        raise ValueError('Could not read that day.')
+    if parsed.tzinfo is None:
+        parsed = tz.localize(parsed)
+    return parsed.astimezone(tz).date()
+
+
+def find_template(text):
+    """One named event, or None when the text is the content poll."""
+    query = text.strip().casefold()
+    if not query:
+        raise ValueError('Name one event, or poll.')
+    if query == 'poll':
+        return None
+    matches = []
+    for preset, index, button in iter_templates(EARLY_PRESETS + LATER_PRESETS):
+        if query in (button['label'].casefold(), button['name'].casefold()):
+            matches.append({'name': button['name'], 'size': int(button['size']), 'creep': int(bool(button.get('creep')))})
+    if len(matches) != 1:
+        raise ValueError('Name one event, or poll.')
+    return matches[0]
+
+
+def hour_choices(day, hours, tz):
+    choices = []
+    for hour in hours:
+        local = tz.localize(datetime(day.year, day.month, day.day, hour))
+        choices.append({
+            'name': local.strftime('%I:%M %p').lstrip('0'),
+            'size': 0,
+            'creep': 0,
+            'starts': int(local.timestamp()),
+        })
+    return choices
 
 
 class EventsCog(commands.Cog):
@@ -40,6 +186,10 @@ class EventsCog(commands.Cog):
         for row in self.store.rows('SELECT * FROM CreationPanels'):
             if row['preset'] in PRESETS:
                 self.bot.add_view(CreationView(self, row['preset']), message_id=row['message_id'])
+        for poll in self.store.open_polls():
+            view = PollVoteView(self, poll['raid_id'])
+            for copy in self.store.copies(poll['raid_id']):
+                self.bot.add_view(view, message_id=copy['message_id'])
         self.lifecycle.start()
 
     async def cog_unload(self):
@@ -99,11 +249,15 @@ class EventsCog(commands.Cog):
             raise ValueError('Disable required tags on the event forum before using it.')
         return forum
 
-    async def create_origin(self, guild_id, name, tier, timestamp, size=12):
+    async def create_origin(self, guild_id, name, tier, timestamp, size=12, force_default_forum=False):
         settings = self.store.settings(guild_id)
         if not settings:
             return None
-        target_forum_id = self.store.select_forum_id(settings, size=size, tier=tier)
+        # A poll's size is unknown until it converts, so it stays in the default raid forum.
+        if force_default_forum:
+            target_forum_id = settings['forum_id']
+        else:
+            target_forum_id = self.store.select_forum_id(settings, size=size, tier=tier)
         forum = await self.validate_destinations(settings, forum_id=target_forum_id)
         event = dict(name=name, tier=tier, time=timestamp)
         result = await forum.create_thread(name=self.title(event, guild_id),
@@ -201,11 +355,15 @@ class EventsCog(commands.Cog):
         if not event:
             return
         from raid_cog import RaidView, CreepView
+        if self.store.poll_open(raid_id):
+            await self._refresh_poll_locked(event)
+            return
         embed = self.raids.build_raid_message(raid_id,
             self.raids.build_raid_players(raid_id), self.raids.build_raid_players(raid_id, available=False))
         if not embed:
             return
-        ended = self.store.ended(event, time.time() if now is None else now)
+        current = time.time() if now is None else now
+        ended = self.store.ended(event, current)
         code = event['share_token'] or (None if ended else self.store.share(raid_id))
         if code and not event['share_token']:
             event['share_token'] = code
@@ -253,7 +411,9 @@ class EventsCog(commands.Cog):
                     local_embed.add_field(name='Event voice channel', value='Created in the owning server when the event starts.', inline=False)
                 if copy['guild_id'] != event['guild_id']:
                     local_embed.add_field(name='Join the event server',value=invite_url if invite_url else 'Invite unavailable. Ask the organizer to set server_invite_url in /setup in the owning server.',inline=False)
-                view = None if ended else (CreepView(self.raids) if event['creep'] else RaidView(self.raids, raid_id=raid_id))
+                show_poll = int(event['time']) - CONVERT_CUTOFF >= current
+                view = None if ended else (
+                    CreepView(self.raids) if event['creep'] else RaidView(self.raids, raid_id=raid_id, show_poll=show_poll))
                 await thread.get_partial_message(copy['message_id']).edit(
                     content=None, embeds=[local_embed, *roster_cards], view=view, allowed_mentions=discord.AllowedMentions.none())
                 if copy['voice_id'] and copy['guild_id']==event['guild_id']:
@@ -267,6 +427,273 @@ class EventsCog(commands.Cog):
                                  (event['revision'], int(ended), copy['thread_id']))
             except discord.HTTPException:
                 log.exception('Could not refresh event %s in server %s; will retry', raid_id, copy['guild_id'])
+
+    async def _refresh_poll_locked(self, event):
+        raid_id = event['raid_id']
+        poll = self.store.poll_row(raid_id) or {}
+        counts = {row['position']: row['votes'] for row in self.store.rows(
+            'SELECT position, COUNT(*) AS votes FROM PollVotes WHERE raid_id=? GROUP BY position', (raid_id,))}
+        time_poll = poll.get('kind') == 'time'
+        convert_poll = poll.get('kind') == 'convert'
+        if time_poll:
+            closes = int(poll['closes_at'])
+            lines = [
+                f"{counts.get(choice['position'], 0)} · {choice['name']} (<t:{int(choice['starts'])}:t>)"
+                for choice in self.store.poll_choices(raid_id)
+            ]
+            description = f"Vote for a start time. The winner is chosen <t:{closes}:R>."
+            footer = 'Time poll'
+        elif convert_poll:
+            closes = int(poll['closes_at'])
+            lines = [
+                f"{counts.get(choice['position'], 0)} · {choice_label(choice)} ({choice['size']}-player)"
+                for choice in self.store.poll_choices(raid_id)
+            ]
+            description = (
+                f"Vote for what this event should become. Voting closes <t:{closes}:R>.\n"
+                "Anyone already signed up stays signed up."
+            )
+            footer = 'Event poll'
+        else:
+            closes = int(event['time']) - POLL_LEAD
+            lines = [
+                f"{counts.get(choice['position'], 0)} · {choice_label(choice)} ({choice['size']}-player)"
+                for choice in self.store.poll_choices(raid_id)
+            ]
+            description = (
+                f"Vote for any you want to run. The winner becomes the signup <t:{closes}:R>.\n"
+                f"Starts <t:{int(event['time'])}:F>"
+            )
+            footer = 'Poll'
+        embed = discord.Embed(
+            title=f"Poll: {event['name']}",
+            description=description,
+            colour=discord.Colour(0x3498db),
+        )
+        packed = '\n'.join(lines) or 'No choices.'
+        embed.add_field(name='Votes', value=packed[:1024], inline=False)
+        if len(packed) > 1024:
+            embed.add_field(name='\u200b', value=packed[1024:2048], inline=False)
+        embed.set_footer(text=footer)
+        view = PollVoteView(self, raid_id)
+        for copy in self.store.copies(raid_id):
+            if copy['locked'] or copy['revision'] == event['revision']:
+                continue
+            try:
+                thread = await self.channel(copy['thread_id'])
+                await thread.edit(name=self.title(event, copy['guild_id']), archived=False)
+                await thread.get_partial_message(copy['message_id']).edit(
+                    content=None, embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
+                self.store.write('UPDATE EventCopies SET revision=? WHERE thread_id=?', (event['revision'], copy['thread_id']))
+            except discord.HTTPException:
+                log.exception('Could not refresh poll %s in server %s; will retry', raid_id, copy['guild_id'])
+
+    def _cancel_poll(self, raid_id, reason):
+        self.store.write('UPDATE Raids SET boss=? WHERE raid_id=?', (reason, raid_id))
+        self.store.write(
+            'UPDATE SharedEvents SET cancelled=1, share_token=NULL, revision=revision+1 WHERE raid_id=?',
+            (raid_id,))
+        self.store.write('UPDATE EventPolls SET resolved=1 WHERE raid_id=?', (raid_id,))
+
+    def _schedule_event(self, event, name, size, creep, starts=None, tier=None):
+        raid_id = event['raid_id']
+        if tier is None:
+            tier = event['tier'] or ''
+        roster = int(bool(tier and tier[1:2].isdigit() and int(tier[1]) > 2) and not creep)
+        columns = ['name=?', 'size=?', 'roster=?', 'tier=?']
+        values = [name, int(size), roster, tier]
+        if starts is not None:
+            columns.append('time=?')
+            values.append(int(starts))
+        values.append(raid_id)
+        self.store.write(f"UPDATE Raids SET {', '.join(columns)} WHERE raid_id=?", tuple(values))
+        self.store.write(
+            'UPDATE SharedEvents SET creep=?, revision=revision+1 WHERE raid_id=?',
+            (int(creep), raid_id))
+        if not creep and self.raids:
+            self.raids.roster_init(raid_id, int(size))
+
+    async def _refresh_calendar(self, event):
+        if self.raids and self.raids.calendar_cog and event:
+            await self.raids.calendar_cog.update_calendar(event['guild_id'])
+
+    async def resolve_poll_locked(self, raid_id):
+        """Turn the winning choice into this thread's signup, or cancel when nobody voted."""
+        if not self.store.poll_open(raid_id):
+            return
+        event = self.store.event(raid_id)
+        winner = self.store.winning_choice(raid_id)
+        poll = self.store.poll_row(raid_id)
+        if winner is None:
+            if poll and poll['kind'] == 'convert':
+                self.store.write('UPDATE EventPolls SET resolved=1 WHERE raid_id=?', (raid_id,))
+                self.store.write('UPDATE SharedEvents SET revision=revision+1 WHERE raid_id=?', (raid_id,))
+            else:
+                self._cancel_poll(raid_id, 'This poll closed with no votes, so no event was scheduled.')
+        else:
+            self._schedule_event(
+                event, winner['name'], winner['size'], winner['creep'], tier=winner.get('tier') or '')
+            self.store.write('UPDATE EventPolls SET resolved=1 WHERE raid_id=?', (raid_id,))
+        await self._refresh_calendar(event)
+
+    async def resolve_time_poll_locked(self, raid_id):
+        """Lock the winning hour. A named template becomes the event; a poll becomes a content poll."""
+        if not self.store.poll_open(raid_id):
+            return
+        event = self.store.event(raid_id)
+        poll = self.store.poll_row(raid_id)
+        winner = self.store.winning_choice(raid_id)
+        if winner is None or not winner.get('starts'):
+            self._cancel_poll(raid_id, 'This time poll closed with no votes, so no event was scheduled.')
+            await self._refresh_calendar(event)
+            return
+        if self.store.held_choices(raid_id):
+            self.store.write('UPDATE Raids SET time=? WHERE raid_id=?', (int(winner['starts']), raid_id))
+            self.store.adopt_held_choices(raid_id)
+            self.store.write(
+                "UPDATE EventPolls SET kind='content', announced=0, resolved=0, closes_at=NULL WHERE raid_id=?",
+                (raid_id,))
+            self.store.write('UPDATE SharedEvents SET revision=revision+1 WHERE raid_id=?', (raid_id,))
+        else:
+            self._schedule_event(
+                event, poll['template_name'], poll['template_size'], poll['template_creep'], starts=winner['starts'])
+            self.store.write('UPDATE EventPolls SET resolved=1 WHERE raid_id=?', (raid_id,))
+        await self._refresh_calendar(event)
+
+    def format_poll_announcement(self, event):
+        guild = self.bot.get_guild(event['guild_id'])
+        kinship = guild.name if guild and getattr(guild, 'name', None) else 'host'
+        title = f"{event['name']} {event['tier']}".strip() if event.get('tier') else event['name']
+        poll = self.store.poll_row(event['raid_id'])
+        if poll and poll['kind'] == 'time':
+            choices = self.store.poll_choices(event['raid_id'])
+            first, last = int(choices[0]['starts']), int(choices[-1]['starts'])
+            when = f"on <t:{first}:D>, <t:{first}:t>–<t:{last}:t>"
+        else:
+            when = f"at <t:{int(event['time'])}:F>"
+        return '\n'.join([
+            f'{kinship} posted a raid poll.',
+            f'{title} {when}',
+            f"Vote in <#{event['channel_id']}>",
+        ])
+
+    async def deliver_poll_announcements(self):
+        """Tell the announcement channel a poll exists, without a mirror code."""
+        for poll in self.store.rows('SELECT raid_id FROM EventPolls WHERE resolved=0 AND announced=0'):
+            event = self.store.event(poll['raid_id'])
+            if not event or self.store.ended(event, time.time()):
+                continue
+            row = self.store.one('SELECT push_id FROM NetworkSettings WHERE guild_id=?', (event['guild_id'],))
+            if not row or not row['push_id']:
+                continue
+            try:
+                channel = await self.channel(row['push_id'])
+                kind = (self.store.poll_row(poll['raid_id']) or {}).get('kind') or 'content'
+                await self.sender.send(
+                    channel, f"poll:{poll['raid_id']}:{row['push_id']}:{kind}", self.format_poll_announcement(event))
+                self.store.write('UPDATE EventPolls SET announced=1 WHERE raid_id=?', (poll['raid_id'],))
+            except discord.HTTPException:
+                log.exception('Poll announcement failed for %s; will retry', poll['raid_id'])
+
+    async def create_poll(self, guild_id, author_id, title, tier, timestamp, choices):
+        if not time.time() + POLL_LEAD < timestamp <= time.time() + 31536000:
+            raise ValueError('Polls must start more than 24 hours from now, and within one year.')
+        if not 2 <= len(choices) <= 25:
+            raise ValueError('Choose between 2 and 25 events.')
+        origin = await self.create_origin(guild_id, title, '', timestamp, size=12, force_default_forum=True)
+        if origin is None:
+            raise ValueError('Run /setup before creating a poll.')
+        thread, post, settings = origin
+        raid_id = post.id
+        upsert(self.bot.conn, 'Raids',
+               ['channel_id', 'guild_id', 'organizer_id', 'name', 'tier', 'boss', 'time', 'roster', 'tag', 'size'],
+               [thread.id, guild_id, author_id, title[:256], tier, '', timestamp, 0, None, 12],
+               ['raid_id'], [raid_id])
+        self.bot.conn.commit()
+        self.store.add_event(raid_id, settings)
+        self.store.add_copy(raid_id, guild_id, thread.id, post.id, settings['voice_category_id'])
+        self.store.add_poll(raid_id, choices)
+        await self.refresh(raid_id)
+        await self.deliver_poll_announcements()
+        if self.raids and self.raids.calendar_cog:
+            await self.raids.calendar_cog.update_calendar(guild_id)
+        return raid_id
+
+    def server_timezone(self, guild_id):
+        time_cog = self.bot.get_cog('TimeCog') if hasattr(self.bot, 'get_cog') else None
+        name = time_cog.get_server_timezone(guild_id) if time_cog else None
+        name = name or getattr(self.bot, 'server_tz', None) or 'UTC'
+        try:
+            return pytz.timezone(name)
+        except pytz.UnknownTimeZoneError:
+            return pytz.utc
+
+    async def create_time_poll(self, guild_id, author_id, title, tier, hours, template=None, held=None):
+        earliest = min(choice['starts'] for choice in hours)
+        lead = POLL_LEAD * (2 if held else 1)
+        if not time.time() + lead < earliest <= time.time() + 31536000:
+            if held:
+                raise ValueError('A time poll that becomes a content poll needs its earliest hour more than 48 hours away.')
+            raise ValueError('The earliest hour must be more than 24 hours away, and within one year.')
+        origin = await self.create_origin(guild_id, title, '', earliest, size=12, force_default_forum=True)
+        if origin is None:
+            raise ValueError('Run /setup before creating a poll.')
+        thread, post, settings = origin
+        raid_id = post.id
+        upsert(self.bot.conn, 'Raids',
+               ['channel_id', 'guild_id', 'organizer_id', 'name', 'tier', 'boss', 'time', 'roster', 'tag', 'size'],
+               [thread.id, guild_id, author_id, title[:256], tier, '', earliest, 0, None, 12],
+               ['raid_id'], [raid_id])
+        self.bot.conn.commit()
+        self.store.add_event(raid_id, settings)
+        self.store.add_copy(raid_id, guild_id, thread.id, post.id, settings['voice_category_id'])
+        self.store.add_poll(
+            raid_id, hours, kind='time', closes_at=int(time.time()) + POLL_LEAD,
+            template=template, held=held)
+        await self.refresh(raid_id)
+        await self.deliver_poll_announcements()
+        if self.raids and self.raids.calendar_cog:
+            await self.raids.calendar_cog.update_calendar(guild_id)
+        return raid_id
+
+    async def convert_to_poll(self, raid_id, choices):
+        """Turn an existing event into a two-hour poll. Current signups stay signed up."""
+        event = self.store.event(raid_id)
+        if not event or self.store.ended(event, time.time()):
+            raise ValueError('This event has ended.')
+        if self.store.poll_open(raid_id):
+            raise ValueError('This event is already a poll.')
+        if time.time() > int(event['time']) - CONVERT_CUTOFF:
+            raise ValueError('It is too late to change this event.')
+        if not 2 <= len(choices) <= 25:
+            raise ValueError('Choose between 2 and 25 events.')
+        if self.store.poll_row(raid_id):
+            self.store.write('DELETE FROM PollVotes WHERE raid_id=?', (raid_id,))
+            self.store.write('DELETE FROM PollChoices WHERE raid_id=?', (raid_id,))
+            self.store.write('DELETE FROM HeldPollChoices WHERE raid_id=?', (raid_id,))
+            self.store.write('DELETE FROM EventPolls WHERE raid_id=?', (raid_id,))
+        closes = int(time.time()) + CONVERT_LENGTH
+        self.store.add_poll(raid_id, choices, kind='convert', closes_at=closes)
+        self.store.write('UPDATE EventPolls SET announced=1 WHERE raid_id=?', (raid_id,))
+        self.store.touch(raid_id)
+        await self.refresh(raid_id)
+        await self.ping_signups(raid_id, closes)
+        return closes
+
+    async def ping_signups(self, raid_id, closes):
+        players = self.store.rows(
+            'SELECT player_id FROM Players WHERE raid_id=? AND unavailable=0 AND player_id IS NOT NULL', (raid_id,))
+        mentions = ' '.join(f"<@{row['player_id']}>" for row in players)
+        notice = f"This event may change. Vote on the post for what to run. Poll closes <t:{int(closes)}:R>."
+        text = f"{mentions}\n{notice}" if mentions else notice
+        for copy in self.store.copies(raid_id):
+            if copy['locked']:
+                continue
+            try:
+                thread = await self.channel(copy['thread_id'])
+                await thread.send(text, allowed_mentions=discord.AllowedMentions(users=True))
+            except discord.HTTPException:
+                log.exception('Could not ping signups for %s in %s', raid_id, copy['guild_id'])
 
     async def cancel(self, raid_id):
         self.store.write('UPDATE SharedEvents SET cancelled=1, share_token=NULL, revision=revision+1 WHERE raid_id=?', (raid_id,))
@@ -291,6 +718,21 @@ class EventsCog(commands.Cog):
             event = self.store.event(raid_id)
             if not event:
                 return
+            poll = self.store.poll_row(raid_id) if self.store.poll_open(raid_id) else None
+            if poll and poll['kind'] == 'time' and poll.get('closes_at') and now >= poll['closes_at']:
+                await self.resolve_time_poll_locked(raid_id)
+                event = self.store.event(raid_id)
+            elif poll and poll['kind'] == 'convert' and poll.get('closes_at') and now >= poll['closes_at']:
+                await self.resolve_poll_locked(raid_id)
+                event = self.store.event(raid_id)
+            elif poll and poll['kind'] == 'content' and now >= int(event['time']) - POLL_LEAD:
+                await self.resolve_poll_locked(raid_id)
+                event = self.store.event(raid_id)
+            elif (not poll and not event['cancelled'] and not event.get('convert_closed')
+                    and now > int(event['time']) - CONVERT_CUTOFF):
+                self.store.write(
+                    'UPDATE SharedEvents SET convert_closed=1, revision=revision+1 WHERE raid_id=?', (raid_id,))
+                event = self.store.event(raid_id)
             ended = self.store.ended(event, now)
             if not ended:
                 if not self.store.one('SELECT 1 FROM SourceInvites WHERE guild_id=?',(event['guild_id'],)):
@@ -317,7 +759,9 @@ class EventsCog(commands.Cog):
                         thread = await self.channel(copy['thread_id'])
                         if thread.archived and not thread.locked:
                             await thread.edit(archived=False)
-                    if copy['guild_id']==event['guild_id'] and not ended and not copy['locked'] and now >= event['time'] and not copy['voice_id']:
+                    voice_open = event['time'] - VOICE_LEAD
+                    if (not self.store.poll_open(raid_id) and copy['guild_id']==event['guild_id']
+                            and not ended and not copy['locked'] and now >= voice_open and not copy['voice_id']):
                         category = await self.channel(copy['voice_category_id'])
                         # A deterministic marker recovers a successful Discord creation
                         # if the process died before saving its ID.
@@ -325,12 +769,12 @@ class EventsCog(commands.Cog):
                         voice = discord.utils.get(category.voice_channels, name=marker)
                         if voice is None:
                             voice = await guild.create_voice_channel(marker, category=category,
-                                reason=f'Raid {raid_id} started')
+                                reason=f'Raid {raid_id} starts within the hour')
                         self.store.write('UPDATE EventCopies SET voice_id=?, revision=0 WHERE thread_id=?',
                                          (voice.id, copy['thread_id']))
                         copy['voice_id'] = voice.id
                         self.store.touch(raid_id)
-                    if copy['voice_id'] and (copy['guild_id']!=event['guild_id'] or (not ended and now < event['time'])):
+                    if copy['voice_id'] and (copy['guild_id']!=event['guild_id'] or (not ended and now < voice_open)):
                         # A running event may be rescheduled; retire the early channel
                         # when empty, and recreate it at the new start.
                         try:
@@ -376,6 +820,8 @@ class EventsCog(commands.Cog):
             raise InvalidShare('This server was disconnected by the organizer.')
         if not event or self.store.ended(event, time.time()):
             raise InvalidShare('Invalid sharing code or the event has ended.')
+        if self.store.poll_open(event['raid_id']):
+            raise InvalidShare('This poll is not shared until it becomes an event.')
         if not settings:
             raise ValueError('Run /setup in the destination server first.')
         raid_id = event['raid_id']
@@ -532,6 +978,7 @@ class EventsCog(commands.Cog):
             except Exception:
                 log.exception('Event reconciliation failed; continuing other events')
         await self.deliver_announcements()
+        await self.deliver_poll_announcements()
         await self.scan_watches()
         network = self.bot.get_cog('NetworkCog')
         if network:
@@ -1114,6 +1561,9 @@ class EventsCog(commands.Cog):
         if self.store.ended(event, time.time()):
             await interaction.response.send_message('This event has ended.', ephemeral=True)
             return
+        if self.store.poll_open(event['raid_id']):
+            await interaction.response.send_message('This poll is not shared until it becomes an event.', ephemeral=True)
+            return
         if revoke:
             self.store.write('UPDATE SharedEvents SET share_token=NULL WHERE raid_id=?', (event['raid_id'],))
             message = 'Sharing code revoked. Existing synchronized servers remain connected.'
@@ -1203,6 +1653,12 @@ class CreateButton(discord.ui.Button):
         if not self.cog.raids.calendar_cog.is_raid_leader(interaction.user, interaction.guild):
             await interaction.response.send_message('Ask an administrator to give you the configured raid leader role.', ephemeral=True)
             return
+        if self.template.get('poll'):
+            await interaction.response.send_modal(PollModal(self.cog))
+            return
+        if self.template.get('time_poll'):
+            await interaction.response.send_modal(TimePollModal(self.cog))
+            return
         await interaction.response.send_modal(CreateEventModal(self.cog, self.template))
 
 
@@ -1245,6 +1701,218 @@ class CreateEventModal(discord.ui.Modal):
             await interaction.followup.send(f"Created <#{event['channel_id']}>", ephemeral=True)
         except (ValueError, discord.HTTPException) as exc:
             await interaction.followup.send(f'Could not create event: {exc}', ephemeral=True)
+
+
+class PollVoteView(discord.ui.View):
+    def __init__(self, cog, raid_id):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.raid_id = raid_id
+        options = []
+        for choice in cog.store.poll_choices(raid_id):
+            description = f"{choice['size']}-player" if choice['size'] else None
+            options.append(discord.SelectOption(
+                label=choice_label(choice)[:100], value=str(choice['position']), description=description))
+        if not options:
+            raise ValueError('Poll has no choices.')
+        self.vote_menu = discord.ui.Select(
+            custom_id=f'poll-vote:{raid_id}',
+            placeholder='Vote for any you want to run',
+            min_values=1,
+            max_values=len(options),
+            options=options,
+        )
+        self.vote_menu.callback = self.vote
+        self.add_item(self.vote_menu)
+
+    async def vote(self, interaction):
+        if not self.cog.store.poll_open(self.raid_id):
+            await interaction.response.send_message('This poll has closed.', ephemeral=True)
+            return
+        self.cog.store.replace_votes(self.raid_id, interaction.user.id, [int(value) for value in self.vote_menu.values])
+        self.cog.store.touch(self.raid_id)
+        await interaction.response.send_message('Vote recorded. Sending the menu again replaces your votes.', ephemeral=True)
+        await self.cog.refresh(self.raid_id)
+
+
+class PollModal(discord.ui.Modal):
+    def __init__(self, cog):
+        super().__init__(title='Create poll')
+        self.cog = cog
+        self.name = discord.ui.TextInput(label='Title', max_length=80)
+        self.when = discord.ui.TextInput(label='Start time', placeholder='Friday 8pm (your configured timezone)', max_length=64)
+        early, later = poll_select_options()
+        self.early = discord.ui.Select(
+            custom_id='poll-choices-early', placeholder='Levels 50–140',
+            min_values=0, max_values=len(early), options=early, required=False)
+        self.later = discord.ui.Select(
+            custom_id='poll-choices-later', placeholder='Level 150, 160, and other',
+            min_values=0, max_values=len(later), options=later, required=False)
+        self.tiers = tier_select()
+        self.tiers.custom_id = 'poll-tiers'
+        self.add_item(self.name)
+        self.add_item(self.when)
+        self.add_item(discord.ui.Label(
+            text='Choices, levels 50–140',
+            description='Each selected tier is added to every event. 2 to 25 choices.',
+            component=self.early))
+        self.add_item(discord.ui.Label(
+            text='Choices, 150, 160, and other',
+            component=self.later))
+        self.add_item(discord.ui.Label(text='Tiers', component=self.tiers))
+
+    async def on_submit(self, interaction):
+        if not self.cog.raids.calendar_cog.is_raid_leader(interaction.user, interaction.guild):
+            await interaction.response.send_message('You no longer have permission to create events.', ephemeral=True)
+            return
+        try:
+            timestamp = Time().converter(self.cog.bot, interaction.guild_id, interaction.user.id, str(self.when))
+            choices = choices_from_values([*self.early.values, *self.later.values], self.tiers.values)
+            if not time.time() + POLL_LEAD < timestamp <= time.time() + 31536000:
+                raise ValueError('Polls must start more than 24 hours from now, and within one year.')
+        except (ValueError, commands.BadArgument) as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        try:
+            raid_id = await self.cog.create_poll(
+                interaction.guild_id, interaction.user.id, str(self.name), '', timestamp, choices)
+            event = self.cog.store.event(raid_id)
+            await interaction.followup.send(f"Created <#{event['channel_id']}>", ephemeral=True)
+        except (ValueError, discord.HTTPException) as exc:
+            await interaction.followup.send(f'Could not create poll: {exc}', ephemeral=True)
+
+
+class ConvertChoicesView(discord.ui.View):
+    """Choices for turning an existing event into a two-hour poll."""
+
+    def __init__(self, cog, user_id, raid_id):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.user_id = user_id
+        self.raid_id = raid_id
+        early, later = poll_select_options()
+        self.early = discord.ui.Select(
+            placeholder='Levels 50–140', min_values=0, max_values=len(early), options=early)
+        self.later = discord.ui.Select(
+            placeholder='Level 150, 160, seasonal, and custom', min_values=0, max_values=len(later), options=later)
+        self.tiers = tier_select()
+        self.add_item(self.early)
+        self.add_item(self.later)
+        self.add_item(self.tiers)
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message('This poll setup is not yours.', ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label='Start poll', style=discord.ButtonStyle.success, row=3)
+    async def start(self, interaction, button):
+        try:
+            choices = choices_from_values([*self.early.values, *self.later.values], self.tiers.values)
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        try:
+            closes = await self.cog.convert_to_poll(self.raid_id, choices)
+            await interaction.edit_original_response(
+                content=f"Poll started. It closes <t:{closes}:R>. Signed-up players were pinged.", view=None)
+        except (ValueError, discord.HTTPException) as exc:
+            await interaction.followup.send(f'Could not start the poll: {exc}', ephemeral=True)
+
+
+class TimePollChoicesView(discord.ui.View):
+    """Content choices for a time poll whose template is the content poll."""
+
+    def __init__(self, cog, user_id, title, tier, hours):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.user_id = user_id
+        self.title = title
+        self.tier = tier
+        self.hours = hours
+        early, later = poll_select_options()
+        self.early = discord.ui.Select(
+            placeholder='Levels 50–140', min_values=0, max_values=len(early), options=early)
+        self.later = discord.ui.Select(
+            placeholder='Level 150, 160, seasonal, and custom', min_values=0, max_values=len(later), options=later)
+        self.tiers = tier_select()
+        self.add_item(self.early)
+        self.add_item(self.later)
+        self.add_item(self.tiers)
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message('This poll setup is not yours.', ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label='Create content poll', style=discord.ButtonStyle.success, row=3)
+    async def create(self, interaction, button):
+        try:
+            choices = choices_from_values([*self.early.values, *self.later.values], self.tiers.values)
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        try:
+            raid_id = await self.cog.create_time_poll(
+                interaction.guild_id, interaction.user.id, self.title, self.tier, self.hours, held=choices)
+            event = self.cog.store.event(raid_id)
+            await interaction.edit_original_response(content=f"Created <#{event['channel_id']}>", view=None)
+        except (ValueError, discord.HTTPException) as exc:
+            await interaction.followup.send(f'Could not create poll: {exc}', ephemeral=True)
+
+
+class TimePollModal(discord.ui.Modal):
+    def __init__(self, cog):
+        super().__init__(title='Create time poll')
+        self.cog = cog
+        self.name = discord.ui.TextInput(label='Title', max_length=80)
+        self.day = discord.ui.TextInput(label='Day', placeholder='Friday', max_length=64)
+        self.hours = discord.ui.TextInput(label='Hours', placeholder='5-10', max_length=20)
+        self.tier = discord.ui.TextInput(label='Tier (optional)', placeholder='T1–T5', required=False, max_length=3)
+        self.template = discord.ui.TextInput(label='Template', placeholder='Garden, or poll', max_length=80)
+        for field in (self.name, self.day, self.hours, self.tier, self.template):
+            self.add_item(field)
+
+    async def on_submit(self, interaction):
+        if not self.cog.raids.calendar_cog.is_raid_leader(interaction.user, interaction.guild):
+            await interaction.response.send_message('You no longer have permission to create events.', ephemeral=True)
+            return
+        try:
+            tier = str(self.tier).strip().upper()
+            if tier and tier not in ('T1', 'T2', 'T2C', 'T3', 'T4', 'T5'):
+                raise ValueError('Tier must be T1, T2, T2c, T3, T4 or T5.')
+            tz = self.cog.server_timezone(interaction.guild_id)
+            day = parse_poll_day(str(self.day), tz)
+            hours = hour_choices(day, parse_hour_range(str(self.hours)), tz)
+            template = find_template(str(self.template))
+            earliest = min(choice['starts'] for choice in hours)
+            lead = POLL_LEAD * (2 if template is None else 1)
+            if not time.time() + lead < earliest <= time.time() + 31536000:
+                if template is None:
+                    raise ValueError('A time poll that becomes a content poll needs its earliest hour more than 48 hours away.')
+                raise ValueError('The earliest hour must be more than 24 hours away, and within one year.')
+        except (ValueError, commands.BadArgument) as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        if template is None:
+            view = TimePollChoicesView(self.cog, interaction.user.id, str(self.name), tier, hours)
+            await interaction.response.send_message(
+                'Pick the events for the content poll. Choose at least 2 and at most 25, then create it.',
+                view=view, ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        try:
+            raid_id = await self.cog.create_time_poll(
+                interaction.guild_id, interaction.user.id, str(self.name), tier, hours, template=template)
+            event = self.cog.store.event(raid_id)
+            await interaction.followup.send(f"Created <#{event['channel_id']}>", ephemeral=True)
+        except (ValueError, discord.HTTPException) as exc:
+            await interaction.followup.send(f'Could not create poll: {exc}', ephemeral=True)
 
 
 async def setup(bot):

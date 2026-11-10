@@ -114,9 +114,46 @@ class EventStore:
             conn.execute('CREATE TABLE SourceInvites(guild_id INTEGER PRIMARY KEY,url TEXT NOT NULL)')
             conn.execute('UPDATE SharedEvents SET revision=revision+1')
         conn.execute('CREATE TABLE IF NOT EXISTS GuildIdentity(guild_id INTEGER PRIMARY KEY,kin_name TEXT,emoji TEXT)')
+        conn.executescript('''
+            CREATE TABLE IF NOT EXISTS EventPolls (
+                raid_id INTEGER PRIMARY KEY, resolved INTEGER NOT NULL DEFAULT 0,
+                announced INTEGER NOT NULL DEFAULT 0);
+            CREATE TABLE IF NOT EXISTS PollChoices (
+                raid_id INTEGER NOT NULL, position INTEGER NOT NULL, name TEXT NOT NULL,
+                size INTEGER NOT NULL, creep INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (raid_id, position));
+            CREATE TABLE IF NOT EXISTS PollVotes (
+                raid_id INTEGER NOT NULL, user_id INTEGER NOT NULL, position INTEGER NOT NULL,
+                PRIMARY KEY (raid_id, user_id, position));
+            CREATE TABLE IF NOT EXISTS HeldPollChoices (
+                raid_id INTEGER NOT NULL, position INTEGER NOT NULL, name TEXT NOT NULL,
+                size INTEGER NOT NULL, creep INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (raid_id, position));
+        ''')
+        poll_cols = {row[1] for row in conn.execute('PRAGMA table_info(EventPolls)')}
+        for col, col_def in (
+            ('kind', "TEXT NOT NULL DEFAULT 'content'"),
+            ('closes_at', 'INTEGER'),
+            ('template_name', 'TEXT'),
+            ('template_size', 'INTEGER'),
+            ('template_creep', 'INTEGER NOT NULL DEFAULT 0'),
+        ):
+            if col not in poll_cols:
+                conn.execute(f'ALTER TABLE EventPolls ADD COLUMN {col} {col_def}')
+        choice_cols = {row[1] for row in conn.execute('PRAGMA table_info(PollChoices)')}
+        if 'starts' not in choice_cols:
+            conn.execute('ALTER TABLE PollChoices ADD COLUMN starts INTEGER')
+        if 'tier' not in choice_cols:
+            conn.execute("ALTER TABLE PollChoices ADD COLUMN tier TEXT NOT NULL DEFAULT ''")
+        held_cols = {row[1] for row in conn.execute('PRAGMA table_info(HeldPollChoices)')}
+        if 'tier' not in held_cols:
+            conn.execute("ALTER TABLE HeldPollChoices ADD COLUMN tier TEXT NOT NULL DEFAULT ''")
         columns = {row[1] for row in conn.execute('PRAGMA table_info(EventCopies)')}
         if 'ended_rendered' not in columns:
             conn.execute('ALTER TABLE EventCopies ADD COLUMN ended_rendered INTEGER NOT NULL DEFAULT 0')
+        shared_cols = {row[1] for row in conn.execute('PRAGMA table_info(SharedEvents)')}
+        if 'convert_closed' not in shared_cols:
+            conn.execute('ALTER TABLE SharedEvents ADD COLUMN convert_closed INTEGER NOT NULL DEFAULT 0')
         es_cols = {row[1] for row in conn.execute('PRAGMA table_info(EventSettings)')}
         for col, col_def in (
             ('forum_mode', "TEXT NOT NULL DEFAULT 'single'"),
@@ -196,7 +233,7 @@ class EventStore:
 
     def event(self, raid_id):
         return self.one('''SELECT r.*, e.duration, e.lock_delay, e.cancelled,
-            e.share_token, e.revision, e.creep FROM SharedEvents e
+            e.share_token, e.revision, e.creep, e.convert_closed FROM SharedEvents e
             JOIN Raids r USING (raid_id) WHERE raid_id=?''', (raid_id,))
 
     def active_events(self):
@@ -223,6 +260,77 @@ class EventStore:
 
     def touch(self, raid_id):
         self.write('UPDATE SharedEvents SET revision=revision+1 WHERE raid_id=?', (raid_id,))
+
+    def add_poll(self, raid_id, choices, kind='content', closes_at=None, template=None, held=None):
+        template = template or {}
+        with self.conn:
+            self.conn.execute(
+                '''INSERT INTO EventPolls
+                   (raid_id, resolved, announced, kind, closes_at, template_name, template_size, template_creep)
+                   VALUES (?,0,0,?,?,?,?,?)''',
+                (raid_id, kind, closes_at, template.get('name'), template.get('size'), int(template.get('creep') or 0)))
+            for position, choice in enumerate(choices):
+                self.conn.execute(
+                    '''INSERT INTO PollChoices (raid_id, position, name, size, creep, starts, tier)
+                       VALUES (?,?,?,?,?,?,?)''',
+                    (raid_id, position, choice['name'], int(choice['size']), int(choice.get('creep') or 0),
+                     choice.get('starts'), choice.get('tier') or ''))
+            for position, choice in enumerate(held or []):
+                self.conn.execute(
+                    'INSERT INTO HeldPollChoices (raid_id, position, name, size, creep, tier) VALUES (?,?,?,?,?,?)',
+                    (raid_id, position, choice['name'], int(choice['size']), int(choice.get('creep') or 0),
+                     choice.get('tier') or ''))
+
+    def poll_row(self, raid_id):
+        return self.one('SELECT * FROM EventPolls WHERE raid_id=?', (raid_id,))
+
+    def held_choices(self, raid_id):
+        return self.rows('SELECT * FROM HeldPollChoices WHERE raid_id=? ORDER BY position', (raid_id,))
+
+    def adopt_held_choices(self, raid_id):
+        """Replace the visible choices with the ones saved for the later content poll."""
+        held = self.held_choices(raid_id)
+        with self.conn:
+            self.conn.execute('DELETE FROM PollVotes WHERE raid_id=?', (raid_id,))
+            self.conn.execute('DELETE FROM PollChoices WHERE raid_id=?', (raid_id,))
+            for choice in held:
+                self.conn.execute(
+                    '''INSERT INTO PollChoices (raid_id, position, name, size, creep, starts, tier)
+                       VALUES (?,?,?,?,?,NULL,?)''',
+                    (raid_id, choice['position'], choice['name'], choice['size'], choice['creep'], choice['tier'] or ''))
+            self.conn.execute('DELETE FROM HeldPollChoices WHERE raid_id=?', (raid_id,))
+        return held
+
+    def poll_open(self, raid_id):
+        row = self.one('SELECT resolved FROM EventPolls WHERE raid_id=?', (raid_id,))
+        return bool(row) and not row['resolved']
+
+    def open_polls(self):
+        return self.rows('SELECT raid_id FROM EventPolls WHERE resolved=0')
+
+    def poll_choices(self, raid_id):
+        return self.rows('SELECT * FROM PollChoices WHERE raid_id=? ORDER BY position', (raid_id,))
+
+    def replace_votes(self, raid_id, user_id, positions):
+        with self.conn:
+            self.conn.execute('DELETE FROM PollVotes WHERE raid_id=? AND user_id=?', (raid_id, user_id))
+            for position in positions:
+                self.conn.execute(
+                    'INSERT INTO PollVotes (raid_id, user_id, position) VALUES (?,?,?)',
+                    (raid_id, user_id, int(position)))
+
+    def winning_choice(self, raid_id):
+        """The most-voted choice. A tie keeps the one listed first. None if nobody voted."""
+        choices = self.poll_choices(raid_id)
+        counts = {row['position']: row['votes'] for row in self.rows(
+            'SELECT position, COUNT(*) AS votes FROM PollVotes WHERE raid_id=? GROUP BY position', (raid_id,))}
+        if not counts:
+            return None
+        best = max(counts.values())
+        for choice in choices:
+            if counts.get(choice['position'], 0) == best:
+                return choice
+        return None
 
     def share(self, raid_id):
         token = secrets.token_urlsafe(24)

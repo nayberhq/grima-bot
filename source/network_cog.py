@@ -95,9 +95,10 @@ class NetworkCog(commands.Cog):
                 self.store.write('DELETE FROM WatchFailures WHERE guild_id=? AND source_id=? AND message_id=? AND code=?',(row['guild_id'],row['source_id'],row['message_id'],row['code']))
             for row in self.store.rows('''SELECT e.raid_id,n.push_id FROM SharedEvents e JOIN Raids r USING(raid_id)
                 JOIN NetworkSettings n ON n.guild_id=r.guild_id LEFT JOIN NetworkPush p USING(raid_id)
-                WHERE n.push_id IS NOT NULL AND p.message_id IS NULL'''):
+                WHERE n.push_id IS NOT NULL AND p.message_id IS NULL
+            AND NOT EXISTS (SELECT 1 FROM EventPolls poll WHERE poll.raid_id=e.raid_id AND poll.resolved=0)'''):
                 event=self.store.event(row['raid_id'])
-                if self.store.ended(event,time.time()): continue
+                if self.store.ended(event,time.time()) or self.store.poll_open(row['raid_id']): continue
                 try:
                     code=event['share_token'] or self.store.share(row['raid_id'])
                     channel=await self.events.channel(row['push_id'])
@@ -137,6 +138,23 @@ class NetworkCog(commands.Cog):
                 self.queue_panel(f"bump:{panel['message_id']}",message.channel.id,message.guild.id,panel['preset'],panel['message_id'])
             await self.process_panels()
         self.panel_tasks[message.channel.id]=asyncio.create_task(bump())
+
+    async def cog_load(self):
+        await self.post_missing_panels()
+
+    async def post_missing_panels(self):
+        """Post any new card into a channel that already has creation panels."""
+        from events_cog import PRESETS
+        channels = self.store.rows('SELECT DISTINCT channel_id, guild_id FROM CreationPanels')
+        for row in channels:
+            have = {panel['preset'] for panel in self.store.rows(
+                'SELECT preset FROM CreationPanels WHERE channel_id=?', (row['channel_id'],))}
+            for preset in PRESETS:
+                if preset not in have:
+                    self.queue_panel(
+                        f"missing:{row['guild_id']}:{row['channel_id']}:{preset}",
+                        row['channel_id'], row['guild_id'], preset)
+        await self.process_panels()
 
     def queue_panel(self,key,channel_id,guild_id,preset,old_id=None):
         self.store.write('INSERT OR IGNORE INTO PanelJobs VALUES (?,?,?,?,?)',(key,channel_id,guild_id,preset,old_id))
@@ -195,6 +213,9 @@ class NetworkCog(commands.Cog):
     async def reconnect(self,interaction:discord.Interaction,guild_id:str):
         event=await self.events.command_event(interaction)
         if not event:return
+        if self.store.poll_open(event['raid_id']):
+            await interaction.response.send_message('This poll is not shared until it becomes an event.', ephemeral=True)
+            return
         if not guild_id.isdecimal():
             await interaction.response.send_message('Use a numeric server ID.',ephemeral=True);return
         self.store.write('DELETE FROM EventBlocks WHERE raid_id=? AND guild_id=?',(event['raid_id'],int(guild_id)))
