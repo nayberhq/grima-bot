@@ -48,16 +48,36 @@ def poll_select_options():
     return options(EARLY_PRESETS), options(LATER_PRESETS)
 
 
-def tier_select():
-    return discord.ui.Select(
+class ModalSelect(discord.ui.Select):
+    """A menu inside a popup. Discord rejects a disabled field there."""
+
+    def to_component_dict(self):
+        payload = super().to_component_dict()
+        payload.pop('disabled', None)
+        return payload
+
+
+async def acknowledge_selection(interaction):
+    """Keep the private message in place while the leader picks from several menus."""
+    if not interaction.response.is_done():
+        await interaction.response.defer()
+
+
+def tier_select(*, modal=False):
+    kind = ModalSelect if modal else discord.ui.Select
+    select = kind(
         placeholder='Tiers (optional)',
         min_values=0,
         max_values=len(POLL_TIERS),
+        required=False,
         options=[
             discord.SelectOption(label='T2c' if tier == 'T2C' else tier, value=tier)
             for tier in POLL_TIERS
         ],
     )
+    if not modal:
+        select.callback = acknowledge_selection
+    return select
 
 
 def choice_label(choice):
@@ -112,16 +132,73 @@ def _clock_hour(hour, marker, fallback):
     return hour
 
 
-def parse_hour_range(text):
-    """Inclusive hours. Plain 1–11 means evening, so 5-10 is 5:00 PM through 10:00 PM."""
-    match = re.fullmatch(r'\s*(\d{1,2})\s*(am|pm)?\s*-\s*(\d{1,2})\s*(am|pm)?\s*', text.strip(), re.I)
+_TIMEZONE_NAMES = {
+    'pst': 'America/Los_Angeles', 'pdt': 'America/Los_Angeles',
+    'mst': 'America/Denver', 'mdt': 'America/Denver',
+    'cst': 'America/Chicago', 'cdt': 'America/Chicago',
+    'est': 'America/New_York', 'edt': 'America/New_York',
+    'utc': 'UTC', 'gmt': 'UTC',
+}
+_TIMEFRAME_ERROR = 'A timeframe looks like 5 to 10 pm, or 5 to 10 pm PST.'
+
+
+def _named_timezone(token):
+    key = token.strip()
+    try:
+        return pytz.timezone(_TIMEZONE_NAMES.get(key.lower(), key))
+    except pytz.UnknownTimeZoneError:
+        raise ValueError('Could not read that timezone.') from None
+
+
+def _parse_clock(text, tz):
+    """One whole hour. A bare 1–11 means evening, matching the old hour box."""
+    plain = re.fullmatch(r'\s*(\d{1,2})\s*', text)
+    if plain:
+        return _clock_hour(int(plain.group(1)), None, None)
+    settings = {
+        'TIMEZONE': getattr(tz, 'zone', 'UTC'),
+        'RETURN_AS_TIMEZONE_AWARE': True,
+        'PREFER_DATES_FROM': 'future',
+        'RELATIVE_BASE': datetime.now(tz).replace(tzinfo=None),
+    }
+    parsed = dateparser.parse(text, settings=settings)
+    if parsed is None:
+        marked = re.fullmatch(r'\s*(\d{1,2})(?::00)?\s*(am|pm)\s*', text, re.I)
+        if not marked:
+            raise ValueError(_TIMEFRAME_ERROR)
+        return _clock_hour(int(marked.group(1)), marked.group(2), None)
+    if parsed.minute or parsed.second:
+        raise ValueError('Use whole hours, like 5 to 10 pm.')
+    return parsed.hour
+
+
+def parse_timeframe(text, server_tz):
+    """Inclusive hours and the zone they belong to. A trailing zone overrides the server."""
+    body = text.strip()
+    zone = re.search(r'(?i)\s+(pst|pdt|mst|mdt|cst|cdt|est|edt|utc|gmt|[A-Za-z]+/[A-Za-z0-9_+-]+)\s*$', body)
+    tz = server_tz
+    if zone:
+        tz = _named_timezone(zone.group(1))
+        body = body[:zone.start()].strip()
+    match = re.fullmatch(r'(.+?)\s*(?:to|-)\s*(.+)', body, re.I)
     if not match:
-        raise ValueError('Hours look like 5-10 or 17-22.')
-    start = _clock_hour(int(match.group(1)), match.group(2), match.group(4))
-    end = _clock_hour(int(match.group(3)), match.group(4), match.group(2))
+        raise ValueError(_TIMEFRAME_ERROR)
+    left, right = match.group(1).strip(), match.group(2).strip()
+    right_marker = re.search(r'(?i)\b(am|pm)\b', right)
+    left_marker = re.search(r'(?i)\b(am|pm)\b', left)
+    if right_marker and not left_marker:
+        left = f'{left} {right_marker.group(1)}'
+    elif left_marker and not right_marker:
+        right = f'{right} {left_marker.group(1)}'
+    start, end = _parse_clock(left, tz), _parse_clock(right, tz)
     if end <= start:
         raise ValueError('The later hour has to be later on the same day.')
-    return list(range(start, end + 1))
+    return list(range(start, end + 1)), tz
+
+
+def parse_hour_range(text):
+    """Inclusive hours. Plain 1–11 means evening, so 5-10 is 5:00 PM through 10:00 PM."""
+    return parse_timeframe(text, pytz.UTC)[0]
 
 
 def parse_poll_day(text, tz):
@@ -628,7 +705,7 @@ class EventsCog(commands.Cog):
         except pytz.UnknownTimeZoneError:
             return pytz.utc
 
-    async def create_time_poll(self, guild_id, author_id, title, tier, hours, template=None, held=None):
+    async def create_time_poll(self, guild_id, author_id, title, hours, template=None, held=None):
         earliest = min(choice['starts'] for choice in hours)
         lead = POLL_LEAD * (2 if held else 1)
         if not time.time() + lead < earliest <= time.time() + 31536000:
@@ -642,7 +719,7 @@ class EventsCog(commands.Cog):
         raid_id = post.id
         upsert(self.bot.conn, 'Raids',
                ['channel_id', 'guild_id', 'organizer_id', 'name', 'tier', 'boss', 'time', 'roster', 'tag', 'size'],
-               [thread.id, guild_id, author_id, title[:256], tier, '', earliest, 0, None, 12],
+               [thread.id, guild_id, author_id, title[:256], '', '', earliest, 0, None, 12],
                ['raid_id'], [raid_id])
         self.bot.conn.commit()
         self.store.add_event(raid_id, settings)
@@ -1737,18 +1814,18 @@ class PollVoteView(discord.ui.View):
 
 class PollModal(discord.ui.Modal):
     def __init__(self, cog):
-        super().__init__(title='Create poll')
+        super().__init__(title='Create content poll')
         self.cog = cog
         self.name = discord.ui.TextInput(label='Title', max_length=80)
         self.when = discord.ui.TextInput(label='Start time', placeholder='Friday 8pm (your configured timezone)', max_length=64)
         early, later = poll_select_options()
-        self.early = discord.ui.Select(
+        self.early = ModalSelect(
             custom_id='poll-choices-early', placeholder='Levels 50–140',
             min_values=0, max_values=len(early), options=early, required=False)
-        self.later = discord.ui.Select(
+        self.later = ModalSelect(
             custom_id='poll-choices-later', placeholder='Level 150, 160, and other',
             min_values=0, max_values=len(later), options=later, required=False)
-        self.tiers = tier_select()
+        self.tiers = tier_select(modal=True)
         self.tiers.custom_id = 'poll-tiers'
         self.add_item(self.name)
         self.add_item(self.when)
@@ -1796,6 +1873,8 @@ class ConvertChoicesView(discord.ui.View):
             placeholder='Levels 50–140', min_values=0, max_values=len(early), options=early)
         self.later = discord.ui.Select(
             placeholder='Level 150, 160, seasonal, and custom', min_values=0, max_values=len(later), options=later)
+        self.early.callback = acknowledge_selection
+        self.later.callback = acknowledge_selection
         self.tiers = tier_select()
         self.add_item(self.early)
         self.add_item(self.later)
@@ -1823,21 +1902,88 @@ class ConvertChoicesView(discord.ui.View):
             await interaction.followup.send(f'Could not start the poll: {exc}', ephemeral=True)
 
 
-class TimePollChoicesView(discord.ui.View):
-    """Content choices for a time poll whose template is the content poll."""
+def template_from_value(value):
+    for preset, index, button in iter_templates(EARLY_PRESETS + LATER_PRESETS):
+        if f'{preset}:{index}' == value:
+            return {'name': button['name'], 'size': int(button['size']), 'creep': int(bool(button.get('creep')))}
+    raise ValueError('Choose one event.')
 
-    def __init__(self, cog, user_id, title, tier, hours):
+
+class TimePollTemplateView(discord.ui.View):
+    """One event for a time poll, or a content poll that is chosen next."""
+
+    def __init__(self, cog, user_id, title, hours):
         super().__init__(timeout=300)
         self.cog = cog
         self.user_id = user_id
         self.title = title
-        self.tier = tier
+        self.hours = hours
+        early, later = poll_select_options()
+        self.early = discord.ui.Select(
+            placeholder='Levels 50–140', min_values=1, max_values=1, options=early)
+        self.later = discord.ui.Select(
+            placeholder='Level 150, 160, seasonal, and custom', min_values=1, max_values=1, options=later)
+        self.early.callback = acknowledge_selection
+        self.later.callback = acknowledge_selection
+        self.add_item(self.early)
+        self.add_item(self.later)
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message('This poll setup is not yours.', ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label='Use this event', style=discord.ButtonStyle.success, row=2)
+    async def use_event(self, interaction, button):
+        values = [*self.early.values, *self.later.values]
+        if len(values) != 1:
+            await interaction.response.send_message('Choose one event.', ephemeral=True)
+            return
+        try:
+            template = template_from_value(values[0])
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        try:
+            raid_id = await self.cog.create_time_poll(
+                interaction.guild_id, interaction.user.id, self.title, self.hours, template=template)
+            event = self.cog.store.event(raid_id)
+            await interaction.edit_original_response(content=f"Created <#{event['channel_id']}>", view=None)
+        except (ValueError, discord.HTTPException) as exc:
+            await interaction.followup.send(f'Could not create poll: {exc}', ephemeral=True)
+
+    @discord.ui.button(label='Content Poll', style=discord.ButtonStyle.primary, row=2)
+    async def content_poll(self, interaction, button):
+        earliest = min(choice['starts'] for choice in self.hours)
+        if not time.time() + POLL_LEAD * 2 < earliest <= time.time() + 31536000:
+            await interaction.response.send_message(
+                'A time poll that becomes a content poll needs its earliest hour more than 48 hours away.',
+                ephemeral=True)
+            return
+        view = TimePollChoicesView(self.cog, self.user_id, self.title, self.hours)
+        await interaction.response.edit_message(
+            content='Pick the events for the content poll. Choose at least 2 and at most 25, then create it.',
+            view=view)
+
+
+class TimePollChoicesView(discord.ui.View):
+    """Content choices for a time poll whose template is the content poll."""
+
+    def __init__(self, cog, user_id, title, hours):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.user_id = user_id
+        self.title = title
         self.hours = hours
         early, later = poll_select_options()
         self.early = discord.ui.Select(
             placeholder='Levels 50–140', min_values=0, max_values=len(early), options=early)
         self.later = discord.ui.Select(
             placeholder='Level 150, 160, seasonal, and custom', min_values=0, max_values=len(later), options=later)
+        self.early.callback = acknowledge_selection
+        self.later.callback = acknowledge_selection
         self.tiers = tier_select()
         self.add_item(self.early)
         self.add_item(self.later)
@@ -1859,7 +2005,7 @@ class TimePollChoicesView(discord.ui.View):
         await interaction.response.defer(ephemeral=True)
         try:
             raid_id = await self.cog.create_time_poll(
-                interaction.guild_id, interaction.user.id, self.title, self.tier, self.hours, held=choices)
+                interaction.guild_id, interaction.user.id, self.title, self.hours, held=choices)
             event = self.cog.store.event(raid_id)
             await interaction.edit_original_response(content=f"Created <#{event['channel_id']}>", view=None)
         except (ValueError, discord.HTTPException) as exc:
@@ -1872,10 +2018,8 @@ class TimePollModal(discord.ui.Modal):
         self.cog = cog
         self.name = discord.ui.TextInput(label='Title', max_length=80)
         self.day = discord.ui.TextInput(label='Day', placeholder='Friday', max_length=64)
-        self.hours = discord.ui.TextInput(label='Hours', placeholder='5-10', max_length=20)
-        self.tier = discord.ui.TextInput(label='Tier (optional)', placeholder='T1–T5', required=False, max_length=3)
-        self.template = discord.ui.TextInput(label='Template', placeholder='Garden, or poll', max_length=80)
-        for field in (self.name, self.day, self.hours, self.tier, self.template):
+        self.timeframe = discord.ui.TextInput(label='Timeframe', placeholder='5 to 10 pm PST', max_length=80)
+        for field in (self.name, self.day, self.timeframe):
             self.add_item(field)
 
     async def on_submit(self, interaction):
@@ -1883,36 +2027,20 @@ class TimePollModal(discord.ui.Modal):
             await interaction.response.send_message('You no longer have permission to create events.', ephemeral=True)
             return
         try:
-            tier = str(self.tier).strip().upper()
-            if tier and tier not in ('T1', 'T2', 'T2C', 'T3', 'T4', 'T5'):
-                raise ValueError('Tier must be T1, T2, T2c, T3, T4 or T5.')
-            tz = self.cog.server_timezone(interaction.guild_id)
+            server_tz = self.cog.server_timezone(interaction.guild_id)
+            hours, tz = parse_timeframe(str(self.timeframe), server_tz)
             day = parse_poll_day(str(self.day), tz)
-            hours = hour_choices(day, parse_hour_range(str(self.hours)), tz)
-            template = find_template(str(self.template))
-            earliest = min(choice['starts'] for choice in hours)
-            lead = POLL_LEAD * (2 if template is None else 1)
-            if not time.time() + lead < earliest <= time.time() + 31536000:
-                if template is None:
-                    raise ValueError('A time poll that becomes a content poll needs its earliest hour more than 48 hours away.')
+            choices = hour_choices(day, hours, tz)
+            earliest = min(choice['starts'] for choice in choices)
+            if not time.time() + POLL_LEAD < earliest <= time.time() + 31536000:
                 raise ValueError('The earliest hour must be more than 24 hours away, and within one year.')
         except (ValueError, commands.BadArgument) as exc:
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
-        if template is None:
-            view = TimePollChoicesView(self.cog, interaction.user.id, str(self.name), tier, hours)
-            await interaction.response.send_message(
-                'Pick the events for the content poll. Choose at least 2 and at most 25, then create it.',
-                view=view, ephemeral=True)
-            return
-        await interaction.response.defer(ephemeral=True)
-        try:
-            raid_id = await self.cog.create_time_poll(
-                interaction.guild_id, interaction.user.id, str(self.name), tier, hours, template=template)
-            event = self.cog.store.event(raid_id)
-            await interaction.followup.send(f"Created <#{event['channel_id']}>", ephemeral=True)
-        except (ValueError, discord.HTTPException) as exc:
-            await interaction.followup.send(f'Could not create poll: {exc}', ephemeral=True)
+        view = TimePollTemplateView(self.cog, interaction.user.id, str(self.name), choices)
+        await interaction.response.send_message(
+            'Pick the event this time poll becomes, or choose Content Poll.',
+            view=view, ephemeral=True)
 
 
 async def setup(bot):

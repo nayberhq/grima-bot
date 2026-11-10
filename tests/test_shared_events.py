@@ -26,8 +26,9 @@ import discord
 from database import create_table
 from event_store import EventStore, forum_title, mirror_keys
 from events_cog import (
-    POLL_LEAD, CreationView, EventsCog, PollModal, choices_from_values, find_template,
-    parse_hour_range, poll_select_options,
+    POLL_LEAD, CreationView, EventsCog, PollModal, TimePollChoicesView, TimePollModal,
+    choices_from_values, find_template, hour_choices, parse_hour_range, parse_timeframe,
+    poll_select_options,
 )
 from raid_cog import RaidCog, RaidView
 from calendar_cog import CalendarCog
@@ -121,6 +122,17 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(parse_hour_range('9am-11am'), [9, 10, 11])
         with self.assertRaises(ValueError):
             parse_hour_range('10-5')
+        import pytz
+        from datetime import date, datetime
+        hours, tz = parse_timeframe('5 to 10 pm pst', pytz.UTC)
+        self.assertEqual(hours, list(range(17, 23)))
+        self.assertEqual(tz.zone, 'America/Los_Angeles')
+        choices = hour_choices(date(2026, 11, 13), hours, tz)
+        pacific = pytz.timezone('America/Los_Angeles')
+        self.assertEqual(datetime.fromtimestamp(choices[0]['starts'], pacific).hour, 17)
+        self.assertEqual(datetime.fromtimestamp(choices[-1]['starts'], pacific).hour, 22)
+        self.assertEqual(parse_timeframe('5pm to 10pm', pytz.UTC)[0], list(range(17, 23)))
+        self.assertEqual(parse_timeframe('9am to 11am', pytz.UTC)[0], [9, 10, 11])
         self.assertIsNone(find_template('poll'))
         self.assertEqual(find_template('Garden')['name'], 'Pagru-kirít, the Garden of Corpses')
         self.assertEqual(find_template('Thrâng')['size'], 6)
@@ -193,15 +205,46 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(len(early) + len(later), 2)
         modal = PollModal(self.cog)
         self.assertEqual(len(modal.children), 5)
-        modal.to_components()
+        menus = []
+        def walk(components):
+            for component in components:
+                if component.get('type') == 3:
+                    menus.append(component)
+                if component.get('component'):
+                    walk([component['component']])
+                if component.get('components'):
+                    walk(component['components'])
+        walk(modal.to_components())
+        self.assertTrue(menus)
+        self.assertTrue(all('disabled' not in menu for menu in menus))
         panel = CreationView(self.cog, 'misc')
-        self.assertEqual([button.label for button in panel.children[-2:]], ['Poll', 'Time poll'])
+        self.assertEqual([button.label for button in panel.children[-2:]], ['Content Poll', 'Time Poll'])
+        time_modal = TimePollModal(self.cog)
+        self.assertEqual([child.label for child in time_modal.children], ['Title', 'Day', 'Timeframe'])
         self.assertTrue(panel.is_persistent())
         chosen = choices_from_values([early[1].value, later[0].value, early[0].value])
         self.assertEqual(chosen[0]['name'], early[0].description)
         self.assertEqual(chosen[1]['name'], early[1].description)
         self.assertEqual(len(chosen), 3)
         self.assertTrue(any(getattr(child, 'component', None) and child.component.custom_id == 'poll-tiers' for child in modal.children))
+
+    async def test_private_poll_menus_acknowledge_a_selection(self):
+        view = TimePollChoicesView(self.cog, 1, 'Friday', [])
+        interaction = NS(response=NS(is_done=lambda: False, defer=AsyncMock()))
+        await view.early.callback(interaction)
+        interaction.response.defer.assert_awaited_once()
+
+    async def test_time_poll_is_saved_without_a_tier(self):
+        self.cog.store.configure(1, 10, 11, 3600, 600)
+        settings = self.cog.store.settings(1)
+        thread = self.make_thread(500)
+        self.cog.create_origin = AsyncMock(return_value=(thread, NS(id=500), settings))
+        start = int(time.time()) + 200000
+        raid_id = await self.cog.create_time_poll(1, 9, 'Friday raid', [
+            {'name': '5:00 PM', 'size': 0, 'creep': 0, 'starts': start},
+            {'name': '6:00 PM', 'size': 0, 'creep': 0, 'starts': start + 3600},
+        ], template={'name': 'Garden', 'size': 6, 'creep': 0})
+        self.assertEqual(self.cog.store.event(raid_id)['tier'], '')
 
     async def test_same_event_can_be_offered_at_several_tiers(self):
         later = poll_select_options()[1]

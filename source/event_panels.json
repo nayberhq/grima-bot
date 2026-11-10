@@ -102,8 +102,8 @@
       {"label": "12 man", "name": "12-player event", "size": 12},
       {"label": "6 man", "name": "6-player event", "size": 6},
       {"label": "3 man", "name": "3-player event", "size": 3},
-      {"label": "Poll", "poll": true},
-      {"label": "Time poll", "time_poll": true}
+      {"label": "Content Poll", "poll": true},
+      {"label": "Time Poll", "time_poll": true}
     ]
   }
 }
