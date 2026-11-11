@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import logging
+import re
 import time
 from typing import Literal
 
@@ -85,6 +86,30 @@ class PlanningCog(commands.Cog):
     def plan(self, raid_id):
         return self.store.one('SELECT * FROM EventPlans WHERE raid_id=?', (raid_id,))
 
+    def ensure_signups(self, raid_id, teams):
+        """People added in the planner become signups, including those without a Discord account."""
+        columns = {row[1] for row in self.store.conn.execute('PRAGMA table_info(Players)')}
+        by_key = {name.replace('-', '').lower(): name for name in columns}
+        now = int(time.time())
+        for team in teams:
+            for member in team['members']:
+                if not member.get('added'):
+                    continue
+                column = by_key.get(member['c'].replace('-', '').lower())
+                name = str(member['name'])[:80]
+                if column and re.fullmatch(r'[A-Za-z][A-Za-z0-9_-]*', column):
+                    self.store.write(
+                        f'INSERT INTO Players (raid_id, player_id, byname, timestamp, unavailable, "{column}") '
+                        f'VALUES (?,?,?,?,0,1) ON CONFLICT(raid_id, player_id) DO UPDATE SET '
+                        f'unavailable=0, byname=excluded.byname, "{column}"=1',
+                        (raid_id, int(member['id']), name, now))
+                else:
+                    self.store.write(
+                        'INSERT INTO Players (raid_id, player_id, byname, timestamp, unavailable) '
+                        'VALUES (?,?,?,?,0) ON CONFLICT(raid_id, player_id) DO UPDATE SET '
+                        'unavailable=0, byname=excluded.byname',
+                        (raid_id, int(member['id']), name, now))
+
     def save(self, event, teams, expected):
         current = self.plan(event['raid_id'])
         if (current['revision'] if current else 0) != expected:
@@ -121,7 +146,9 @@ class PlanningCog(commands.Cog):
                     class_icon = icons.get(class_name+'_'+player['spec']) or icons.get(player['c']+'_'+player['spec'])
                     if not class_icon:
                         class_icon = f"{icons.get(class_name) or icons.get(player['c']) or player['c']} ({player['spec']})"
-                    lines.append(f"{slot}. {roles.get(player['role'],'•')} {class_icon} <@{player['id']}>{status}")
+                    pid = str(player['id'])
+                    who = f"<@{pid}>" if pid.isdigit() and 17 <= len(pid) <= 20 else (player.get('name') or pid)
+                    lines.append(f"{slot}. {roles.get(player['role'],'•')} {class_icon} {who}{status}")
                 embed.add_field(name=f"Fellowship {group}", value='\n'.join(lines) or 'No players assigned', inline=True)
                 start += size
             embed.set_footer(text=f"Revision {plan['revision']} · 🛡️ Tank  💚 Healer  ⚔️ DPS  ✨ Buffer  🌀 Debuffer")
@@ -299,6 +326,7 @@ class PlanningCog(commands.Cog):
             raise ValueError('Upload valid session JSON.') from exc
         teams = import_plan(data, event, self.players(event['raid_id']),self.specs(),require_identity=True)
         revision = self.save(event, teams, expected_revision)
+        self.ensure_signups(event['raid_id'], teams)
         await self.sync(event['raid_id'])
         await interaction.followup.send(f'Roster revision {revision} saved ({len(teams)} teams). Linked threads update directly; failed deliveries retry.', ephemeral=True)
 
@@ -352,6 +380,7 @@ class PlanningCog(commands.Cog):
         if team > len(teams) or slot > len(teams[team-1]['members'])+1:
             raise ValueError('Choose an existing slot or the next slot to append.')
         members = teams[team-1]['members']
+        checked = None
         if player_id is None:
             if slot > len(members):
                 raise ValueError('That slot is empty.')
@@ -374,6 +403,8 @@ class PlanningCog(commands.Cog):
         if len(ids) != len(set(ids)) or len(ids) > event['size']:
             raise ValueError('Duplicate player or team is full. Remove or swap a slot first.')
         revision = self.save(event, teams, expected_revision)
+        if checked:
+            self.ensure_signups(event['raid_id'], checked)
         await interaction.response.defer(ephemeral=True)
         await self.sync(event['raid_id'])
         await interaction.followup.send(f'Roster revision {revision} saved and synchronization queued.', ephemeral=True)
@@ -439,6 +470,7 @@ class PlanCodeModal(discord.ui.Modal,title='Import Vanguard plan'):
             event=self.cog.store.event(self.raid_id)
             teams=import_plan(decode_plan_code(str(self.code)),event,self.cog.players(self.raid_id),self.cog.specs(),require_identity=False)
             revision=self.cog.save(event,teams,self.revision)
+            self.cog.ensure_signups(self.raid_id, teams)
         except ValueError as exc:
             await i.response.send_message(str(exc),ephemeral=True);return
         await i.response.defer(ephemeral=True)

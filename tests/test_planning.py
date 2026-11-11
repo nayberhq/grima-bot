@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock, Mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'source'))
-from planning import export_session, import_plan, render_template, context_for, planner_link, decode_plan_code, compact_signup_bytes
+from planning import export_session, import_plan, render_template, context_for, planner_link, decode_plan_code, compact_signup_bytes, added_player_identity
 from planning_cog import PlanningCog
 
 EVENT = dict(raid_id=100, guild_id=1, name='Folly', tier='T2', boss='Win', time=1000, duration=3600, size=12, organizer_id=9)
@@ -76,6 +76,33 @@ class InterchangeTests(unittest.TestCase):
         self.assertEqual(import_plan(data,EVENT,PLAYERS)[0]['fellowship_sizes'],[1])
         team['grimaFellowships']=[['unknown']]
         with self.assertRaises(ValueError):import_plan(data,EVENT,PLAYERS)
+
+    def test_planner_added_people_join_the_roster_and_the_signup_list(self):
+        manual = 'manual-1794364316736-oygpkwq'
+        snowflake = '234508615996801026'
+        team = dict(label='Folly', members=[
+            dict(id=manual, name='Extra Champ', c='Champion', spec='Red', role='DPS'),
+            dict(id=snowflake, c='Hunter', spec='Blue', role='DPS'),
+        ], grimaFellowships=[[manual, snowflake]])
+        data = dict(format='vanguard-raid-planner-session', version=6, hasGenerated=True, dirty=False,
+                    players=[dict(id=snowflake, name='Dill')], teams=[team])
+        teams = import_plan(data, EVENT, [])
+        members = {m['name']: m for m in teams[0]['members']}
+        self.assertTrue(members['Extra Champ']['added'])
+        self.assertEqual(members['Extra Champ']['id'], added_player_identity(dict(id=manual), {})[0])
+        self.assertTrue(members['Extra Champ']['id'].startswith('-'))
+        self.assertEqual(members['Dill']['id'], snowflake)
+        self.assertEqual(teams[0]['fellowship_sizes'], [2])
+        import sqlite3
+        conn = sqlite3.connect(':memory:')
+        conn.execute('CREATE TABLE Players (raid_id integer, player_id integer, byname text, timestamp integer, unavailable boolean, Champion boolean, Hunter boolean, primary key (raid_id, player_id))')
+        from event_store import EventStore
+        events = NS(store=EventStore(conn))
+        cog = PlanningCog(NS(conn=conn, get_cog=lambda name: events))
+        cog.ensure_signups(100, teams)
+        rows = conn.execute('SELECT player_id, byname, Champion, Hunter FROM Players WHERE raid_id=100 ORDER BY byname').fetchall()
+        self.assertEqual([(row[1], row[2], row[3]) for row in rows], [('Dill', None, 1), ('Extra Champ', 1, None)])
+        conn.close()
 
     def test_invalid_plans(self):
         base = dict(format='vanguard-raid-planner-session', version=7, teams=[TEAM])

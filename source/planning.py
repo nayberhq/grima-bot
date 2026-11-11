@@ -1,4 +1,5 @@
 """Pure template rendering and Vanguard session interchange (versions 6/7)."""
+import hashlib
 import re
 import math
 from string import Formatter
@@ -85,6 +86,21 @@ def export_session(event, players, specs):
                 message='', grimaEventId=str(event['raid_id']))
 
 
+def added_player_identity(member, roster_names):
+    """A planner-added person. Manual ids become a stable negative id; Discord ids stay."""
+    pid = member.get('id') if isinstance(member, dict) else None
+    if not isinstance(pid, str):
+        return None
+    raw_name = member.get('name') if isinstance(member.get('name'), str) else roster_names.get(pid)
+    name = ' '.join(str(raw_name or '').split())[:80]
+    if re.fullmatch(r'\d{17,20}', pid):
+        return pid, name or f'Player {pid}'
+    if re.fullmatch(r'manual-[A-Za-z0-9_-]{1,40}', pid):
+        digest = int.from_bytes(hashlib.sha256(pid.encode()).digest()[:8], 'big') & ((1 << 62) - 1)
+        return str(-(digest + 1)), name or pid
+    return None
+
+
 def import_plan(data, event, players, specs=None, require_identity=False):
     if not isinstance(data, dict) or data.get('format') != 'vanguard-raid-planner-session' or data.get('version') not in (6,7):
         raise ValueError('Upload a Vanguard session JSON (version 6 or 7).')
@@ -98,32 +114,51 @@ def import_plan(data, event, players, specs=None, require_identity=False):
     if not isinstance(teams, list) or not 1 <= len(teams) <= 16:
         raise ValueError('Generate a plan with 1–16 teams before importing.')
     known = {str(p['player_id']): p for p in players}
+    roster_names = {}
+    for person in data.get('players') or []:
+        if isinstance(person, dict) and isinstance(person.get('id'), str) and isinstance(person.get('name'), str):
+            roster_names[person['id']] = person['name']
     result = []
     for team in teams:
         if not isinstance(team, dict) or not isinstance(team.get('members'), list) or len(team['members']) > event['size']:
             raise ValueError('Invalid team or too many members.')
-        seen, members = set(), []
+        seen, members, id_map = set(), [], {}
         for member in team['members']:
             if not isinstance(member, dict):
                 raise ValueError('Invalid member.')
             pid, c, spec = member.get('id'), member.get('c'), member.get('spec')
-            if not isinstance(pid, str) or pid not in known or pid in seen:
+            if not isinstance(pid, str) or pid in seen:
                 raise ValueError('Every member must be a current signup, with no duplicates within a team.')
             if not isinstance(c, str) or not isinstance(spec, str):
                 raise ValueError('Invalid class or specialization.')
             role = dict(CLASSES.get(c, [])).get(spec)
             if not role or member.get('role') != role:
                 raise ValueError('Invalid class, specialization or role.')
-            p = known[pid]
-            if not any(v for k,v in p.items() if k.replace('-', '').lower() == c.replace('-', '').lower()):
-                raise ValueError(f"{p['byname']} did not sign up for {c}.")
-            if specs is not None:
-                tier=int(''.join(re.findall(r'\d',event.get('tier') or '')) or 1)
-                offered=signup_choices(p,specs.get(p['player_id'],{}),tier)
-                if not any(o['c']==c and o['spec']==spec for o in offered):
-                    raise ValueError(f"{p['byname']} did not offer {c} {spec} for this tier.")
+            if pid in known:
+                p = known[pid]
+                if not any(v for k,v in p.items() if k.replace('-', '').lower() == c.replace('-', '').lower()):
+                    raise ValueError(f"{p['byname']} did not sign up for {c}.")
+                if specs is not None:
+                    tier=int(''.join(re.findall(r'\d',event.get('tier') or '')) or 1)
+                    offered=signup_choices(p,specs.get(p['player_id'],{}),tier)
+                    if not any(o['c']==c and o['spec']==spec for o in offered):
+                        raise ValueError(f"{p['byname']} did not offer {c} {spec} for this tier.")
+                stored, display, added = pid, p['byname'], False
+            else:
+                identity = added_player_identity(member, roster_names)
+                if identity is None:
+                    raise ValueError('Every member must be a current signup, with no duplicates within a team.')
+                stored, display = identity
+                added = True
+            if stored in seen:
+                raise ValueError('Every member must be a current signup, with no duplicates within a team.')
             seen.add(pid)
-            members.append(dict(id=pid, name=p['byname'], c=c, spec=spec, role=role))
+            seen.add(stored)
+            id_map[pid] = stored
+            row = dict(id=stored, name=display, c=c, spec=spec, role=role)
+            if added:
+                row['added'] = True
+            members.append(row)
         label = team.get('label')
         if not isinstance(label, str) or len(label) > 100:
             raise ValueError('Team labels must be at most 100 characters.')
@@ -132,7 +167,7 @@ def import_plan(data, event, players, specs=None, require_identity=False):
             ids = [p['id'] for p in members]
             if not isinstance(groups,list) or any(not isinstance(g,list) or not 1<=len(g)<=6 or any(not isinstance(x,str) for x in g) for g in groups):
                 raise ValueError('Invalid fellowship groups.')
-            flat = [pid for group in groups for pid in group]
+            flat = [id_map.get(pid, pid) for group in groups for pid in group]
             if sorted(flat)!=sorted(ids):
                 raise ValueError('Fellowships must contain every team member exactly once.')
             lookup={p['id']:p for p in members}
