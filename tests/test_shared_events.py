@@ -373,7 +373,10 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         await network.tick()
         self.assertNotIn('mirrorkey', self.channels[800].send.call_args.args[0])
         self.assertIn(f'<t:{start}:t>', self.channels[800].send.call_args.args[0])
+        self.conn.execute("INSERT INTO Players(raid_id,player_id,byname,timestamp,unavailable,Warden) VALUES (100,99,'Bob',1,0,1)")
         await self.cog.reconcile(100, time.time())
+        self.assertIn('<@99>', self.thread.send.await_args.args[0])
+        self.assertIn('This is now Garden', self.thread.send.await_args.args[0])
         event = self.cog.store.event(100)
         self.assertEqual(event['name'], 'Garden')
         self.assertEqual(event['size'], 6)
@@ -400,7 +403,10 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         network = NetworkCog(self.bot)
         network.invite_check_at = time.time() + 3600
         await self.cog.deliver_poll_announcements()
+        self.conn.execute("INSERT INTO Players(raid_id,player_id,byname,timestamp,unavailable,Warden) VALUES (100,99,'Bob',1,0,1)")
         await self.cog.reconcile(100, time.time())
+        self.assertIn('<@99>', self.thread.send.await_args.args[0])
+        self.assertIn('Vote on the post for what to run.', self.thread.send.await_args.args[0])
         poll = self.cog.store.poll_row(100)
         self.assertEqual(poll['kind'], 'content')
         self.assertFalse(poll['resolved'])
@@ -411,7 +417,9 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.channels[800].send.await_count, 2)
         self.assertNotIn('mirrorkey', self.channels[800].send.call_args.args[0])
         self.cog.store.replace_votes(100, 4, [0])
+        self.thread.send.reset_mock()
         await self.cog.reconcile(100, start + 3600 - POLL_LEAD)
+        self.assertIn('This is now Garden', self.thread.send.await_args.args[0])
         event = self.cog.store.event(100)
         self.assertEqual(event['name'], 'Garden')
         self.assertTrue(event['share_token'])
@@ -815,7 +823,10 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.cog.store.event(100)['share_token'], token)
         self.assertEqual(self.cog.store.event(100)['name'], 'Folly')
         self.cog.store.replace_votes(100, 5, [0])
+        self.thread.send.reset_mock()
         await self.cog.reconcile(100, time.time() + CONVERT_LENGTH)
+        self.assertIn('<@99>', self.thread.send.await_args.args[0])
+        self.assertIn('This is now Garden', self.thread.send.await_args.args[0])
         event = self.cog.store.event(100)
         self.assertEqual(event['name'], 'Garden')
         self.assertEqual(event['size'], 6)
@@ -838,6 +849,20 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(event['cancelled'])
         self.assertFalse(self.cog.store.poll_open(100))
         self.assertEqual(self.conn.execute('SELECT byname FROM Players WHERE raid_id=100').fetchone()[0], 'Bob')
+
+    async def test_signups_are_pinged_an_hour_before_start(self):
+        start = int(time.time()) + 1800
+        self.cog.store.write('UPDATE Raids SET time=? WHERE raid_id=100', (start,))
+        self.conn.execute("INSERT INTO Players(raid_id,player_id,byname,timestamp,unavailable,Warden) VALUES (100,99,'Bob',1,0,1)")
+        self.cog.store.write('UPDATE EventCopies SET voice_id=500 WHERE thread_id=100')
+        self.channels[500] = NS(id=500, members=[NS(id=1)], delete=AsyncMock(), edit=AsyncMock())
+        await self.cog.reconcile(100, time.time())
+        self.assertIn('<@99>', self.thread.send.await_args.args[0])
+        self.assertIn(f'<t:{start}:R>', self.thread.send.await_args.args[0])
+        self.assertEqual(self.cog.store.event(100)['start_pinged'], 1)
+        sent = self.thread.send.await_count
+        await self.cog.reconcile(100, time.time())
+        self.assertEqual(self.thread.send.await_count, sent)
 
     async def test_poll_button_hides_inside_four_hours(self):
         start = int(time.time()) + 3 * 3600

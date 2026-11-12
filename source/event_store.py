@@ -154,6 +154,8 @@ class EventStore:
         shared_cols = {row[1] for row in conn.execute('PRAGMA table_info(SharedEvents)')}
         if 'convert_closed' not in shared_cols:
             conn.execute('ALTER TABLE SharedEvents ADD COLUMN convert_closed INTEGER NOT NULL DEFAULT 0')
+        if 'start_pinged' not in shared_cols:
+            conn.execute('ALTER TABLE SharedEvents ADD COLUMN start_pinged INTEGER NOT NULL DEFAULT 0')
         es_cols = {row[1] for row in conn.execute('PRAGMA table_info(EventSettings)')}
         for col, col_def in (
             ('forum_mode', "TEXT NOT NULL DEFAULT 'single'"),
@@ -233,7 +235,7 @@ class EventStore:
 
     def event(self, raid_id):
         return self.one('''SELECT r.*, e.duration, e.lock_delay, e.cancelled,
-            e.share_token, e.revision, e.creep, e.convert_closed FROM SharedEvents e
+            e.share_token, e.revision, e.creep, e.convert_closed, e.start_pinged FROM SharedEvents e
             JOIN Raids r USING (raid_id) WHERE raid_id=?''', (raid_id,))
 
     def active_events(self):

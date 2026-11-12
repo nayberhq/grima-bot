@@ -582,6 +582,7 @@ class EventsCog(commands.Cog):
         if starts is not None:
             columns.append('time=?')
             values.append(int(starts))
+            self.store.write('UPDATE SharedEvents SET start_pinged=0 WHERE raid_id=?', (raid_id,))
         values.append(raid_id)
         self.store.write(f"UPDATE Raids SET {', '.join(columns)} WHERE raid_id=?", tuple(values))
         self.store.write(
@@ -611,6 +612,7 @@ class EventsCog(commands.Cog):
             self._schedule_event(
                 event, winner['name'], winner['size'], winner['creep'], tier=winner.get('tier') or '')
             self.store.write('UPDATE EventPolls SET resolved=1 WHERE raid_id=?', (raid_id,))
+            await self._ping_poll_change(raid_id)
         await self._refresh_calendar(event)
 
     async def resolve_time_poll_locked(self, raid_id):
@@ -626,15 +628,20 @@ class EventsCog(commands.Cog):
             return
         if self.store.held_choices(raid_id):
             self.store.write('UPDATE Raids SET time=? WHERE raid_id=?', (int(winner['starts']), raid_id))
+            self.store.write('UPDATE SharedEvents SET start_pinged=0 WHERE raid_id=?', (raid_id,))
             self.store.adopt_held_choices(raid_id)
             self.store.write(
                 "UPDATE EventPolls SET kind='content', announced=0, resolved=0, closes_at=NULL WHERE raid_id=?",
                 (raid_id,))
             self.store.write('UPDATE SharedEvents SET revision=revision+1 WHERE raid_id=?', (raid_id,))
+            updated = self.store.event(raid_id)
+            await self.ping_signups(
+                raid_id, f"The time is <t:{int(updated['time'])}:F>. Vote on the post for what to run.")
         else:
             self._schedule_event(
                 event, poll['template_name'], poll['template_size'], poll['template_creep'], starts=winner['starts'])
             self.store.write('UPDATE EventPolls SET resolved=1 WHERE raid_id=?', (raid_id,))
+            await self._ping_poll_change(raid_id)
         await self._refresh_calendar(event)
 
     def format_poll_announcement(self, event):
@@ -754,15 +761,24 @@ class EventsCog(commands.Cog):
         self.store.write('UPDATE EventPolls SET announced=1 WHERE raid_id=?', (raid_id,))
         self.store.touch(raid_id)
         await self.refresh(raid_id)
-        await self.ping_signups(raid_id, closes)
+        await self.ping_signups(
+            raid_id, f"This event may change. Vote on the post for what to run. Poll closes <t:{int(closes)}:R>.")
         return closes
 
-    async def ping_signups(self, raid_id, closes):
+    async def _ping_poll_change(self, raid_id):
+        event = self.store.event(raid_id)
+        if not event:
+            return
+        title = f"{event['name']} {event.get('tier') or ''}".strip()
+        await self.ping_signups(raid_id, f"This is now {title}, <t:{int(event['time'])}:F>.")
+
+    async def ping_signups(self, raid_id, notice):
         players = self.store.rows(
-            'SELECT player_id FROM Players WHERE raid_id=? AND unavailable=0 AND player_id IS NOT NULL', (raid_id,))
+            'SELECT player_id FROM Players WHERE raid_id=? AND unavailable=0 AND player_id>0', (raid_id,))
         mentions = ' '.join(f"<@{row['player_id']}>" for row in players)
-        notice = f"This event may change. Vote on the post for what to run. Poll closes <t:{int(closes)}:R>."
-        text = f"{mentions}\n{notice}" if mentions else notice
+        if not mentions:
+            return False
+        text = f"{mentions}\n{notice}"
         for copy in self.store.copies(raid_id):
             if copy['locked']:
                 continue
@@ -771,6 +787,7 @@ class EventsCog(commands.Cog):
                 await thread.send(text, allowed_mentions=discord.AllowedMentions(users=True))
             except discord.HTTPException:
                 log.exception('Could not ping signups for %s in %s', raid_id, copy['guild_id'])
+        return True
 
     async def cancel(self, raid_id):
         self.store.write('UPDATE SharedEvents SET cancelled=1, share_token=NULL, revision=revision+1 WHERE raid_id=?', (raid_id,))
@@ -811,6 +828,11 @@ class EventsCog(commands.Cog):
                     'UPDATE SharedEvents SET convert_closed=1, revision=revision+1 WHERE raid_id=?', (raid_id,))
                 event = self.store.event(raid_id)
             ended = self.store.ended(event, now)
+            if (not ended and not event['cancelled'] and not self.store.poll_open(raid_id)
+                    and not event.get('start_pinged') and now >= int(event['time']) - VOICE_LEAD):
+                title = f"{event['name']} {event.get('tier') or ''}".strip()
+                if await self.ping_signups(raid_id, f"Starting <t:{int(event['time'])}:R>. {title}."):
+                    self.store.write('UPDATE SharedEvents SET start_pinged=1 WHERE raid_id=?', (raid_id,))
             if not ended:
                 if not self.store.one('SELECT 1 FROM SourceInvites WHERE guild_id=?',(event['guild_id'],)):
                     try:

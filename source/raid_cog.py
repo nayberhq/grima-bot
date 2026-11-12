@@ -1318,7 +1318,9 @@ class ConfigureModal(discord.ui.Modal):
                     raid_values[time_index] = timestamp
                     events = self.raid_cog.bot.get_cog('EventsCog')
                     if events:
-                        events.store.write('UPDATE SharedEvents SET convert_closed=0 WHERE raid_id=?', (self.raid_id,))
+                        events.store.write(
+                            'UPDATE SharedEvents SET convert_closed=0, start_pinged=0 WHERE raid_id=?',
+                            (self.raid_id,))
         else:
             raid_columns.pop(time_index)
             raid_values.pop(time_index)
