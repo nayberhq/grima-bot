@@ -19,6 +19,9 @@ from database import upsert
 from event_store import EventStore, forum_title, mirror_keys, extract_origin_badge, InvalidShare
 from time_cog import Time, time_zone_autocomplete
 
+with open('common_timezones.txt', 'r') as _zones:
+    COMMON_TIMEZONES = _zones.read().splitlines()[:25]
+
 log = logging.getLogger(__name__)
 PRESETS = json.loads(Path(__file__).with_name('event_panels.json').read_text())
 VOICE_LEAD = 3600
@@ -31,10 +34,26 @@ EARLY_PRESETS = ('angmar', 'moria_mirkwood', 'isengard_rohan', 'helms_mordor', '
 LATER_PRESETS = ('umbar_morgoth', 'seasonal', 'cluster', 'misc')
 
 
+def time_entry_placeholder(bot, guild_id, user_id, example, keep_current=False):
+    time_cog = bot.get_cog('TimeCog') if hasattr(bot, 'get_cog') else None
+    hint = getattr(time_cog, 'time_entry_placeholder', None)
+    if hint:
+        return hint(guild_id, user_id, example, keep_current=keep_current)
+    server = 'UTC'
+    personal = None
+    if time_cog and getattr(time_cog, 'get_server_timezone', None):
+        server = time_cog.get_server_timezone(guild_id) or 'UTC'
+    if time_cog and getattr(time_cog, 'get_personal_timezone', None):
+        personal = time_cog.get_personal_timezone(user_id)
+    you = personal or 'not set'
+    lead = 'blank keeps current' if keep_current else example
+    return f'{lead} · server {server} · you {you}'[:100]
+
+
 def iter_templates(presets):
     for preset in presets:
         for index, button in enumerate(PRESETS[preset]['buttons']):
-            if button.get('poll') or button.get('time_poll'):
+            if button.get('poll') or button.get('time_poll') or button.get('timezone') or 'name' not in button:
                 continue
             yield preset, index, button
 
@@ -263,6 +282,7 @@ class EventsCog(commands.Cog):
         for row in self.store.rows('SELECT * FROM CreationPanels'):
             if row['preset'] in PRESETS:
                 self.bot.add_view(CreationView(self, row['preset']), message_id=row['message_id'])
+        self.bot.loop.create_task(self._refresh_custom_panels_when_ready())
         for poll in self.store.open_polls():
             view = PollVoteView(self, poll['raid_id'])
             for copy in self.store.copies(poll['raid_id']):
@@ -271,6 +291,29 @@ class EventsCog(commands.Cog):
 
     async def cog_unload(self):
         self.lifecycle.cancel()
+
+    async def _refresh_custom_panels_when_ready(self):
+        await self.bot.wait_until_ready()
+        await self.refresh_custom_panels()
+
+    async def open_timezone_picker(self, interaction):
+        time_cog = self.bot.get_cog('TimeCog')
+        personal = time_cog.get_personal_timezone(interaction.user.id) if time_cog and hasattr(time_cog, 'get_personal_timezone') else None
+        server = time_cog.get_server_timezone(interaction.guild_id) if time_cog else 'UTC'
+        you = personal or 'not set'
+        view = TimezonePicker(self, interaction.user.id, personal)
+        await interaction.response.send_message(
+            f'Personal timezone: {you}. Server timezone: {server}.',
+            view=view, ephemeral=True)
+
+    async def refresh_custom_panels(self):
+        """Existing Custom cards keep their place, and gain buttons added after they were posted."""
+        for row in self.store.rows("SELECT * FROM CreationPanels WHERE preset='misc'"):
+            try:
+                channel = await self.channel(row['channel_id'])
+                await channel.get_partial_message(row['message_id']).edit(view=CreationView(self, 'misc'))
+            except discord.HTTPException:
+                log.exception('Could not refresh Custom panel %s', row['message_id'])
 
     async def channel(self, channel_id):
         return self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
@@ -1739,6 +1782,42 @@ class EventsCog(commands.Cog):
             await interaction.response.send_message(text, ephemeral=True)
 
 
+class TimezonePicker(discord.ui.View):
+    """Common cities, plus a choice that clears a personal timezone."""
+
+    def __init__(self, cog, user_id, current):
+        super().__init__(timeout=180)
+        self.cog = cog
+        self.user_id = user_id
+        zones = list(COMMON_TIMEZONES[:24])
+        if current and current not in zones:
+            zones = [current, *zones[:23]]
+        options = [discord.SelectOption(label='Use server timezone', value='__server__', default=not current)]
+        options.extend(
+            discord.SelectOption(label=zone, value=zone, default=zone == current) for zone in zones)
+        self.menu = discord.ui.Select(placeholder='Personal timezone', options=options[:25])
+        self.menu.callback = self.chosen
+        self.add_item(self.menu)
+
+    async def chosen(self, interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message('This menu is for the person who opened it.', ephemeral=True)
+            return
+        value = self.menu.values[0]
+        tz = None if value == '__server__' else value
+        upsert(self.cog.bot.conn, 'Timezone', ['timezone'], [tz], ['player_id'], [interaction.user.id])
+        self.cog.bot.conn.commit()
+        if tz:
+            content = f'Set your time zone to {tz}.'
+        else:
+            server = 'the server timezone'
+            time_cog = self.cog.bot.get_cog('TimeCog')
+            if time_cog:
+                server = time_cog.get_server_timezone(interaction.guild_id) or server
+            content = f'Cleared your personal timezone. Times you type use {server}.'
+        await interaction.response.edit_message(content=content, view=None)
+
+
 class CreationView(discord.ui.View):
     def __init__(self, cog, preset):
         super().__init__(timeout=None)
@@ -1753,27 +1832,33 @@ class CreateButton(discord.ui.Button):
         self.cog, self.template = cog, template
 
     async def callback(self, interaction):
+        if self.template.get('timezone'):
+            await self.cog.open_timezone_picker(interaction)
+            return
         if not self.cog.raids.calendar_cog.is_raid_leader(interaction.user, interaction.guild):
             await interaction.response.send_message('Ask an administrator to give you the configured raid leader role.', ephemeral=True)
             return
         if self.template.get('poll'):
-            await interaction.response.send_modal(PollModal(self.cog))
+            await interaction.response.send_modal(PollModal(self.cog, interaction.guild_id, interaction.user.id))
             return
         if self.template.get('time_poll'):
-            await interaction.response.send_modal(TimePollModal(self.cog))
+            await interaction.response.send_modal(TimePollModal(self.cog, interaction.guild_id, interaction.user.id))
             return
-        await interaction.response.send_modal(CreateEventModal(self.cog, self.template))
+        await interaction.response.send_modal(CreateEventModal(self.cog, self.template, interaction.guild_id, interaction.user.id))
 
 
 class CreateEventModal(discord.ui.Modal):
-    def __init__(self, cog, template):
+    def __init__(self, cog, template, guild_id=None, user_id=None):
         super().__init__(title='Create event')
         self.cog, self.template = cog, template
         self.name = discord.ui.TextInput(label='Title', default=template['name'], max_length=80)
-        self.when = discord.ui.TextInput(label='Start time', placeholder='Friday 8pm (your configured timezone)', max_length=64)
+        self.when = discord.ui.TextInput(
+            label='Start time',
+            placeholder=time_entry_placeholder(cog.bot, guild_id, user_id, 'Friday 8pm'),
+            max_length=64)
         self.tier = discord.ui.TextInput(label='Tier (optional)', placeholder='T1–T5', required=False, max_length=3)
         self.duration = discord.ui.TextInput(label='Duration in minutes (blank = server default)', required=False, max_length=4)
-        self.aim = discord.ui.TextInput(label='Description (optional)', required=False, max_length=1000, style=discord.TextStyle.paragraph)
+        self.aim = discord.ui.TextInput(label='Aim', required=False, max_length=1000, style=discord.TextStyle.paragraph)
         for field in (self.name, self.when, self.tier, self.duration, self.aim):
             self.add_item(field)
 
@@ -1839,11 +1924,14 @@ class PollVoteView(discord.ui.View):
 
 
 class PollModal(discord.ui.Modal):
-    def __init__(self, cog):
+    def __init__(self, cog, guild_id=None, user_id=None):
         super().__init__(title='Create content poll')
         self.cog = cog
         self.name = discord.ui.TextInput(label='Title', max_length=80)
-        self.when = discord.ui.TextInput(label='Start time', placeholder='Friday 8pm (your configured timezone)', max_length=64)
+        self.when = discord.ui.TextInput(
+            label='Start time',
+            placeholder=time_entry_placeholder(cog.bot, guild_id, user_id, 'Friday 8pm'),
+            max_length=64)
         early, later = poll_select_options()
         self.early = ModalSelect(
             custom_id='poll-choices-early', placeholder='Levels 50–140',
@@ -2039,12 +2127,15 @@ class TimePollChoicesView(discord.ui.View):
 
 
 class TimePollModal(discord.ui.Modal):
-    def __init__(self, cog):
+    def __init__(self, cog, guild_id=None, user_id=None):
         super().__init__(title='Create time poll')
         self.cog = cog
         self.name = discord.ui.TextInput(label='Title', max_length=80)
         self.day = discord.ui.TextInput(label='Day', placeholder='Friday', max_length=64)
-        self.timeframe = discord.ui.TextInput(label='Timeframe', placeholder='5 to 10 pm PST', max_length=80)
+        self.timeframe = discord.ui.TextInput(
+            label='Timeframe',
+            placeholder=time_entry_placeholder(cog.bot, guild_id, user_id, '5 to 10 pm'),
+            max_length=80)
         for field in (self.name, self.day, self.timeframe):
             self.add_item(field)
 

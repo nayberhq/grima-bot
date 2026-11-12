@@ -103,7 +103,8 @@
       {"label": "6 man", "name": "6-player event", "size": 6},
       {"label": "3 man", "name": "3-player event", "size": 3},
       {"label": "Content Poll", "poll": true},
-      {"label": "Time Poll", "time_poll": true}
+      {"label": "Time Poll", "time_poll": true},
+      {"label": "My timezone", "timezone": true}
     ]
   }
 }

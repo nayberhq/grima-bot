@@ -26,7 +26,7 @@ import discord
 from database import create_table
 from event_store import EventStore, forum_title, mirror_keys
 from events_cog import (
-    POLL_LEAD, CreationView, EventsCog, PollModal, TimePollChoicesView, TimePollModal,
+    POLL_LEAD, CreateEventModal, CreationView, EventsCog, PollModal, TimePollChoicesView, TimePollModal,
     choices_from_values, find_template, hour_choices, parse_hour_range, parse_timeframe,
     poll_select_options,
 )
@@ -218,15 +218,59 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(menus)
         self.assertTrue(all('disabled' not in menu for menu in menus))
         panel = CreationView(self.cog, 'misc')
-        self.assertEqual([button.label for button in panel.children[-2:]], ['Content Poll', 'Time Poll'])
+        self.assertEqual([button.label for button in panel.children[-3:]], ['Content Poll', 'Time Poll', 'My timezone'])
+        created = CreateEventModal(self.cog, {'name': 'Custom'}, guild_id=1, user_id=9)
+        self.assertEqual(created.aim.label, 'Aim')
+        self.assertIn('server UTC', created.when.placeholder)
+        self.assertIn('not set', created.when.placeholder)
         time_modal = TimePollModal(self.cog)
         self.assertEqual([child.label for child in time_modal.children], ['Title', 'Day', 'Timeframe'])
+        self.assertIn('server UTC', time_modal.timeframe.placeholder)
+        self.assertIn('not set', time_modal.timeframe.placeholder)
         self.assertTrue(panel.is_persistent())
         chosen = choices_from_values([early[1].value, later[0].value, early[0].value])
         self.assertEqual(chosen[0]['name'], early[0].description)
         self.assertEqual(chosen[1]['name'], early[1].description)
         self.assertEqual(len(chosen), 3)
         self.assertTrue(any(getattr(child, 'component', None) and child.component.custom_id == 'poll-tiers' for child in modal.children))
+
+    async def test_timezone_button_saves_without_raid_leader_role(self):
+        from database import select_one
+        create_table(self.conn, 'timezone')
+        panel = CreationView(self.cog, 'misc')
+        button = panel.children[-1]
+        user = NS(id=42)
+        interaction = NS(user=user, guild=self.guilds[1], guild_id=1, response=NS(send_message=AsyncMock()))
+        await button.callback(interaction)
+        interaction.response.send_message.assert_awaited_once()
+        self.assertNotIn('raid leader', interaction.response.send_message.await_args.args[0])
+        view = interaction.response.send_message.await_args.kwargs['view']
+        view.menu._values = ['America/Chicago']
+        pick = NS(user=user, guild_id=1, response=NS(edit_message=AsyncMock(), send_message=AsyncMock()))
+        await view.chosen(pick)
+        self.assertEqual(select_one(self.conn, 'Timezone', ['timezone'], ['player_id'], [42]), 'America/Chicago')
+        time_cog = self.bot.get_cog('TimeCog')
+        time_cog.get_personal_timezone = lambda user_id: select_one(
+            self.conn, 'Timezone', ['timezone'], ['player_id'], [user_id])
+        created = CreateEventModal(self.cog, {'name': 'Custom'}, guild_id=1, user_id=42)
+        self.assertIn('you America/Chicago', created.when.placeholder)
+        from raid_cog import ConfigureModal
+        settings = ConfigureModal(self.raids, 100, guild_id=1, user_id=42)
+        time_field = next(child for child in settings.children if child.custom_id == 'time')
+        self.assertIn('blank keeps current', time_field.placeholder)
+        self.assertIn('server UTC', time_field.placeholder)
+        self.assertIn('you America/Chicago', time_field.placeholder)
+        view.menu._values = ['__server__']
+        await view.chosen(pick)
+        self.assertIsNone(select_one(self.conn, 'Timezone', ['timezone'], ['player_id'], [42]))
+
+    async def test_startup_refreshes_the_posted_custom_card(self):
+        self.cog.store.write("INSERT INTO CreationPanels VALUES (1, 777, 1, 'misc')")
+        message = NS(edit=AsyncMock())
+        self.channels[777] = NS(id=777, get_partial_message=Mock(return_value=message))
+        await self.cog.refresh_custom_panels()
+        view = message.edit.await_args.kwargs['view']
+        self.assertEqual(view.children[-1].label, 'My timezone')
 
     async def test_private_poll_menus_acknowledge_a_selection(self):
         view = TimePollChoicesView(self.cog, 1, 'Friday', [])

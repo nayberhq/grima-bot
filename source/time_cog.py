@@ -81,12 +81,22 @@ class TimeCog(commands.Cog):
         self.conn = bot.conn
         create_table(self.bot.conn, 'timezone')
 
+    def get_personal_timezone(self, user_id):
+        return select_one(self.conn, 'Timezone', ['timezone'], ['player_id'], [user_id])
+
     def get_user_timezone(self, user_id, guild_id):
-        conn = self.bot.conn
-        result = select_one(conn, 'Timezone', ['timezone'], ['player_id'], [user_id])
+        result = self.get_personal_timezone(user_id)
         if result is None:
             result = self.get_server_timezone(guild_id)
         return result
+
+    def time_entry_placeholder(self, guild_id, user_id, example, keep_current=False):
+        """Placeholder showing the server zone and this person's zone, within Discord's 100-character limit."""
+        server = self.get_server_timezone(guild_id) or 'UTC'
+        personal = self.get_personal_timezone(user_id)
+        you = personal or 'not set'
+        lead = 'blank keeps current' if keep_current else example
+        return f'{lead} · server {server} · you {you}'[:100]
 
     def get_server_timezone(self, guild_id):
         conn = self.bot.conn

@@ -19,6 +19,7 @@ from typing import Optional
 
 from database import create_table, count, delete, read_config_key, select, select_le, select_one, select_order, upsert
 from time_cog import Time
+from events_cog import time_entry_placeholder
 from utils import get_match
 from event_store import EventStore
 
@@ -793,7 +794,9 @@ class RaidView(discord.ui.View):
             perm_msg = _("You do not have permission to change the raid settings.")
             await interaction.response.send_message(perm_msg, ephemeral=True)
             return
-        modal = ConfigureModal(self.raid_cog, self.raid_cog.resolve_raid_id(interaction.message.id))
+        modal = ConfigureModal(
+            self.raid_cog, self.raid_cog.resolve_raid_id(interaction.message.id),
+            interaction.guild.id, interaction.user.id)
         await interaction.response.send_modal(modal)
 
     @discord.ui.button(emoji="\u274C", style=discord.ButtonStyle.red, custom_id='raid_view:cancel', row=1)
@@ -1047,7 +1050,9 @@ class CreepView(discord.ui.View):
             perm_msg = _("You do not have permission to change the raid settings.")
             await interaction.response.send_message(perm_msg, ephemeral=True)
             return
-        modal = ConfigureModal(self.raid_cog, self.raid_cog.resolve_raid_id(interaction.message.id))
+        modal = ConfigureModal(
+            self.raid_cog, self.raid_cog.resolve_raid_id(interaction.message.id),
+            interaction.guild.id, interaction.user.id)
         await interaction.response.send_modal(modal)
 
     @discord.ui.button(emoji="\u274C", style=discord.ButtonStyle.red, custom_id='creep_view:cancel')
@@ -1252,7 +1257,7 @@ class ClassSelect(discord.ui.Select):
 
 class ConfigureModal(discord.ui.Modal):
 
-    def __init__(self, raid_cog, raid_id):
+    def __init__(self, raid_cog, raid_id, guild_id=None, user_id=None):
         super().__init__(title='Raid Settings')
         self.raid_cog = raid_cog
         self.calendar_cog = raid_cog.bot.get_cog('CalendarCog')
@@ -1269,7 +1274,10 @@ class ConfigureModal(discord.ui.Modal):
         aim_field = discord.ui.TextInput(
             custom_id='boss', label='Aim', required=False, default=self._modal_text(aim, 4000, paragraph=True),
             max_length=4000, style=discord.TextStyle.paragraph)
-        time_field = discord.ui.TextInput(custom_id='time', label='Time', required=False, placeholder=_("Leave blank to keep the existing time."), max_length=64)
+        time_field = discord.ui.TextInput(
+            custom_id='time', label='Time', required=False,
+            placeholder=time_entry_placeholder(raid_cog.bot, guild_id, user_id, '', keep_current=True),
+            max_length=64)
         delete_field = discord.ui.TextInput(custom_id='delete', label='Delete', required=False, placeholder=_("Type 'delete' here to delete the raid."), max_length=8)
         self.add_item(name_field)
         self.add_item(tier_field)
