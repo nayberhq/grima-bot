@@ -435,6 +435,28 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         ], kind='time', closes_at=start, template={'name': 'Garden', 'size': 6, 'creep': 0})
         calendar = CalendarCog(self.bot)
         self.assertNotIn(100, [row[1] for row in calendar._calendar_raids(1)])
+        embeds = calendar.calendar_embeds(1)
+        self.assertEqual([embed.title for embed in embeds], ['Server links', 'Open polls', 'Scheduled runs:'])
+        self.assertIn('/1/100/100', embeds[1].description)
+        self.assertIn('time poll', embeds[1].description)
+        self.assertNotIn('/1/100/100', ''.join(field.value for field in embeds[-1].fields))
+
+    async def test_content_poll_is_listed_as_a_poll_and_on_the_schedule(self):
+        start = int(time.time()) + 100000
+        self.cog.store.write('UPDATE Raids SET name=?, time=? WHERE raid_id=100', ('Friday poll', start))
+        self.cog.store.add_poll(100, [
+            {'name': 'Garden', 'size': 6, 'creep': 0},
+            {'name': 'Caves', 'size': 3, 'creep': 0},
+        ])
+        self.cog.store.add_copy(100, 2, 200, 201, 22)
+        calendar = CalendarCog(self.bot)
+        embeds = calendar.calendar_embeds(2)
+        self.assertEqual([embed.title for embed in embeds], ['Server links', 'Open polls', 'Scheduled runs:'])
+        self.assertIn('/2/200/201', embeds[1].description)
+        self.assertIn(f'<t:{start}:f>', embeds[1].description)
+        runs = ''.join(field.value for field in embeds[-1].fields)
+        self.assertIn('Friday poll (poll)', runs)
+        self.assertIn('/2/200/201', runs)
 
     async def test_missing_cards_are_posted_into_an_existing_panel_channel(self):
         from network_cog import NetworkCog
