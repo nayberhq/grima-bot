@@ -1264,9 +1264,11 @@ class ConfigureModal(discord.ui.Modal):
         except TypeError:
             logger.info("The raid has been deleted during editing.")
             return
-        name_field = discord.ui.TextInput(custom_id='name', label='Name', default=name, max_length=256)
-        tier_field = discord.ui.TextInput(custom_id='tier', label='Tier', required=False, default=tier, max_length=8)
-        aim_field = discord.ui.TextInput(custom_id='boss', label='Aim', required=False, default=aim, max_length=1024)
+        name_field = discord.ui.TextInput(custom_id='name', label='Name', default=self._modal_text(name, 256), max_length=256)
+        tier_field = discord.ui.TextInput(custom_id='tier', label='Tier', required=False, default=self._modal_text(tier, 8), max_length=8)
+        aim_field = discord.ui.TextInput(
+            custom_id='boss', label='Aim', required=False, default=self._modal_text(aim, 4000, paragraph=True),
+            max_length=4000, style=discord.TextStyle.paragraph)
         time_field = discord.ui.TextInput(custom_id='time', label='Time', required=False, placeholder=_("Leave blank to keep the existing time."), max_length=64)
         delete_field = discord.ui.TextInput(custom_id='delete', label='Delete', required=False, placeholder=_("Type 'delete' here to delete the raid."), max_length=8)
         self.add_item(name_field)
@@ -1274,6 +1276,13 @@ class ConfigureModal(discord.ui.Modal):
         self.add_item(aim_field)
         self.add_item(time_field)
         self.add_item(delete_field)
+
+    @staticmethod
+    def _modal_text(value, limit, paragraph=False):
+        text = '' if value is None else str(value)
+        if not paragraph:
+            text = text.replace('\r', ' ').replace('\n', ' ')
+        return text[:limit]
 
     async def on_submit(self, interaction: discord.Interaction):
         if not await self.raid_cog.has_raid_leader_role(interaction.user, interaction.guild, self.raid_id):
