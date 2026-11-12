@@ -592,8 +592,8 @@ class EventsCog(commands.Cog):
             self.raids.roster_init(raid_id, int(size))
 
     async def _refresh_calendar(self, event):
-        if self.raids and self.raids.calendar_cog and event:
-            await self.raids.calendar_cog.update_calendar(event['guild_id'])
+        if event:
+            await self.refresh_calendars_for_raid(event['raid_id'])
 
     async def resolve_poll_locked(self, raid_id):
         """Turn the winning choice into this thread's signup, or cancel when nobody voted."""
@@ -828,6 +828,8 @@ class EventsCog(commands.Cog):
                     'UPDATE SharedEvents SET convert_closed=1, revision=revision+1 WHERE raid_id=?', (raid_id,))
                 event = self.store.event(raid_id)
             ended = self.store.ended(event, now)
+            drop_from_calendar = ended and any(
+                not copy['ended_rendered'] for copy in self.store.copies(raid_id))
             if (not ended and not event['cancelled'] and not self.store.poll_open(raid_id)
                     and not event.get('start_pinged') and now >= int(event['time']) - VOICE_LEAD):
                 title = f"{event['name']} {event.get('tier') or ''}".strip()
@@ -905,6 +907,8 @@ class EventsCog(commands.Cog):
                 except discord.HTTPException:
                     log.exception('Event lifecycle failed for %s/%s; will retry', raid_id, copy['guild_id'])
             await self.refresh_locked(raid_id, now)
+            if drop_from_calendar:
+                await self.refresh_calendars_for_raid(raid_id)
 
     async def sync_event(self, guild_id, code, origin_message=None):
         """One entry point for manual sync and watcher delivery. Idempotent per guild."""

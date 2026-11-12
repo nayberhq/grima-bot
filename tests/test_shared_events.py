@@ -893,6 +893,18 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         updated = {call.args[0] for call in self.raids.calendar_cog.update_calendar.await_args_list}
         self.assertEqual(updated, {1, 2})
 
+    async def test_reconcile_refreshes_calendars_on_owner_and_mirrors_when_event_ends(self):
+        self.make_thread(200)
+        self.cog.store.add_copy(100, 2, 200, 200, 22)
+        self.cog.store.write('UPDATE Raids SET time=1000 WHERE raid_id=100')
+        self.raids.calendar_cog.update_calendar.reset_mock()
+        await self.cog.reconcile(100, 4600)
+        updated = {call.args[0] for call in self.raids.calendar_cog.update_calendar.await_args_list}
+        self.assertEqual(updated, {1, 2})
+        calls = self.raids.calendar_cog.update_calendar.await_count
+        await self.cog.reconcile(100, 4600)
+        self.assertEqual(self.raids.calendar_cog.update_calendar.await_count, calls)
+
     async def test_all_cluster_presets_build_views_and_deploy_in_release_order(self):
         from events_cog import PRESETS
         from network_cog import NetworkCog
