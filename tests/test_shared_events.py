@@ -1324,6 +1324,119 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         embed_with_name = calendar.calendar_embeds(2)[-1]
         self.assertIn('**[One]** [Folly]', embed_with_name.fields[0].value)
 
+    def _open_forum(self, channel_id, guild):
+        forum = Mock(spec=discord.ForumChannel)
+        forum.id = channel_id
+        forum.guild = guild
+        forum.mention = f'<#{channel_id}>'
+        forum.flags = NS(require_tag=False)
+        forum.permissions_for = lambda _: NS(
+            view_channel=True, send_messages=True, send_messages_in_threads=True,
+            embed_links=True, read_message_history=True, manage_threads=True,
+            create_instant_invite=True,
+        )
+        return forum
+
+    def _open_text(self, channel_id, guild):
+        channel = Mock(spec=discord.TextChannel)
+        channel.id = channel_id
+        channel.guild = guild
+        channel.mention = f'<#{channel_id}>'
+        channel.permissions_for = lambda _: NS(
+            view_channel=True, send_messages=True, embed_links=True, read_message_history=True)
+        return channel
+
+    def _open_category(self, channel_id, guild):
+        category = Mock(spec=discord.CategoryChannel)
+        category.id = channel_id
+        category.guild = guild
+        category.name = 'Raid Voice'
+        category.permissions_for = lambda _: NS(view_channel=True, manage_channels=True)
+        return category
+
+    def _fetch_saved_channels(self, channels):
+        async def fetch_channel(channel_id):
+            if channel_id not in channels:
+                raise not_found()
+            return channels[channel_id]
+        self.bot.fetch_channel = fetch_channel
+
+    async def test_unknown_channel_on_create_offers_troubleshooting(self):
+        import events_cog
+        user = NS(id=9, leader=True)
+        interaction = NS(
+            user=user, guild=self.guilds[1], guild_id=1,
+            response=NS(defer=AsyncMock(), send_message=AsyncMock()),
+            followup=NS(send=AsyncMock()),
+            channel=NS(id=13),
+        )
+        self.raids.post_raid = AsyncMock(side_effect=not_found())
+        modal = CreateEventModal(self.cog, {'name': 'Garden', 'size': 6}, guild_id=1, user_id=9)
+        original = events_cog.Time.converter
+        events_cog.Time.converter = staticmethod(lambda *args: int(time.time()) + 3600)
+        before = self.conn.total_changes
+        try:
+            await modal.on_submit(interaction)
+        finally:
+            events_cog.Time.converter = original
+        self.assertEqual(self.conn.total_changes, before)
+        text = interaction.followup.send.await_args.args[0]
+        view = interaction.followup.send.await_args.kwargs['view']
+        self.assertIn('no longer exists, or the bot cannot see it', text)
+        self.assertNotIn('404', text)
+        self.assertEqual(view.children[0].label, 'Troubleshooting')
+        self.assertTrue(interaction.followup.send.await_args.kwargs['ephemeral'])
+
+    async def test_troubleshooting_reports_dead_instance_forum_without_writing(self):
+        guild = NS(id=1, me=NS(guild_permissions=NS(manage_events=True)))
+        self._fetch_saved_channels({
+            10: self._open_forum(10, guild),
+            12: self._open_text(12, guild),
+            13: self._open_text(13, guild),
+            11: self._open_category(11, guild),
+        })
+        self.cog.store.configure(1, 10, 11, 3600, 600, instance_forum_id=15)
+        self.cog.store.write('INSERT OR REPLACE INTO NetworkSettings VALUES (?,?)', (1, 12))
+        self.cog.store.write('INSERT INTO CreationPanels VALUES (?,?,?,?)', (501, 13, 1, 'misc'))
+        before = self.conn.total_changes
+        view_interaction = NS(
+            user=NS(id=9), guild=guild,
+            response=NS(defer=AsyncMock(), send_message=AsyncMock(), is_done=lambda: False),
+            followup=NS(send=AsyncMock()),
+        )
+        from events_cog import TroubleshootView
+        view = TroubleshootView(self.cog, 9)
+        stranger = NS(user=NS(id=8), response=NS(send_message=AsyncMock()))
+        self.assertFalse(await view.interaction_check(stranger))
+        await view.children[0].callback(view_interaction)
+        self.assertEqual(self.conn.total_changes, before)
+        embed = view_interaction.followup.send.await_args.kwargs['embed']
+        self.assertIn('Instance Forum', embed.description)
+        self.assertIn('no longer exists', embed.description)
+        self.assertIn('Raid Forum', embed.fields[0].value)
+        self.assertEqual(self.cog.store.settings(1)['forum_id'], 10)
+        self.assertEqual(self.cog.store.settings(1)['instance_forum_id'], 15)
+        self.assertEqual(len(self.cog.store.rows('SELECT * FROM CreationPanels WHERE guild_id=1')), 1)
+
+    async def test_troubleshooting_pass_does_not_write_settings(self):
+        guild = NS(id=1, me=NS(guild_permissions=NS(manage_events=True)))
+        self._fetch_saved_channels({
+            10: self._open_forum(10, guild),
+            12: self._open_text(12, guild),
+            13: self._open_text(13, guild),
+            11: self._open_category(11, guild),
+        })
+        self.cog.store.configure(1, 10, 11, 3600, 600)
+        self.cog.store.write('INSERT OR REPLACE INTO NetworkSettings VALUES (?,?)', (1, 12))
+        self.cog.store.write('INSERT INTO CreationPanels VALUES (?,?,?,?)', (502, 13, 1, 'misc'))
+        before = self.conn.total_changes
+        embed = await self.cog.troubleshoot_saved_setup(guild)
+        self.assertEqual(self.conn.total_changes, before)
+        self.assertEqual(embed.title, 'Permission smoke test passed')
+        self.assertIn('Raid Forum', embed.description)
+        self.assertEqual(self.cog.store.settings(1)['forum_id'], 10)
+        self.assertEqual(self.cog.store.settings(1)['instance_forum_id'], 0)
+
 
 def not_found():
     return discord.NotFound(Mock(status=404, reason='nf'), 'missing')

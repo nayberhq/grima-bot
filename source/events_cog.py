@@ -1282,6 +1282,91 @@ class EventsCog(commands.Cog):
             description_template=draft.description_template,
         )
 
+    async def report_create_failure(self, interaction, exc, kind='event'):
+        if isinstance(exc, discord.NotFound):
+            await interaction.followup.send(
+                f'Could not create {kind}: that channel no longer exists, or the bot cannot see it.',
+                view=TroubleshootView(self, interaction.user.id),
+                ephemeral=True,
+            )
+            return
+        await interaction.followup.send(f'Could not create {kind}: {exc}', ephemeral=True)
+
+    async def _saved_channel(self, guild, channel_id):
+        fetch = getattr(self.bot, 'fetch_channel', None)
+        try:
+            channel = await fetch(channel_id) if fetch else await self.channel(channel_id)
+        except (discord.NotFound, discord.Forbidden):
+            return None
+        if not channel or (getattr(channel, 'guild', None) and channel.guild.id != guild.id):
+            return None
+        return channel
+
+    async def _saved_role(self, guild, role_id):
+        if hasattr(guild, 'get_role'):
+            found = guild.get_role(role_id)
+            if found:
+                return found
+        fetch = getattr(guild, 'fetch_role', None)
+        if not fetch:
+            return None
+        try:
+            return await fetch(role_id)
+        except (discord.NotFound, discord.Forbidden):
+            return None
+
+    async def troubleshoot_saved_setup(self, guild) -> discord.Embed:
+        """Run the permission smoke test against saved channel IDs. Does not write settings."""
+        from setup_editor import load_setup_draft
+        draft = load_setup_draft(self.store, self.bot.conn, guild.id)
+        unresolved = {}
+
+        async def resolve(channel_id, label, required=False):
+            if not channel_id:
+                if required:
+                    unresolved[label] = f'**{label}:** not set. Choose it in `/setup` or `/settings`.'
+                return None
+            channel = await self._saved_channel(guild, channel_id)
+            if channel is None:
+                unresolved[label] = f'**{label}:** saved channel no longer exists, or the bot cannot see it.'
+            return channel
+
+        async def resolve_role(role_id, label):
+            if not role_id:
+                return None
+            role = await self._saved_role(guild, role_id)
+            if role is None:
+                unresolved[label] = f'**{label}:** saved role no longer exists.'
+            return role
+
+        _, embed = await self.smoke_test_and_apply_setup(
+            interaction=type('GuildOnly', (), {'guild': guild})(),
+            raid_forum=await resolve(draft.raid_forum_id, 'Raid Forum', required=True),
+            announcement_channel=await resolve(draft.announcement_id, 'Announcement Channel', required=True),
+            panel_channel=await resolve(draft.panel_id, 'Event Panel Channel', required=True),
+            voice_category=await resolve(draft.voice_category_id, 'Voice Category', required=True),
+            instance_forum=await resolve(draft.instance_forum_id, 'Instance Forum'),
+            t1_forum=await resolve(draft.t1_forum_id, 'T1 Forum'),
+            t2_forum=await resolve(draft.t2_forum_id, 'T2 Forum'),
+            t3_forum=await resolve(draft.t3_forum_id, 'T3 Forum'),
+            t4_forum=await resolve(draft.t4_forum_id, 'T4 Forum'),
+            t5_forum=await resolve(draft.t5_forum_id, 'T5 Forum'),
+            watch_channel=await resolve(draft.watch_channel_id, 'Event Watch Channel'),
+            leader_role=await resolve_role(draft.leader_role_id, 'Raid Leader Role'),
+            kin_role=await resolve_role(draft.kin_role_id, 'Kinship Role'),
+            kin_icon=draft.kin_icon.strip() or None,
+            calendar_channel=await resolve(draft.calendar_id, 'Calendar Channel'),
+            discord_events=draft.discord_events,
+            rss_channel=await resolve(draft.rss_id, 'RSS Channel'),
+            server_timezone=draft.server_timezone.strip() or None,
+            server_invite_url=draft.server_invite_url.strip() or None,
+            duration_minutes=draft.duration_minutes,
+            lock_delay_minutes=draft.lock_delay_minutes,
+            apply=False,
+            unresolved=unresolved,
+        )
+        return embed
+
     async def smoke_test_and_apply_setup(
         self,
         interaction: discord.Interaction,
@@ -1307,12 +1392,23 @@ class EventsCog(commands.Cog):
         duration_minutes: int = 180,
         lock_delay_minutes: int = 60,
         description_template: str | None = None,
+        *,
+        apply: bool = True,
+        unresolved: dict | None = None,
     ) -> tuple[bool, discord.Embed]:
         guild = interaction.guild
         me = guild.me
+        unresolved = unresolved or {}
         errors = []
         warnings = []
         checks = []
+
+        def take_unresolved(label):
+            note = unresolved.get(label)
+            if not note:
+                return False
+            errors.append(note)
+            return True
 
         def check_forum(forum_obj, label):
             if not isinstance(forum_obj, discord.ForumChannel) or forum_obj.guild.id != guild.id:
@@ -1338,13 +1434,14 @@ class EventsCog(commands.Cog):
 
         # 1. Default raid forum, then any optional instance or tier forums.
         # Routing is implied: matching tier forum, else instance forum for ≤6-player events, else raid forum.
-        if check_forum(raid_forum, 'Raid Forum'):
-            f_perms = raid_forum.permissions_for(me)
-            if voice_category and not getattr(f_perms, 'create_instant_invite', False) and not server_invite_url:
-                warnings.append(f"**Raid Forum ({raid_forum.mention}):** Bot lacks `Create Invite` and no `server_invite_url` was provided; mirrored servers will not see a voice invite link until one is granted.")
+        if not take_unresolved('Raid Forum'):
+            if check_forum(raid_forum, 'Raid Forum'):
+                f_perms = raid_forum.permissions_for(me)
+                if voice_category and not getattr(f_perms, 'create_instant_invite', False) and not server_invite_url:
+                    warnings.append(f"**Raid Forum ({raid_forum.mention}):** Bot lacks `Create Invite` and no `server_invite_url` was provided; mirrored servers will not see a voice invite link until one is granted.")
         checks.append('**Forum routing:** tier forum if set, else instance forum for ≤6-player events, else the raid forum.')
 
-        if instance_forum is not None:
+        if not take_unresolved('Instance Forum') and instance_forum is not None:
             check_forum(instance_forum, 'Instance Forum (≤6-man when that tier has no forum)')
 
         for label, f_obj in (
@@ -1354,11 +1451,15 @@ class EventsCog(commands.Cog):
             ('T4 Forum', t4_forum),
             ('T5 Forum', t5_forum),
         ):
+            if take_unresolved(label):
+                continue
             if f_obj is not None:
                 check_forum(f_obj, label)
 
         # 2. Mandatory: Announcement (Outgoing Discovery Push) Channel
-        if not isinstance(announcement_channel, discord.TextChannel) or announcement_channel.guild.id != guild.id:
+        if take_unresolved('Announcement Channel'):
+            pass
+        elif not isinstance(announcement_channel, discord.TextChannel) or announcement_channel.guild.id != guild.id:
             errors.append('**Announcement Channel:** Must be a Text or Announcement Channel in this server.')
         else:
             a_perms = announcement_channel.permissions_for(me)
@@ -1373,7 +1474,9 @@ class EventsCog(commands.Cog):
                 checks.append(f"**Announcement Push Channel:** {announcement_channel.mention} (permissions verified)")
 
         # 3. Mandatory: Event Panel Channel
-        if not isinstance(panel_channel, discord.TextChannel) or panel_channel.guild.id != guild.id:
+        if take_unresolved('Event Panel Channel'):
+            pass
+        elif not isinstance(panel_channel, discord.TextChannel) or panel_channel.guild.id != guild.id:
             errors.append('**Event Panel Channel:** Must be a Text Channel in this server.')
         else:
             p_perms = panel_channel.permissions_for(me)
@@ -1389,7 +1492,9 @@ class EventsCog(commands.Cog):
                 checks.append(f"**Event Panel Channel:** {panel_channel.mention} ({len(PRESETS)} cluster panels in release order)")
 
         # 4. Mandatory: Voice Category
-        if not isinstance(voice_category, discord.CategoryChannel) or voice_category.guild.id != guild.id:
+        if take_unresolved('Voice Category'):
+            pass
+        elif not isinstance(voice_category, discord.CategoryChannel) or voice_category.guild.id != guild.id:
             errors.append('**Voice Category:** Must be a Category in this server.')
         else:
             v_perms = voice_category.permissions_for(me)
@@ -1404,7 +1509,7 @@ class EventsCog(commands.Cog):
 
         # 5. Optional: Watch (Incoming Discovery Pull) Channel
         watch_target = None
-        if watch_channel is not None:
+        if not take_unresolved('Event Watch Channel') and watch_channel is not None:
             if not isinstance(watch_channel, (discord.TextChannel, discord.Thread)) or watch_channel.guild.id != guild.id:
                 errors.append('**Event Watch Channel:** Must be a Text/Announcement Channel or Thread in this server.')
             else:
@@ -1420,7 +1525,7 @@ class EventsCog(commands.Cog):
                     checks.append(f"**Event Watch (Pull) Channel:** {watch_channel.mention} (permissions verified)")
 
         # 6. Optional: Raid Leader Role & Kinship Role / Icon
-        if leader_role is not None:
+        if not take_unresolved('Raid Leader Role') and leader_role is not None:
             checks.append(f"**Raid Leader Role:** {leader_role.mention}")
         resolved_kin_icon = None
         if kin_icon is not None and kin_icon.strip():
@@ -1429,12 +1534,14 @@ class EventsCog(commands.Cog):
                 errors.append(f"**Kin Icon (`{kin_icon.strip()}`):** Not a valid Unicode or accessible custom emoji.")
             elif not kin_role:
                 checks.append(f"**Kin Icon:** {resolved_kin_icon}")
-        if kin_role is not None:
+        if not take_unresolved('Kinship Role') and kin_role is not None:
             icon_suffix = f" ({resolved_kin_icon})" if resolved_kin_icon else ""
             checks.append(f"**Kinship Role:** {kin_role.mention}{icon_suffix}")
 
         # 7. Optional: Calendar Channel & Native Discord Events
-        if calendar_channel is not None:
+        if take_unresolved('Calendar Channel'):
+            pass
+        elif calendar_channel is not None:
             if not isinstance(calendar_channel, discord.TextChannel) or calendar_channel.guild.id != guild.id:
                 errors.append('**Calendar Channel:** Must be a Text Channel in this server.')
             else:
@@ -1456,7 +1563,9 @@ class EventsCog(commands.Cog):
                               + ('' if calendar_channel is not None else '; set a calendar channel for it to appear'))
 
         # 8. Optional: RSS Channel
-        if rss_channel is not None:
+        if take_unresolved('RSS Channel'):
+            pass
+        elif rss_channel is not None:
             if not isinstance(rss_channel, discord.TextChannel) or rss_channel.guild.id != guild.id:
                 errors.append('**RSS Channel:** Must be a Text Channel in this server.')
             else:
@@ -1507,6 +1616,16 @@ class EventsCog(commands.Cog):
             if warnings:
                 embed.add_field(name='Notes', value='\n'.join(f"• {w}" for w in warnings)[:1024], inline=False)
             return False, embed
+
+        if not apply:
+            embed = discord.Embed(
+                title='Permission smoke test passed',
+                colour=discord.Colour(0x2ecc71),
+                description='\n'.join(f"• {c}" for c in checks) or 'Saved channels passed the permission checks.',
+            )
+            if warnings:
+                embed.add_field(name='Notes', value='\n'.join(f"• {w}" for w in warnings)[:1024], inline=False)
+            return True, embed
 
         # All smoke tests passed — persist settings and deploy panels/calendar.
         self.store.configure(
@@ -1847,6 +1966,32 @@ class CreateButton(discord.ui.Button):
         await interaction.response.send_modal(CreateEventModal(self.cog, self.template, interaction.guild_id, interaction.user.id))
 
 
+class TroubleshootView(discord.ui.View):
+    """Read-only permission smoke test for the person who hit an unknown channel."""
+
+    def __init__(self, cog, user_id):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.user_id = user_id
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                'This troubleshooting report is for the person who hit the error.', ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label='Troubleshooting', style=discord.ButtonStyle.secondary)
+    async def troubleshoot(self, interaction, button):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            embed = await self.cog.troubleshoot_saved_setup(interaction.guild)
+        except discord.HTTPException as exc:
+            await interaction.followup.send(f'Could not run troubleshooting: {exc}', ephemeral=True)
+            return
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+
 class CreateEventModal(discord.ui.Modal):
     def __init__(self, cog, template, guild_id=None, user_id=None):
         super().__init__(title='Create event')
@@ -1888,7 +2033,7 @@ class CreateEventModal(discord.ui.Modal):
             event = self.cog.store.event(raid_id)
             await interaction.followup.send(f"Created <#{event['channel_id']}>", ephemeral=True)
         except (ValueError, discord.HTTPException) as exc:
-            await interaction.followup.send(f'Could not create event: {exc}', ephemeral=True)
+            await self.cog.report_create_failure(interaction, exc)
 
 
 class PollVoteView(discord.ui.View):
@@ -1971,7 +2116,7 @@ class PollModal(discord.ui.Modal):
             event = self.cog.store.event(raid_id)
             await interaction.followup.send(f"Created <#{event['channel_id']}>", ephemeral=True)
         except (ValueError, discord.HTTPException) as exc:
-            await interaction.followup.send(f'Could not create poll: {exc}', ephemeral=True)
+            await self.cog.report_create_failure(interaction, exc, kind='poll')
 
 
 class ConvertChoicesView(discord.ui.View):
@@ -2066,7 +2211,7 @@ class TimePollTemplateView(discord.ui.View):
             event = self.cog.store.event(raid_id)
             await interaction.edit_original_response(content=f"Created <#{event['channel_id']}>", view=None)
         except (ValueError, discord.HTTPException) as exc:
-            await interaction.followup.send(f'Could not create poll: {exc}', ephemeral=True)
+            await self.cog.report_create_failure(interaction, exc, kind='poll')
 
     @discord.ui.button(label='Content Poll', style=discord.ButtonStyle.primary, row=2)
     async def content_poll(self, interaction, button):
@@ -2123,7 +2268,7 @@ class TimePollChoicesView(discord.ui.View):
             event = self.cog.store.event(raid_id)
             await interaction.edit_original_response(content=f"Created <#{event['channel_id']}>", view=None)
         except (ValueError, discord.HTTPException) as exc:
-            await interaction.followup.send(f'Could not create poll: {exc}', ephemeral=True)
+            await self.cog.report_create_failure(interaction, exc, kind='poll')
 
 
 class TimePollModal(discord.ui.Modal):
