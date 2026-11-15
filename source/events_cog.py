@@ -334,7 +334,7 @@ class EventsCog(commands.Cog):
         if not guild:
             return False
         try:
-            member = guild.get_member(interaction.user.id) or await guild.fetch_member(interaction.user.id)
+            member = await self.raids.member_for_role_check(guild, interaction.user)
         except (discord.NotFound, discord.Forbidden):
             return False
         return self.raids.calendar_cog.is_raid_leader(member, guild)
@@ -1527,6 +1527,8 @@ class EventsCog(commands.Cog):
         # 6. Optional: Raid Leader Role & Kinship Role / Icon
         if not take_unresolved('Raid Leader Role') and leader_role is not None:
             checks.append(f"**Raid Leader Role:** {leader_role.mention}")
+        elif 'Raid Leader Role' not in unresolved:
+            checks.append('**Raid Leader Role:** not set; anyone can create events and use leader controls.')
         resolved_kin_icon = None
         if kin_icon is not None and kin_icon.strip():
             resolved_kin_icon = await self.resolve_kin_icon(guild, kin_icon)
@@ -1654,8 +1656,7 @@ class EventsCog(commands.Cog):
             self.store.write('DELETE FROM EventWatches WHERE guild_id=?', (guild.id,))
             self.store.write('INSERT OR REPLACE INTO EventWatches VALUES (?,?,?)', (guild.id, watch_target.id, cursor))
 
-        if leader_role is not None:
-            upsert(self.bot.conn, 'Settings', ['raid_leader'], [leader_role.id], ['guild_id'], [guild.id])
+        upsert(self.bot.conn, 'Settings', ['raid_leader'], [leader_role.id if leader_role else None], ['guild_id'], [guild.id])
         if kin_role is not None:
             upsert(self.bot.conn, 'Settings', ['priority'], [kin_role.id], ['guild_id'], [guild.id])
         if resolved_kin_icon is not None:
@@ -1738,7 +1739,7 @@ class EventsCog(commands.Cog):
         t4_forum='Optional: Tier 4 events.',
         t5_forum='Optional: Tier 5 events.',
         watch_channel='Optional: Channel to watch for incoming mirrorkey codes (e.g. a channel following partner announcements).',
-        leader_role='Optional: Role permitted to create events, edit raids, and manage rosters.',
+        leader_role='Optional. When set, only this role can create events and use leader controls. Leave unset and anyone can.',
         kin_role='Optional: Role used to distinguish kinship members on raid signups.',
         kin_icon='Optional: Emoji badge displayed next to kinship members on raid signups.',
         calendar_channel='Optional: Channel where the live auto-updating raid calendar embed is posted.',

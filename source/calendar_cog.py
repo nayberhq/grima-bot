@@ -33,14 +33,17 @@ class CalendarCog(commands.Cog):
         self.cached_events_at = None
 
     def is_raid_leader(self, user, guild):
-        if user.guild_permissions.administrator:
+        """True when this server has no raid leader role, or the member holds it."""
+        if getattr(getattr(user, 'guild_permissions', None), 'administrator', False):
             return True
         raid_leader_id = select_one(self.conn, 'Settings', ['raid_leader'], ['guild_id'], [guild.id])
-        if raid_leader_id:
-            raid_leader = guild.get_role(raid_leader_id)
-            if raid_leader in user.roles:
-                return True
-        return False
+        if not raid_leader_id:
+            return True
+        getter = getattr(guild, 'get_role', None)
+        raid_leader = getter(raid_leader_id) if getter else None
+        if raid_leader is None:
+            return True
+        return raid_leader in user.roles
 
     async def post_calendar(self, guild_id, channel):
         embeds = self.calendar_embeds(guild_id)

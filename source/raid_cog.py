@@ -401,8 +401,14 @@ class RaidCog(commands.Cog):
             assignment_values = [None, available, ','.join(self.slots_class_names[i])]
             upsert(self.conn, 'Assignment', assignment_columns, assignment_values, ['raid_id', 'slot_id'], [raid_id, i])
 
+    async def member_for_role_check(self, guild, user):
+        """Roles on a cached member go stale without the members intent. Trust the interaction member, otherwise fetch."""
+        if getattr(getattr(user, 'guild', None), 'id', None) == guild.id and hasattr(user, 'roles'):
+            return user
+        return await guild.fetch_member(user.id)
+
     async def has_raid_leader_role(self, user, guild, raid_id):
-        """Leader controls require the configured source-server role, without bypasses."""
+        """Source-server leader controls. With no raid leader role, anyone may use them."""
         raid_id = self.resolve_raid_id(raid_id)
         event = self.event_store.event(raid_id)
         if event and self.event_store.ended(event, time.time()):
@@ -412,12 +418,15 @@ class RaidCog(commands.Cog):
             return False
         role_id = select_one(self.conn, 'Settings', ['raid_leader'], ['guild_id'], [origin_id])
         if not role_id:
-            return False
+            return True
         origin = self.bot.get_guild(origin_id)
         if not origin:
             return False
+        getter = getattr(origin, 'get_role', None)
+        if getter is not None and getter(role_id) is None:
+            return True
         try:
-            member = origin.get_member(user.id) or await origin.fetch_member(user.id)
+            member = await self.member_for_role_check(origin, user)
         except (discord.NotFound, discord.Forbidden):
             return False
         return any(role.id == role_id for role in member.roles)
@@ -436,7 +445,7 @@ class RaidCog(commands.Cog):
             if not origin:
                 return False
             try:
-                member = origin.get_member(user.id) or await origin.fetch_member(user.id)
+                member = await self.member_for_role_check(origin, user)
             except (discord.NotFound, discord.Forbidden):
                 return False
             return self.calendar_cog.is_raid_leader(member, origin)
@@ -448,10 +457,12 @@ class RaidCog(commands.Cog):
             return True
 
         raid_leader_id = select_one(self.conn, 'Settings', ['raid_leader'], ['guild_id'], [guild.id])
-        if raid_leader_id:
-            raid_leader = guild.get_role(raid_leader_id)
-            if raid_leader in user.roles:
-                return True
+        if not raid_leader_id:
+            return True
+        getter = getattr(guild, 'get_role', None)
+        raid_leader = getter(raid_leader_id) if getter else None
+        if raid_leader is None or raid_leader in user.roles:
+            return True
         if channel:
             perm_msg = _("You do not have permission to change the raid settings.")
             await channel.send(perm_msg, delete_after=15)

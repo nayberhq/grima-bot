@@ -536,15 +536,33 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
     async def test_leader_controls_require_source_role_without_owner_or_admin_bypass(self):
         self.cog.store.write('INSERT OR REPLACE INTO Settings(guild_id,raid_leader) VALUES (1,77)')
         member = NS(id=9, roles=[], guild_permissions=NS(administrator=True))
-        self.guilds[1].get_member = Mock(return_value=member)
-        self.guilds[1].fetch_member = AsyncMock()
+        stale = NS(id=9, roles=[])
+        self.guilds[1].get_member = Mock(return_value=stale)
+        self.guilds[1].fetch_member = AsyncMock(return_value=member)
         self.assertFalse(await self.raids.has_raid_leader_role(member, self.guilds[2], 100))
         member.roles = [NS(id=88)]
         self.assertFalse(await self.raids.has_raid_leader_role(member, self.guilds[2], 100))
         member.roles = [NS(id=77)]
         self.assertTrue(await self.raids.has_raid_leader_role(member, self.guilds[2], 100))
+        self.guilds[1].fetch_member.reset_mock()
+        clicker = NS(id=9, guild=self.guilds[1], roles=[NS(id=77)])
+        self.assertTrue(await self.raids.has_raid_leader_role(clicker, self.guilds[1], 100))
+        self.guilds[1].fetch_member.assert_not_awaited()
         self.cog.store.write('UPDATE Settings SET raid_leader=NULL WHERE guild_id=1')
-        self.assertFalse(await self.raids.has_raid_leader_role(member, self.guilds[1], 100))
+        self.assertTrue(await self.raids.has_raid_leader_role(member, self.guilds[1], 100))
+        self.cog.store.write('UPDATE Settings SET raid_leader=77 WHERE guild_id=1')
+        self.guilds[1].get_role = lambda role_id: None
+        member.roles = []
+        self.assertTrue(await self.raids.has_raid_leader_role(member, self.guilds[1], 100))
+        from calendar_cog import CalendarCog
+        calendar = CalendarCog.__new__(CalendarCog)
+        calendar.conn = self.conn
+        plain = NS(id=3, roles=[], guild_permissions=NS(administrator=False))
+        self.assertTrue(calendar.is_raid_leader(plain, self.guilds[1]))
+        self.guilds[1].get_role = lambda role_id: NS(id=role_id)
+        self.assertFalse(calendar.is_raid_leader(plain, self.guilds[1]))
+        plain.roles = [NS(id=77)]
+        self.assertTrue(calendar.is_raid_leader(plain, self.guilds[1]))
 
     async def test_button_rows_order_and_denied_leader_callbacks(self):
         self.raids.class_emojis = [discord.PartialEmoji(name=f'Class{n}',id=123456789012345678+n) for n in range(12)]
@@ -598,7 +616,8 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_partner_admin_cannot_edit_source_event(self):
         self.cog.store.add_copy(100, 2, 200, 200, 22)
-        self.guilds[1].get_member = lambda uid: NS(id=uid, leader=False)
+        self.guilds[1].get_member = lambda uid: NS(id=uid, leader=True)
+        self.guilds[1].fetch_member = AsyncMock(return_value=NS(id=88, leader=False, roles=[]))
         user = NS(id=88, guild_permissions=NS(administrator=True))
         interaction = NS(user=user, guild=self.guilds[2])
         self.assertFalse(await self.cog.can_manage(interaction, 100))
