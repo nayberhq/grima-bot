@@ -135,14 +135,8 @@ def import_plan(data, event, players, specs=None, require_identity=False):
             if not role or member.get('role') != role:
                 raise ValueError('Invalid class, specialization or role.')
             if pid in known:
+                # A raid leader may assign a class or spec the player did not sign up as.
                 p = known[pid]
-                if not any(v for k,v in p.items() if k.replace('-', '').lower() == c.replace('-', '').lower()):
-                    raise ValueError(f"{p['byname']} did not sign up for {c}.")
-                if specs is not None:
-                    tier=int(''.join(re.findall(r'\d',event.get('tier') or '')) or 1)
-                    offered=signup_choices(p,specs.get(p['player_id'],{}),tier)
-                    if not any(o['c']==c and o['spec']==spec for o in offered):
-                        raise ValueError(f"{p['byname']} did not offer {c} {spec} for this tier.")
                 stored, display, added = pid, p['byname'], False
             else:
                 identity = added_player_identity(member, roster_names)

@@ -40,7 +40,28 @@ class InterchangeTests(unittest.TestCase):
         with self.assertRaises(ValueError):import_plan(data,EVENT,PLAYERS,{},require_identity=True)
         data['grimaEventId']=str(EVENT['raid_id'])
         self.assertTrue(import_plan(data,EVENT,PLAYERS,{},require_identity=True))
-        with self.assertRaises(ValueError):import_plan(data,EVENT,PLAYERS,{PLAYERS[0]['player_id']:{'Guardian':1<<3}},require_identity=True)
+        # Saved specs offer Guardian Red at T2; the plan assigns Guardian Blue anyway.
+        assigned=import_plan(data,EVENT,PLAYERS,{PLAYERS[0]['player_id']:{'Guardian':1<<3}},require_identity=True)
+        self.assertEqual(assigned[0]['members'][0]['spec'],'Blue')
+        self.assertNotIn('added',assigned[0]['members'][0])
+
+    def test_signed_up_player_can_be_imported_as_another_class(self):
+        team=dict(label='Folly',members=[dict(id=str(PLAYERS[0]['player_id']),c='Hunter',spec='Blue',role='DPS')])
+        data=dict(format='vanguard-raid-planner-session',version=7,grimaEventId=str(EVENT['raid_id']),teams=[team])
+        teams=import_plan(data,EVENT,PLAYERS,{PLAYERS[0]['player_id']:{'Guardian':2}},require_identity=True)
+        member=teams[0]['members'][0]
+        self.assertEqual((member['c'],member['spec'],member.get('added')),('Hunter','Blue',None))
+        import sqlite3
+        conn=sqlite3.connect(':memory:')
+        conn.execute('CREATE TABLE Players (raid_id integer, player_id integer, byname text, timestamp integer, unavailable boolean, Guardian boolean, Hunter boolean, primary key (raid_id, player_id))')
+        conn.execute('INSERT INTO Players VALUES (100,?,?,0,0,1,0)',(PLAYERS[0]['player_id'],'Alice'))
+        from event_store import EventStore
+        events=NS(store=EventStore(conn))
+        cog=PlanningCog(NS(conn=conn,get_cog=lambda name:events))
+        cog.ensure_signups(100,teams)
+        row=conn.execute('SELECT Guardian, Hunter FROM Players WHERE raid_id=100').fetchone()
+        self.assertEqual(row,(1,1))
+        conn.close()
 
     def test_templates(self):
         self.assertEqual(render_template('{title} {{literal}} {description} {signup_count}', context_for(EVENT, 3)), 'Folly {literal} Win 3')

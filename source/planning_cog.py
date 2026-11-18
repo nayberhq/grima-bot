@@ -87,17 +87,23 @@ class PlanningCog(commands.Cog):
         return self.store.one('SELECT * FROM EventPlans WHERE raid_id=?', (raid_id,))
 
     def ensure_signups(self, raid_id, teams):
-        """People added in the planner become signups, including those without a Discord account."""
+        """People added in the planner become signups, including those without a Discord account.
+        An existing signup assigned a class they did not list is marked signed up for that class."""
         columns = {row[1] for row in self.store.conn.execute('PRAGMA table_info(Players)')}
         by_key = {name.replace('-', '').lower(): name for name in columns}
         now = int(time.time())
         for team in teams:
             for member in team['members']:
-                if not member.get('added'):
-                    continue
                 column = by_key.get(member['c'].replace('-', '').lower())
+                safe = column and re.fullmatch(r'[A-Za-z][A-Za-z0-9_-]*', column)
+                if not member.get('added'):
+                    if safe:
+                        self.store.write(
+                            f'UPDATE Players SET "{column}"=1 WHERE raid_id=? AND player_id=?',
+                            (raid_id, int(member['id'])))
+                    continue
                 name = str(member['name'])[:80]
-                if column and re.fullmatch(r'[A-Za-z][A-Za-z0-9_-]*', column):
+                if safe:
                     self.store.write(
                         f'INSERT INTO Players (raid_id, player_id, byname, timestamp, unavailable, "{column}") '
                         f'VALUES (?,?,?,?,0,1) ON CONFLICT(raid_id, player_id) DO UPDATE SET '
