@@ -168,7 +168,8 @@ class EventStore:
             ('t3_forum_id', 'INTEGER NOT NULL DEFAULT 0'),
             ('t4_forum_id', 'INTEGER NOT NULL DEFAULT 0'),
             ('t5_forum_id', 'INTEGER NOT NULL DEFAULT 0'),
-            ('watch_sync', 'INTEGER NOT NULL DEFAULT 1'),
+            ('watch_sync', 'INTEGER NOT NULL DEFAULT 0'),
+            ('watch_calendar', 'INTEGER NOT NULL DEFAULT 1'),
         ):
             if col not in es_cols:
                 conn.execute(f'ALTER TABLE EventSettings ADD COLUMN {col} {col_def}')
@@ -212,29 +213,39 @@ class EventStore:
         return None
 
     def watch_sync_enabled(self, guild_id) -> bool:
+        """Watched codes create raid posts. Off unless this server saved it on."""
         row = self.settings(guild_id)
         if not row or row.get('watch_sync') is None:
-            return True
+            return False
         return bool(row['watch_sync'])
+
+    def watch_calendar_enabled(self, guild_id) -> bool:
+        """Watched codes are listed on the calendar. On unless this server saved it off."""
+        row = self.settings(guild_id)
+        if not row or row.get('watch_calendar') is None:
+            return True
+        return bool(row['watch_calendar'])
 
     def configure(self, guild_id, forum_id, category_id, duration, lock_delay,
                   instance_forum_id=0,
                   t1_forum_id=0, t2_forum_id=0, t3_forum_id=0, t4_forum_id=0, t5_forum_id=0,
-                  watch_sync=None):
+                  watch_sync=None, watch_calendar=None):
         if not 900 <= duration <= 86400 or not 0 <= lock_delay <= 604800:
             raise ValueError('Duration must be 15–1440 minutes; lock delay 0–10080 minutes.')
+        current = self.one('SELECT watch_sync, watch_calendar FROM EventSettings WHERE guild_id=?', (guild_id,))
         if watch_sync is None:
-            current = self.one('SELECT watch_sync FROM EventSettings WHERE guild_id=?', (guild_id,))
-            watch_sync = current['watch_sync'] if current and current.get('watch_sync') is not None else 1
+            watch_sync = current['watch_sync'] if current and current.get('watch_sync') is not None else 0
+        if watch_calendar is None:
+            watch_calendar = current['watch_calendar'] if current and current.get('watch_calendar') is not None else 1
         # forum_mode is retained for older rows and is no longer consulted.
         self.write('''INSERT OR REPLACE INTO EventSettings
             (guild_id, forum_id, voice_category_id, duration, lock_delay,
              forum_mode, instance_forum_id, t1_forum_id, t2_forum_id, t3_forum_id, t4_forum_id, t5_forum_id,
-             watch_sync)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+             watch_sync, watch_calendar)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
             (guild_id, forum_id, category_id, duration, lock_delay,
              'implied', instance_forum_id, t1_forum_id, t2_forum_id, t3_forum_id, t4_forum_id, t5_forum_id,
-             int(bool(watch_sync))))
+             int(bool(watch_sync)), int(bool(watch_calendar))))
 
     @staticmethod
     def select_forum_id(settings, size=12, tier=None):

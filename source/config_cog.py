@@ -138,7 +138,7 @@ class ConfigCog(commands.Cog):
                     "**Incoming Pull Channels (`/watch`, or `watch_channel` in `/setup`)**\n"
                     "1. Create one or more local channels (e.g. `#raid-network-pull`) that **Follow** your partner servers' Announcement push channels. Gríma can watch as many as you add.\n"
                     "2. Ensure **grima-bot** has `View Channel` + `Read Message History` in each channel.\n"
-                    "3. Run `/watch` to add (25 at a time) or remove channels. `watch_channel` in `/setup` adds one and keeps the rest. **Watch sync** in `/settings` creates raid posts, or lists them on the calendar only.\n"
+                    "3. Run `/watch` or `/settings` to add or remove channels. **Watch channel calendar** lists them (on by default). **Watch channel event syncing** creates raid posts (off by default).\n"
                     "4. Use `/network-status` (`retry:True`) to inspect or retry any failed event discoveries.\n\n"
                     "**Manual Sync & Cross-Server Broadcasts**\n"
                     "• **Manual Share/Pull:** Run `/event-share` inside an event post to get its code (`revoke:True` to disable new mirrors); partner raid leaders run `/event-sync code:<code>`.\n"

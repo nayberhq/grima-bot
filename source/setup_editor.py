@@ -25,7 +25,7 @@ class SetupDraft:
         'raid_forum_id', 'announcement_id', 'panel_id', 'voice_category_id',
         'instance_forum_id', 't1_forum_id', 't2_forum_id', 't3_forum_id',
         't4_forum_id', 't5_forum_id', 'leader_role_id', 'kin_role_id',
-        'calendar_id', 'rss_id', 'discord_events', 'watch_sync', 'kin_icon', 'server_timezone',
+        'calendar_id', 'rss_id', 'discord_events', 'watch_sync', 'watch_calendar', 'kin_icon', 'server_timezone',
         'server_invite_url', 'duration_minutes', 'lock_delay_minutes',
         'description_template_preview', 'description_template',
     )
@@ -46,7 +46,8 @@ class SetupDraft:
         self.calendar_id = 0
         self.rss_id = 0
         self.discord_events = False
-        self.watch_sync = True
+        self.watch_sync = False
+        self.watch_calendar = True
         self.kin_icon = ''
         self.server_timezone = ''
         self.server_invite_url = ''
@@ -72,6 +73,8 @@ def load_setup_draft(store, conn, guild_id) -> SetupDraft:
         draft.lock_delay_minutes = max(0, (ev.get('lock_delay') or 3600) // 60)
         if ev.get('watch_sync') is not None:
             draft.watch_sync = bool(ev['watch_sync'])
+        if ev.get('watch_calendar') is not None:
+            draft.watch_calendar = bool(ev['watch_calendar'])
     net = store.one('SELECT push_id FROM NetworkSettings WHERE guild_id=?', (guild_id,))
     if net and net.get('push_id'):
         draft.announcement_id = net['push_id']
@@ -184,11 +187,47 @@ class SetupEditorView(discord.ui.View):
         ('panel_id', 'Event panels'),
     )
     PAGE_TITLES = (
-        'Channels',
-        'Optional forums (1/2)',
-        'Optional forums & watch',
+        'Required',
+        'Optional forums',
+        'Optional forums',
+        'Watch channels',
         'Optional roles & feeds',
-        'Optional flags & text',
+        'Optional text',
+    )
+    PAGE_HELP = (
+        (
+            '**Raid forum (required)** — Forum where this server creates raid posts.',
+            '**Announcement push (required)** — Channel that posts mirrorkey codes for other servers.',
+            '**Event panels (required)** — Channel where the raid creation panels are posted.',
+        ),
+        (
+            '**Voice category (optional)** — Voice channel created at start. Clear it and none is created or linked.',
+            '**Instance forum (optional)** — 6-player events use this when that tier has no forum.',
+            '**T1 forum (optional)** — Tier 1 events go here instead of the instance or raid forum.',
+            '**T2 forum (optional)** — Tier 2 events.',
+        ),
+        (
+            '**T3 forum (optional)** — Tier 3 events.',
+            '**T4 forum (optional)** — Tier 4 events.',
+            '**T5 forum (optional)** — Tier 5 events.',
+        ),
+        (
+            '**Watch channel (optional)** — Channel scanned for mirrorkey codes. The X stops watching the shown channel.',
+            '**Watch channel calendar (optional)** — List watched events on the calendar. On by default.',
+            '**Watch channel event syncing (optional)** — Create raid posts from watched codes. Off by default.',
+        ),
+        (
+            '**Raid leader role (optional)** — Only this role creates events. Clear it and anyone can.',
+            '**Kinship role (optional)** — Marks kinship members on signups.',
+            '**Calendar channel (optional)** — Channel for the live raid calendar.',
+            '**RSS (optional)** — Channel for official LOTRO forum posts.',
+        ),
+        (
+            '**Discord scheduled event (optional)** — One Discord event that links to the calendar.',
+            '**Server timezone (optional)** — Timezone for calendar days and server times. The X clears it.',
+            '**Description template (optional)** — Extra text added to every event post.',
+            '**Text fields (optional)** — Kin icon, invite URL, duration, and lock delay.',
+        ),
     )
 
     def missing_required(self):
@@ -208,28 +247,24 @@ class SetupEditorView(discord.ui.View):
         self.reload()
 
     def embed(self) -> discord.Embed:
-        d = self.draft
-        extra = (
-            f"Timezone: `{d.server_timezone or 'default'}` · Duration: {d.duration_minutes}m · "
-            f"Lock: {d.lock_delay_minutes}m · Calendar event: {'on' if d.discord_events else 'off'}"
-        )
         missing = self.missing_required()
         if missing:
             gate = '**Save** stays hidden until every required channel is set.\nMissing: ' + ', '.join(missing)
         else:
-            gate = 'Required channels are set. **Save** checks permissions and writes them. Panels repost only if the panel channel changes.'
+            gate = 'Required channels are set. **Save** checks permissions and writes them. The X on a menu clears that setting.'
+        help_lines = '\n'.join(self.PAGE_HELP[self.page])
         embed = discord.Embed(
             title='Server setup',
             description=(
-                f"**{self.PAGE_TITLES[self.page]}** (page {self.page + 1}/{len(self.PAGE_TITLES)})\n"
-                f"{extra}\nWatch sync: {'create raid posts' if d.watch_sync else 'calendar only'}\n\n{gate}"
+                f"**{self.PAGE_TITLES[self.page]}** (page {self.page + 1}/{len(self.PAGE_TITLES)})\n\n"
+                f"{help_lines}\n\n{gate}"
             ),
             colour=discord.Colour(0x3498db),
         )
         checked = self._checked_lines()
         if checked:
             embed.add_field(name='Checked', value='\n'.join(checked)[:1024], inline=False)
-        if self.page == 2 and self.guild_id:
+        if self.page == 3 and self.guild_id:
             rows = self.cog.store.rows(
                 'SELECT source_channel_id FROM EventWatches WHERE guild_id=? ORDER BY source_channel_id',
                 (self.guild_id,),
@@ -247,7 +282,7 @@ class SetupEditorView(discord.ui.View):
             hidden = len(mentions) - len(shown)
             if hidden:
                 body += f' (+{hidden} more)'
-            body += '\nAdd one here. Use `/watch` to add or remove any number.'
+            body += '\nThe menu shows one channel. The X stops watching that one. `/watch` changes the rest.'
             embed.add_field(name=f'Watch channels ({len(mentions)})', value=body, inline=False)
         if self.page == len(self.PAGE_TITLES) - 1:
             preview = d.description_template_preview.strip()
@@ -262,25 +297,27 @@ class SetupEditorView(discord.ui.View):
     def reload(self):
         self.clear_items()
         if self.page == 0:
-            self._forum_select(0, 'Raid forum (required)', 'raid_forum_id', refresh=True, kind='raid_forum')
-            self._text_select(1, 'Announcement push (required)', 'announcement_id', refresh=True, kind='announcement')
-            self._text_select(2, 'Event panels (required)', 'panel_id', refresh=True, kind='panel')
-            self._category_select(3, 'Voice category (optional)', 'voice_category_id', refresh=True)
+            self._forum_select(0, 'Raid forum (required)', 'raid_forum_id', kind='raid_forum')
+            self._text_select(1, 'Announcement push (required)', 'announcement_id', kind='announcement')
+            self._text_select(2, 'Event panels (required)', 'panel_id', kind='panel')
         elif self.page == 1:
-            self._forum_select(0, 'Instance forum (optional)', 'instance_forum_id', optional=True)
-            self._forum_select(1, 'T1 forum (optional)', 't1_forum_id', optional=True)
-            self._forum_select(2, 'T2 forum (optional)', 't2_forum_id', optional=True)
-            self._forum_select(3, 'T3 forum (optional)', 't3_forum_id', optional=True)
+            self._category_select(0, 'Voice category (optional)', 'voice_category_id')
+            self._forum_select(1, 'Instance forum (optional)', 'instance_forum_id')
+            self._forum_select(2, 'T1 forum (optional)', 't1_forum_id')
+            self._forum_select(3, 'T2 forum (optional)', 't2_forum_id')
         elif self.page == 2:
-            self._forum_select(0, 'T4 forum (optional)', 't4_forum_id', optional=True)
-            self._forum_select(1, 'T5 forum (optional)', 't5_forum_id', optional=True)
-            self._watch_sync_select(2)
-            self._watch_add_select(3)
+            self._forum_select(0, 'T3 forum (optional)', 't3_forum_id')
+            self._forum_select(1, 'T4 forum (optional)', 't4_forum_id')
+            self._forum_select(2, 'T5 forum (optional)', 't5_forum_id')
         elif self.page == 3:
-            self._role_select(0, 'Raid leader role', 'leader_role_id')
-            self._role_select(1, 'Kinship role', 'kin_role_id')
-            self._text_select(2, 'Calendar (optional)', 'calendar_id', optional=True, kind='calendar')
-            self._text_select(3, 'RSS (optional)', 'rss_id', optional=True, kind='rss')
+            self._watch_add_select(0)
+            self._flag_select(1, 'watch_calendar', 'Watch channel calendar (optional)', on=True)
+            self._flag_select(2, 'watch_sync', 'Watch channel event syncing (optional)', on=False)
+        elif self.page == 4:
+            self._role_select(0, 'Raid leader role (optional)', 'leader_role_id')
+            self._role_select(1, 'Kinship role (optional)', 'kin_role_id')
+            self._text_select(2, 'Calendar channel (optional)', 'calendar_id', kind='calendar')
+            self._text_select(3, 'RSS (optional)', 'rss_id', kind='rss')
         else:
             self._events_select(0)
             self._timezone_select(3)
@@ -322,9 +359,10 @@ class SetupEditorView(discord.ui.View):
             'kin_role_id': 'Kinship role',
             'calendar_id': 'Calendar',
             'rss_id': 'RSS',
-            'discord_events': 'Calendar event',
+            'discord_events': 'Discord scheduled event',
             'server_timezone': 'Server timezone',
-            'watch_sync': 'Watch sync',
+            'watch_sync': 'Watch channel event syncing',
+            'watch_calendar': 'Watch channel calendar',
             'watch_channel': 'Watch channel',
             'kin_icon': 'Kin icon',
             'server_invite_url': 'Server invite',
@@ -356,12 +394,19 @@ class SetupEditorView(discord.ui.View):
         if errors or notes:
             await interaction.followup.send('\n'.join(errors + notes), ephemeral=True)
 
+    def _picked(self, interaction, control):
+        """Empty menu submission means the user cleared the setting with the X."""
+        data = getattr(interaction, 'data', None)
+        if isinstance(data, dict) and 'values' in data and not data.get('values'):
+            return None
+        return control.values[0] if control.values else None
+
     def _forum_select(self, row, label, field, optional=False, refresh=False, kind='forum'):
         control = discord.ui.ChannelSelect(
             row=row,
             placeholder=self._marked(field, label),
             channel_types=[discord.ChannelType.forum],
-            min_values=0 if optional else 1,
+            min_values=0,
             max_values=1,
         )
         current = getattr(self.draft, field)
@@ -369,11 +414,7 @@ class SetupEditorView(discord.ui.View):
             control.default_values = [discord.Object(id=current)]
 
         async def chosen(i: discord.Interaction):
-            channel = control.values[0] if control.values else None
-            if channel is None and not optional:
-                await i.response.defer()
-                return
-            await self._apply_channel(i, field, kind, channel, optional)
+            await self._apply_channel(i, field, kind, self._picked(i, control), optional=True)
 
         control.callback = chosen
         self.add_item(control)
@@ -383,7 +424,7 @@ class SetupEditorView(discord.ui.View):
             row=row,
             placeholder=self._marked(field, label),
             channel_types=[discord.ChannelType.text, discord.ChannelType.news],
-            min_values=0 if optional else 1,
+            min_values=0,
             max_values=1,
         )
         current = getattr(self.draft, field)
@@ -391,11 +432,7 @@ class SetupEditorView(discord.ui.View):
             control.default_values = [discord.Object(id=current)]
 
         async def chosen(i: discord.Interaction):
-            channel = control.values[0] if control.values else None
-            if channel is None and not optional:
-                await i.response.defer()
-                return
-            await self._apply_channel(i, field, kind, channel, optional)
+            await self._apply_channel(i, field, kind, self._picked(i, control), optional=True)
 
         control.callback = chosen
         self.add_item(control)
@@ -413,51 +450,61 @@ class SetupEditorView(discord.ui.View):
             control.default_values = [discord.Object(id=current)]
 
         async def chosen(i: discord.Interaction):
-            channel = control.values[0] if control.values else None
-            await self._apply_channel(i, field, 'voice', channel, optional=True)
+            await self._apply_channel(i, field, 'voice', self._picked(i, control), optional=True)
 
         control.callback = chosen
         self.add_item(control)
 
-    def _watch_sync_select(self, row):
-        options = [
-            discord.SelectOption(
-                label='Create raid posts from watched channels',
-                value='1',
-                default=bool(self.draft.watch_sync),
-            ),
-            discord.SelectOption(
-                label='Calendar only — do not create raid posts',
-                value='0',
-                default=not self.draft.watch_sync,
-            ),
-        ]
-        control = discord.ui.Select(row=row, placeholder=self._marked('watch_sync', 'Watch sync (optional)'), options=options)
+    def _flag_select(self, row, field, label, on):
+        current = bool(getattr(self.draft, field))
+        control = discord.ui.Select(
+            row=row,
+            placeholder=self._marked(field, label),
+            options=[
+                discord.SelectOption(label='On', value='1', description=label[:100], default=current),
+                discord.SelectOption(label='Off', value='0', description=label[:100], default=not current),
+            ],
+        )
 
         async def chosen(i: discord.Interaction):
-            self.draft.watch_sync = control.values[0] == '1'
-            for option in control.options:
-                option.default = option.value == control.values[0]
-            self.probes['watch_sync'] = 'ok'
+            picked = self._picked(i, control)
+            if picked is None:
+                setattr(self.draft, field, on)
+            else:
+                setattr(self.draft, field, picked == '1')
+            self.probes[field] = 'ok'
             self.reload()
             await i.response.edit_message(embed=self.embed(), view=self)
 
         control.callback = chosen
         self.add_item(control)
 
+    def _shown_watch_id(self):
+        if not self.guild_id:
+            return 0
+        rows = self.cog.watch_rows(self.guild_id)
+        return rows[0]['source_channel_id'] if rows else 0
+
     def _watch_add_select(self, row):
         control = discord.ui.ChannelSelect(
             row=row,
             placeholder=self._marked('watch_channel', 'Watch channel (optional)'),
             channel_types=[discord.ChannelType.text, discord.ChannelType.news, discord.ChannelType.public_thread],
-            min_values=1,
+            min_values=0,
             max_values=1,
         )
+        shown = self._shown_watch_id()
+        if shown:
+            control.default_values = [discord.Object(id=shown)]
 
         async def chosen(i: discord.Interaction):
-            channel = control.values[0] if control.values else None
+            channel = self._picked(i, control)
             if channel is None:
-                await i.response.defer()
+                if shown:
+                    self.cog.remove_watch_channels(i.guild.id, [shown])
+                self.probes.pop('watch_channel', None)
+                self.reload()
+                await i.response.edit_message(embed=self.embed(), view=self)
                 return
             errors, added, kept = await self.cog.add_watch_channels(i.guild, [channel])
             self.probes['watch_channel'] = 'bad' if errors else 'ok'
@@ -476,8 +523,9 @@ class SetupEditorView(discord.ui.View):
             control.default_values = [discord.Object(id=current)]
 
         async def chosen(i: discord.Interaction):
-            if control.values:
-                self._set_id(field, str(control.values[0].id))
+            picked = self._picked(i, control)
+            if picked is not None:
+                self._set_id(field, str(picked.id))
                 self.probes[field] = 'ok'
             else:
                 self._set_id(field, '0')
@@ -490,10 +538,10 @@ class SetupEditorView(discord.ui.View):
 
     def _events_select(self, row):
         options = [
-            discord.SelectOption(label='Calendar event off', value='0', default=not self.draft.discord_events),
-            discord.SelectOption(label='Calendar event on (needs a calendar channel)', value='1', default=self.draft.discord_events),
+            discord.SelectOption(label='Off', value='0', description='Do not create a Discord scheduled event.', default=not self.draft.discord_events),
+            discord.SelectOption(label='On', value='1', description='One Discord event linking to the calendar.', default=self.draft.discord_events),
         ]
-        control = discord.ui.Select(row=row, placeholder=self._marked('discord_events', 'Discord calendar event'), options=options)
+        control = discord.ui.Select(row=row, placeholder=self._marked('discord_events', 'Discord scheduled event (optional)'), options=options)
 
         async def chosen(i: discord.Interaction):
             self.draft.discord_events = control.values[0] == '1'
@@ -524,15 +572,19 @@ class SetupEditorView(discord.ui.View):
         options = [discord.SelectOption(label=tz, value=tz, default=tz == current) for tz in zones]
         control = discord.ui.Select(
             row=row,
-            placeholder=self._marked('server_timezone', 'Server timezone (calendar days, "server" times)'),
+            min_values=0,
+            max_values=1,
+            placeholder=self._marked('server_timezone', 'Server timezone (optional)'),
             options=options,
         )
 
         async def chosen(i: discord.Interaction):
-            self.draft.server_timezone = control.values[0]
-            self.probes['server_timezone'] = 'ok'
-            for option in control.options:
-                option.default = option.value == control.values[0]
+            picked = self._picked(i, control)
+            self.draft.server_timezone = '' if picked is None else picked
+            if picked is None:
+                self.probes.pop('server_timezone', None)
+            else:
+                self.probes['server_timezone'] = 'ok'
             self.reload()
             await i.response.edit_message(embed=self.embed(), view=self)
 

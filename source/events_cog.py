@@ -1021,6 +1021,8 @@ class EventsCog(commands.Cog):
 
     async def deliver_watched_code(self, guild_id, code, origin_message=None):
         """Watch-list delivery. Sync creates a raid post; calendar-only only lists the event."""
+        if not self.store.watch_sync_enabled(guild_id) and not self.store.watch_calendar_enabled(guild_id):
+            return None, False
         if self.store.watch_sync_enabled(guild_id):
             result = await self.sync_event(guild_id, code)
             event = self.store.by_token(code.strip())
@@ -1606,16 +1608,17 @@ class EventsCog(commands.Cog):
             t5_forum=t5_forum,
             leader_role=leader_role,
             kin_role=kin_role,
-            kin_icon=draft.kin_icon.strip() or None,
+            kin_icon=draft.kin_icon.strip(),
             calendar_channel=calendar,
             discord_events=draft.discord_events,
             rss_channel=rss,
-            server_timezone=draft.server_timezone.strip() or None,
-            server_invite_url=draft.server_invite_url.strip() or None,
+            server_timezone=draft.server_timezone.strip(),
+            server_invite_url=draft.server_invite_url.strip(),
             duration_minutes=draft.duration_minutes,
             lock_delay_minutes=draft.lock_delay_minutes,
             description_template=draft.description_template,
             watch_sync=bool(draft.watch_sync),
+            watch_calendar=bool(draft.watch_calendar),
         )
 
     async def report_create_failure(self, interaction, exc, kind='event'):
@@ -1704,6 +1707,8 @@ class EventsCog(commands.Cog):
             server_invite_url=draft.server_invite_url.strip() or None,
             duration_minutes=draft.duration_minutes,
             lock_delay_minutes=draft.lock_delay_minutes,
+            watch_sync=bool(draft.watch_sync),
+            watch_calendar=bool(draft.watch_calendar),
             apply=False,
             unresolved=unresolved,
         )
@@ -1758,7 +1763,8 @@ class EventsCog(commands.Cog):
         duration_minutes: int = 180,
         lock_delay_minutes: int = 60,
         description_template: str | None = None,
-        watch_sync: bool = True,
+        watch_sync: bool = False,
+        watch_calendar: bool = True,
         *,
         apply: bool = True,
         unresolved: dict | None = None,
@@ -1930,12 +1936,15 @@ class EventsCog(commands.Cog):
         elif 'Raid Leader Role' not in unresolved:
             checks.append('**Raid Leader Role:** not set; anyone can create events and use leader controls.')
         resolved_kin_icon = None
-        if kin_icon is not None and kin_icon.strip():
+        clear_kin_icon = kin_icon is not None and not str(kin_icon).strip()
+        if kin_icon is not None and str(kin_icon).strip():
             resolved_kin_icon = await self.resolve_kin_icon(guild, kin_icon)
             if not resolved_kin_icon:
                 errors.append(f"**Kin Icon (`{kin_icon.strip()}`):** Not a valid Unicode or accessible custom emoji.")
             elif not kin_role:
                 checks.append(f"**Kin Icon:** {resolved_kin_icon}")
+        elif clear_kin_icon:
+            checks.append('**Kin Icon:** cleared.')
         if not take_unresolved('Kinship Role') and kin_role is not None:
             icon_suffix = f" ({resolved_kin_icon})" if resolved_kin_icon else ""
             checks.append(f"**Kinship Role:** {kin_role.mention}{icon_suffix}")
@@ -1998,16 +2007,23 @@ class EventsCog(commands.Cog):
 
         # 9. Optional: Server Timezone
         resolved_tz = None
-        if server_timezone is not None and server_timezone.strip():
+        clear_tz = False
+        if server_timezone is not None and str(server_timezone).strip():
             try:
                 resolved_tz = str(pytz.timezone(server_timezone.strip()))
                 checks.append(f"**Server Timezone:** `{resolved_tz}`")
             except pytz.UnknownTimeZoneError:
                 errors.append(f"**Server Timezone (`{server_timezone}`):** Invalid timezone name. Choose a valid IANA timezone (e.g. `America/New_York`).")
+        elif server_timezone is not None:
+            clear_tz = True
+            checks.append('**Server Timezone:** cleared.')
 
         # 10. Optional: Server Invite URL
         verified_invite_url = None
-        if server_invite_url is not None and server_invite_url.strip():
+        clear_invite = server_invite_url is not None and not str(server_invite_url).strip()
+        if clear_invite:
+            checks.append('**Server Invite URL:** cleared.')
+        elif server_invite_url is not None and str(server_invite_url).strip():
             try:
                 invite = await self.bot.fetch_invite(server_invite_url.strip())
                 if not invite.guild or invite.guild.id != guild.id:
@@ -2045,17 +2061,23 @@ class EventsCog(commands.Cog):
             t4_forum_id=t4_forum.id if t4_forum else 0,
             t5_forum_id=t5_forum.id if t5_forum else 0,
             watch_sync=watch_sync,
+            watch_calendar=watch_calendar,
         )
         self.store.write('INSERT OR REPLACE INTO NetworkSettings VALUES (?,?)', (guild.id, announcement_channel.id))
+        if watch_calendar:
+            checks.append('**Watch channel calendar:** on. Watched events are listed on the calendar.')
+        else:
+            self.store.write('DELETE FROM WatchCalendar WHERE guild_id=?', (guild.id,))
+            checks.append('**Watch channel calendar:** off. Watched events are not listed on the calendar.')
         if watch_sync:
-            checks.append('**Watch sync:** on. Watched mirrorkey codes create raid posts.')
+            checks.append('**Watch channel event syncing:** on. Watched mirrorkey codes create raid posts.')
             created, failed = await self.materialize_watch_calendar(guild.id)
             if created:
-                checks.append(f'**Watch sync:** created {created} raid post(s) that were listed on the calendar only.')
+                checks.append(f'**Watch channel event syncing:** created {created} raid post(s) that were listed on the calendar only.')
             for item in failed:
-                warnings.append(f'**Watch sync:** could not create a raid post: {item}')
+                warnings.append(f'**Watch channel event syncing:** could not create a raid post: {item}')
         else:
-            checks.append('**Watch sync:** off. Watched events stay on the calendar and do not create raid posts.')
+            checks.append('**Watch channel event syncing:** off. Watched codes do not create raid posts.')
 
         for channel in validated:
             if await self.store_watch(guild, channel):
@@ -2064,9 +2086,11 @@ class EventsCog(commands.Cog):
                 checks.append(f"**Event Watch (Pull) Channel:** {channel.mention} (unchanged cursor)")
 
         upsert(self.bot.conn, 'Settings', ['raid_leader'], [leader_role.id if leader_role else None], ['guild_id'], [guild.id])
-        if kin_role is not None:
-            upsert(self.bot.conn, 'Settings', ['priority'], [kin_role.id], ['guild_id'], [guild.id])
-        if resolved_kin_icon is not None:
+        if 'Kinship Role' not in (unresolved or {}):
+            upsert(self.bot.conn, 'Settings', ['priority'], [kin_role.id if kin_role else None], ['guild_id'], [guild.id])
+        if clear_kin_icon:
+            upsert(self.bot.conn, 'Settings', ['icon'], [None], ['guild_id'], [guild.id])
+        elif resolved_kin_icon is not None:
             old_icon = self.store.one('SELECT icon FROM Settings WHERE guild_id=?', (guild.id,))
             upsert(self.bot.conn, 'Settings', ['icon'], [resolved_kin_icon], ['guild_id'], [guild.id])
             if old_icon and old_icon.get('icon') and old_icon['icon'] != resolved_kin_icon:
@@ -2083,10 +2107,14 @@ class EventsCog(commands.Cog):
             upsert(self.bot.conn, 'Settings', ['rss'], [rss_channel.id], ['guild_id'], [guild.id])
         else:
             upsert(self.bot.conn, 'Settings', ['rss'], [None], ['guild_id'], [guild.id])
-        if resolved_tz is not None:
+        if clear_tz:
+            upsert(self.bot.conn, 'Settings', ['server'], [None], ['guild_id'], [guild.id])
+        elif resolved_tz is not None:
             upsert(self.bot.conn, 'Settings', ['server'], [resolved_tz], ['guild_id'], [guild.id])
         upsert(self.bot.conn, 'Settings', ['guild_events'], [discord_events], ['guild_id'], [guild.id])
-        if verified_invite_url is not None:
+        if clear_invite:
+            self.store.write('DELETE FROM SourceInvites WHERE guild_id=?', (guild.id,))
+        elif verified_invite_url is not None:
             self.store.write('INSERT OR REPLACE INTO SourceInvites VALUES (?,?)', (guild.id, verified_invite_url))
             self.store.write('UPDATE SharedEvents SET revision=revision+1 WHERE raid_id IN (SELECT raid_id FROM Raids WHERE guild_id=?)', (guild.id,))
         if description_template is not None:

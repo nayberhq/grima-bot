@@ -733,6 +733,7 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.cog.store.pending_announcements(), [])
 
     async def test_watcher_cursor_retries_network_failure(self):
+        self.cog.store.write('UPDATE EventSettings SET watch_sync=1 WHERE guild_id=2')
         key = self.cog.store.share(100)
         self.cog.store.write('INSERT INTO EventWatches VALUES (2,900,0)')
         messages = [NS(id=1, content='no marker'), NS(id=2, content=f'mirrorkey:{key}')]
@@ -757,6 +758,7 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.cog.sync_event.await_count, count)
 
     async def test_fixable_watch_setup_failure_is_durable(self):
+        self.cog.store.write('UPDATE EventSettings SET watch_sync=1 WHERE guild_id=2')
         key=self.cog.store.share(100)
         self.cog.store.write('INSERT INTO EventWatches VALUES (2,900,0)')
         async def history(**kwargs):
@@ -786,6 +788,7 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_announcement_draft_waits_for_manual_publish(self):
         from network_cog import NetworkCog
+        self.cog.store.write('UPDATE EventSettings SET watch_sync=1 WHERE guild_id=2')
         key=self.cog.store.share(100)
         self.cog.store.write('INSERT INTO EventWatches VALUES (2,900,0)')
         message=NS(id=1,content='mirrorkey:'+key,flags=NS(crossposted=False))
@@ -1535,28 +1538,47 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(view.children[0].placeholder, 'Raid forum (required)')
         self.assertFalse(any(getattr(child, 'label', None) == 'Save' for child in view.children))
         self.assertIn('Missing: Raid forum, Announcement push, Event panels', view.embed().description)
+        self.assertIn('**Raid forum (required)**', view.embed().description)
         self.assertNotIn('Voice category', view.embed().description)
-        self.assertEqual(view.children[3].placeholder, 'Voice category (optional)')
         draft.raid_forum_id = 10
         draft.announcement_id = 12
         draft.panel_id = 13
         view.reload()
         self.assertTrue(any(getattr(child, 'label', None) == 'Save' for child in view.children))
-        view.page = 2
+        view.page = 3
         view.reload()
-        sync = next(child for child in view.children if getattr(child, 'placeholder', None) == 'Watch sync (optional)')
+        calendar = next(child for child in view.children if getattr(child, 'placeholder', None) == 'Watch channel calendar (optional)')
+        sync = next(child for child in view.children if getattr(child, 'placeholder', None) == 'Watch channel event syncing (optional)')
         watch = next(child for child in view.children if getattr(child, 'placeholder', None) == 'Watch channel (optional)')
         self.assertIsInstance(watch, discord.ui.ChannelSelect)
-        self.assertEqual([option.label for option in sync.options], [
-            'Create raid posts from watched channels',
-            'Calendar only — do not create raid posts',
-        ])
+        self.assertEqual(calendar.options[0].default, True)
+        self.assertEqual(sync.options[1].default, True)
+        self.assertIn('On by default', view.embed().description)
+        self.assertIn('Off by default', view.embed().description)
+
+    async def test_clearing_a_channel_menu_unsets_it(self):
+        from setup_editor import SetupDraft, SetupEditorView
+        draft = SetupDraft()
+        draft.raid_forum_id = 10
+        draft.announcement_id = 12
+        draft.panel_id = 13
+        view = SetupEditorView(self.cog, 9, draft, guild_id=1)
+        select = view.children[0]
+        interaction = NS(
+            guild=NS(id=1, me=NS()), user=NS(id=9), data={'values': []},
+            response=NS(edit_message=AsyncMock()),
+            followup=NS(send=AsyncMock()),
+        )
+        await select.callback(interaction)
+        self.assertEqual(view.draft.raid_forum_id, 0)
+        self.assertFalse(any(getattr(child, 'label', None) == 'Save' for child in view.children))
+        self.assertFalse(view.children[0].default_values)
 
     async def test_settings_watch_select_adds_the_channel_immediately(self):
         from setup_editor import SetupDraft, SetupEditorView
         guild = NS(id=1, me=NS())
         view = SetupEditorView(self.cog, 9, SetupDraft(), guild_id=1)
-        view.page = 2
+        view.page = 3
         view.reload()
         watch = next(child for child in view.children if getattr(child, 'placeholder', None) == 'Watch channel (optional)')
         channel = self._watch_channel(guild, 14)
