@@ -1017,6 +1017,47 @@ class EventsCog(commands.Cog):
         await self.raids.calendar_cog.update_calendar(guild_id)
         return result.thread.id, True
 
+    async def deliver_watched_code(self, guild_id, code, origin_message=None):
+        """Watch-list delivery. Sync creates a raid post; calendar-only only lists the event."""
+        if self.store.watch_sync_enabled(guild_id):
+            result = await self.sync_event(guild_id, code)
+            event = self.store.by_token(code.strip())
+            if event:
+                self.store.write('DELETE FROM WatchCalendar WHERE guild_id=? AND raid_id=?', (guild_id, event['raid_id']))
+            return result
+        event = self.store.by_token(code.strip())
+        if event and origin_message is not None:
+            kin_name, emoji_str, icon_url = extract_origin_badge(origin_message, self.bot)
+            if kin_name or emoji_str:
+                await self.ensure_origin_emoji(event['guild_id'], kin_name, emoji_str, icon_url)
+        if event and self.store.one('SELECT 1 FROM EventBlocks WHERE raid_id=? AND guild_id=?', (event['raid_id'], guild_id)):
+            raise InvalidShare('This server was disconnected by the organizer.')
+        if not event or self.store.ended(event, time.time()):
+            raise InvalidShare('Invalid sharing code or the event has ended.')
+        self.store.write('INSERT OR IGNORE INTO WatchCalendar (guild_id, raid_id) VALUES (?,?)', (guild_id, event['raid_id']))
+        if self.raids and self.raids.calendar_cog:
+            await self.raids.calendar_cog.update_calendar(guild_id)
+        return None, False
+
+    async def materialize_watch_calendar(self, guild_id):
+        """Create raid posts for events that were calendar-only while sync was off."""
+        created = 0
+        failed = []
+        for row in self.store.rows('SELECT raid_id FROM WatchCalendar WHERE guild_id=?', (guild_id,)):
+            event = self.store.event(row['raid_id'])
+            token = event.get('share_token') if event else None
+            if not token:
+                failed.append(f"raid {row['raid_id']} has no sharing code")
+                continue
+            try:
+                await self.sync_event(guild_id, token)
+            except (InvalidShare, ValueError, discord.HTTPException) as exc:
+                failed.append(str(exc))
+                continue
+            self.store.write('DELETE FROM WatchCalendar WHERE guild_id=? AND raid_id=?', (guild_id, row['raid_id']))
+            created += 1
+        return created, failed
+
     async def ensure_origin_emoji(self, guild_id, kin_name, emoji_str, icon_url):
         if emoji_str:
             m = re.search(r':(\d+)>$', emoji_str)
@@ -1064,7 +1105,7 @@ class EventsCog(commands.Cog):
                                 if ev:
                                     await self.ensure_origin_emoji(ev['guild_id'], kin_name, emoji_str, icon_url)
                             try:
-                                await self.sync_event(watch['guild_id'], code)
+                                await self.deliver_watched_code(watch['guild_id'], code, message)
                             except InvalidShare:
                                 # Invalid/expired markers are permanent failures, not a backlog blocker.
                                 log.info('Ignored invalid mirrorkey in message %s', message.id)
@@ -1105,7 +1146,7 @@ class EventsCog(commands.Cog):
                         if ev:
                             await self.ensure_origin_emoji(ev['guild_id'], kin_name, emoji_str, icon_url)
                     try:
-                        await self.sync_event(watch['guild_id'], code)
+                        await self.deliver_watched_code(watch['guild_id'], code, message)
                     except InvalidShare:
                         pass
                     except (ValueError, discord.HTTPException) as exc:
@@ -1152,6 +1193,141 @@ class EventsCog(commands.Cog):
     @staticmethod
     def _missing_perms(perms, required):
         return [label for attr, label in required if not getattr(perms, attr, False)]
+
+    def probe_setup_channel(self, guild, channel, kind) -> tuple[list[str], list[str]]:
+        """Check one settings channel. Returns (problems, notes). Problems block a checkmark."""
+        label = {
+            'raid_forum': 'Raid forum',
+            'forum': 'Forum',
+            'announcement': 'Announcement push',
+            'panel': 'Event panels',
+            'calendar': 'Calendar',
+            'rss': 'RSS',
+            'voice': 'Voice category',
+        }.get(kind, kind)
+        mention = getattr(channel, 'mention', None) or getattr(channel, 'name', None) or 'that channel'
+        errors = []
+        notes = []
+        try:
+            me = guild.me
+        except Exception as exc:
+            return [f'**{label}:** could not read the bot member ({type(exc).__name__}: {exc}).'], []
+        if me is None:
+            return [f'**{label} ({mention}):** the bot member is not available in this server, so permissions could not be checked.'], []
+        try:
+            if kind in ('raid_forum', 'forum'):
+                if not isinstance(channel, discord.ForumChannel) or getattr(getattr(channel, 'guild', None), 'id', None) != guild.id:
+                    errors.append(f'**{label} ({mention}):** Must be a Forum Channel in this server.')
+                else:
+                    missing = self._missing_perms(channel.permissions_for(me), [
+                        ('view_channel', 'View Channel'),
+                        ('send_messages', 'Send Messages (Create Posts)'),
+                        ('send_messages_in_threads', 'Send Messages in Posts'),
+                        ('embed_links', 'Embed Links'),
+                        ('read_message_history', 'Read Post History'),
+                        ('manage_threads', 'Manage Posts'),
+                    ])
+                    if missing:
+                        errors.append(f"**{label} ({mention}):** Bot is missing: {', '.join(missing)}.")
+                    if getattr(getattr(channel, 'flags', None), 'require_tag', False):
+                        errors.append(f"**{label} ({mention}):** Disable *'Require people to select tags when posting'* in channel settings.")
+                    if kind == 'raid_forum' and not missing and not getattr(channel.permissions_for(me), 'create_instant_invite', False):
+                        notes.append(f"**{label} ({mention}):** Bot lacks `Create Invite`. Mirrored servers will not see a voice link unless you set a server invite URL.")
+            elif kind == 'voice':
+                if not isinstance(channel, discord.CategoryChannel) or getattr(getattr(channel, 'guild', None), 'id', None) != guild.id:
+                    errors.append(f'**{label} ({mention}):** Must be a Category in this server.')
+                else:
+                    missing = self._missing_perms(channel.permissions_for(me), [
+                        ('view_channel', 'View Channel'),
+                        ('manage_channels', 'Manage Channels'),
+                    ])
+                    if missing:
+                        errors.append(f"**{label} ({mention}):** Bot is missing: {', '.join(missing)}.")
+            else:
+                perms = {
+                    'announcement': [
+                        ('view_channel', 'View Channel'),
+                        ('send_messages', 'Send Messages'),
+                        ('read_message_history', 'Read Message History'),
+                    ],
+                    'panel': [
+                        ('view_channel', 'View Channel'),
+                        ('send_messages', 'Send Messages'),
+                        ('embed_links', 'Embed Links'),
+                        ('read_message_history', 'Read Message History'),
+                    ],
+                    'calendar': [
+                        ('view_channel', 'View Channel'),
+                        ('send_messages', 'Send Messages'),
+                        ('embed_links', 'Embed Links'),
+                    ],
+                    'rss': [
+                        ('view_channel', 'View Channel'),
+                        ('send_messages', 'Send Messages'),
+                        ('embed_links', 'Embed Links'),
+                    ],
+                }.get(kind)
+                if perms is None:
+                    errors.append(f'**{label}:** no permission check is defined for this field.')
+                elif not isinstance(channel, discord.TextChannel) or getattr(getattr(channel, 'guild', None), 'id', None) != guild.id:
+                    errors.append(f'**{label} ({mention}):** Must be a Text or Announcement Channel in this server.')
+                else:
+                    missing = self._missing_perms(channel.permissions_for(me), perms)
+                    if missing:
+                        errors.append(f"**{label} ({mention}):** Bot is missing: {', '.join(missing)}.")
+        except Exception as exc:
+            errors.append(f'**{label} ({mention}):** {type(exc).__name__}: {exc}')
+        return errors, notes
+
+    async def probe_text_settings(self, guild, timezone, kin_icon, invite_url, duration_minutes, lock_delay_minutes):
+        """Check the text fields from the settings modal. Returns (problems, field states)."""
+        errors = []
+        states = {}
+        if timezone:
+            try:
+                pytz.timezone(timezone)
+                states['server_timezone'] = 'ok'
+            except pytz.UnknownTimeZoneError:
+                states['server_timezone'] = 'bad'
+                errors.append(f'**Server timezone (`{timezone}`):** not a valid IANA timezone (for example `America/New_York`).')
+        if kin_icon:
+            try:
+                resolved = await self.resolve_kin_icon(guild, kin_icon)
+            except Exception as exc:
+                resolved = None
+                states['kin_icon'] = 'bad'
+                errors.append(f'**Kin icon:** {type(exc).__name__}: {exc}')
+            if resolved:
+                states['kin_icon'] = 'ok'
+            elif 'kin_icon' not in states:
+                states['kin_icon'] = 'bad'
+                errors.append(f'**Kin icon (`{kin_icon}`):** not a valid Unicode or accessible custom emoji.')
+        if invite_url:
+            try:
+                invite = await self.bot.fetch_invite(invite_url)
+                if not getattr(invite, 'guild', None) or invite.guild.id != guild.id:
+                    states['server_invite_url'] = 'bad'
+                    errors.append('**Server invite:** The invite must belong to this server.')
+                else:
+                    states['server_invite_url'] = 'ok'
+            except Exception as exc:
+                states['server_invite_url'] = 'bad'
+                errors.append(f'**Server invite:** {type(exc).__name__}: {exc}')
+        if not 15 <= duration_minutes <= 1440:
+            errors.append('**Duration:** must be 15–1440 minutes.')
+        if not 0 <= lock_delay_minutes <= 10080:
+            errors.append('**Lock delay:** must be 0–10080 minutes.')
+        return errors, states
+
+    def probe_manage_events(self, guild) -> list[str]:
+        try:
+            me = guild.me
+            allowed = me is not None and getattr(me.guild_permissions, 'manage_events', False)
+        except Exception as exc:
+            return [f'**Calendar event:** {type(exc).__name__}: {exc}']
+        if not allowed:
+            return ['**Calendar event:** Bot is missing the server-wide `Manage Events` permission.']
+        return []
 
     def watch_rows(self, guild_id):
         return self.store.rows(
@@ -1289,71 +1465,104 @@ class EventsCog(commands.Cog):
         return False
 
     async def resolve_setup_draft(self, guild, draft):
-        async def channel(cid, label, types=()):
-            if not cid:
-                raise ValueError(f'Choose **{label}** on the setup editor (page 1).')
-            ch = guild.get_channel(cid) or await self.bot.fetch_channel(cid)
-            if not ch or (getattr(ch, 'guild', None) and ch.guild.id != guild.id):
-                raise ValueError(f'**{label}** must belong to this server.')
-            if types and ch.type not in types:
-                raise ValueError(f'**{label}** must be a {types[0].name.replace("_", " ")} channel.')
-            return ch
+        problems = []
 
-        async def optional_channel(cid, label, types=()):
+        async def channel(cid, label, types=(), required=False):
             if not cid:
+                if required:
+                    problems.append(f'**{label} (required):** not set.')
                 return None
-            ch = await channel(cid, label, types)
+            try:
+                ch = guild.get_channel(cid) if hasattr(guild, 'get_channel') else None
+                if ch is None:
+                    ch = await self.bot.fetch_channel(cid)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+                problems.append(f'**{label}:** the bot cannot use that channel ({type(exc).__name__}: {exc}).')
+                return None
+            except Exception as exc:
+                problems.append(f'**{label}:** {type(exc).__name__}: {exc}')
+                return None
+            if not ch or (getattr(ch, 'guild', None) and ch.guild.id != guild.id):
+                problems.append(f'**{label}:** must belong to this server.')
+                return None
+            if types and getattr(ch, 'type', None) not in types:
+                problems.append(f'**{label}:** must be a {types[0].name.replace("_", " ")} channel.')
+                return None
             return ch
 
         async def optional_forum(cid, label):
-            if not cid:
-                return None
-            ch = await optional_channel(cid, label, (discord.ChannelType.forum,))
+            ch = await channel(cid, label, (discord.ChannelType.forum,))
             if ch and not isinstance(ch, discord.ForumChannel):
-                raise ValueError(f'**{label}** must be a forum channel.')
+                problems.append(f'**{label}:** must be a forum channel.')
+                return None
             return ch
 
-        async def optional_role(rid):
+        async def optional_role(rid, label):
             if not rid:
                 return None
-            role = guild.get_role(rid)
+            try:
+                role = guild.get_role(rid) if hasattr(guild, 'get_role') else None
+                if role is None and hasattr(guild, 'fetch_role'):
+                    role = await guild.fetch_role(rid)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+                problems.append(f'**{label}:** the bot cannot use that role ({type(exc).__name__}: {exc}).')
+                return None
+            except Exception as exc:
+                problems.append(f'**{label}:** {type(exc).__name__}: {exc}')
+                return None
             if role is None:
-                role = await guild.fetch_role(rid)
+                problems.append(f'**{label}:** that role no longer exists.')
             return role
 
-        raid_forum = await channel(draft.raid_forum_id, 'Raid forum', (discord.ChannelType.forum,))
-        if not isinstance(raid_forum, discord.ForumChannel):
-            raise ValueError('Raid forum must be a forum channel.')
-        announcement = await channel(draft.announcement_id, 'Announcement push channel', (discord.ChannelType.text, discord.ChannelType.news))
-        if not isinstance(announcement, discord.TextChannel):
-            raise ValueError('Announcement channel must be a text channel.')
-        panel = await channel(draft.panel_id, 'Event panel channel', (discord.ChannelType.text, discord.ChannelType.news))
-        if not isinstance(panel, discord.TextChannel):
-            raise ValueError('Event panel channel must be a text channel.')
-        voice = await channel(draft.voice_category_id, 'Voice category', (discord.ChannelType.category,))
-        if not isinstance(voice, discord.CategoryChannel):
-            raise ValueError('Voice category must be a category.')
+        raid_forum = await channel(draft.raid_forum_id, 'Raid forum', (discord.ChannelType.forum,), required=True)
+        if raid_forum is not None and not isinstance(raid_forum, discord.ForumChannel):
+            problems.append('**Raid forum (required):** must be a forum channel.')
+            raid_forum = None
+        announcement = await channel(draft.announcement_id, 'Announcement push', (discord.ChannelType.text, discord.ChannelType.news), required=True)
+        if announcement is not None and not isinstance(announcement, discord.TextChannel):
+            problems.append('**Announcement push (required):** must be a text channel.')
+            announcement = None
+        panel = await channel(draft.panel_id, 'Event panels', (discord.ChannelType.text, discord.ChannelType.news), required=True)
+        if panel is not None and not isinstance(panel, discord.TextChannel):
+            problems.append('**Event panels (required):** must be a text channel.')
+            panel = None
+        voice = await channel(draft.voice_category_id, 'Voice category', (discord.ChannelType.category,), required=True)
+        if voice is not None and not isinstance(voice, discord.CategoryChannel):
+            problems.append('**Voice category (required):** must be a category.')
+            voice = None
 
-        calendar = await optional_channel(draft.calendar_id, 'Calendar channel', (discord.ChannelType.text, discord.ChannelType.news)) if draft.calendar_id else None
-        if calendar and not isinstance(calendar, discord.TextChannel):
-            raise ValueError('Calendar channel must be a text channel.')
-        rss = await optional_channel(draft.rss_id, 'RSS channel', (discord.ChannelType.text, discord.ChannelType.news)) if draft.rss_id else None
-        if rss and not isinstance(rss, discord.TextChannel):
-            raise ValueError('RSS channel must be a text channel.')
+        calendar = await channel(draft.calendar_id, 'Calendar channel', (discord.ChannelType.text, discord.ChannelType.news))
+        if calendar is not None and not isinstance(calendar, discord.TextChannel):
+            problems.append('**Calendar channel:** must be a text channel.')
+            calendar = None
+        rss = await channel(draft.rss_id, 'RSS channel', (discord.ChannelType.text, discord.ChannelType.news))
+        if rss is not None and not isinstance(rss, discord.TextChannel):
+            problems.append('**RSS channel:** must be a text channel.')
+            rss = None
+        instance_forum = await optional_forum(draft.instance_forum_id, 'Instance forum')
+        t1_forum = await optional_forum(draft.t1_forum_id, 'T1 forum')
+        t2_forum = await optional_forum(draft.t2_forum_id, 'T2 forum')
+        t3_forum = await optional_forum(draft.t3_forum_id, 'T3 forum')
+        t4_forum = await optional_forum(draft.t4_forum_id, 'T4 forum')
+        t5_forum = await optional_forum(draft.t5_forum_id, 'T5 forum')
+        leader_role = await optional_role(draft.leader_role_id, 'Raid leader role')
+        kin_role = await optional_role(draft.kin_role_id, 'Kinship role')
+        if problems:
+            raise ValueError('\n'.join(problems))
 
         return dict(
             raid_forum=raid_forum,
             announcement_channel=announcement,
             panel_channel=panel,
             voice_category=voice,
-            instance_forum=await optional_forum(draft.instance_forum_id, 'Instance forum'),
-            t1_forum=await optional_forum(draft.t1_forum_id, 'T1 forum'),
-            t2_forum=await optional_forum(draft.t2_forum_id, 'T2 forum'),
-            t3_forum=await optional_forum(draft.t3_forum_id, 'T3 forum'),
-            t4_forum=await optional_forum(draft.t4_forum_id, 'T4 forum'),
-            t5_forum=await optional_forum(draft.t5_forum_id, 'T5 forum'),
-            leader_role=await optional_role(draft.leader_role_id),
-            kin_role=await optional_role(draft.kin_role_id),
+            instance_forum=instance_forum,
+            t1_forum=t1_forum,
+            t2_forum=t2_forum,
+            t3_forum=t3_forum,
+            t4_forum=t4_forum,
+            t5_forum=t5_forum,
+            leader_role=leader_role,
+            kin_role=kin_role,
             kin_icon=draft.kin_icon.strip() or None,
             calendar_channel=calendar,
             discord_events=draft.discord_events,
@@ -1363,6 +1572,7 @@ class EventsCog(commands.Cog):
             duration_minutes=draft.duration_minutes,
             lock_delay_minutes=draft.lock_delay_minutes,
             description_template=draft.description_template,
+            watch_sync=bool(draft.watch_sync),
         )
 
     async def report_create_failure(self, interaction, exc, kind='event'):
@@ -1456,6 +1666,29 @@ class EventsCog(commands.Cog):
         )
         return embed
 
+    def setup_failure_embed(self, errors, checks=None, warnings=None) -> discord.Embed:
+        """A smoke-test failure that always names the problems, and stays within Discord's size limit."""
+        def clip(lines, limit):
+            text = '\n'.join(f'• {line}' for line in lines if line)
+            if len(text) <= limit:
+                return text
+            kept = text[:limit].rsplit('\n', 1)[0]
+            return kept + '\n• …truncated. Fix the lines above and run it again.'
+
+        problems = [line for line in (errors or []) if line] or [
+            'The smoke test failed without a recorded reason. Run it again and, if this repeats, check the bot log.',
+        ]
+        embed = discord.Embed(
+            title='Setup Smoke Test Failed — Missing Permissions or Invalid Settings',
+            colour=discord.Colour(0xe74c3c),
+            description='These are the problems:\n\n' + clip(problems, 3500),
+        )
+        if checks:
+            embed.add_field(name='Passed Checks', value=clip(checks, 1000) or '—', inline=False)
+        if warnings:
+            embed.add_field(name='Notes', value=clip(warnings, 1000) or '—', inline=False)
+        return embed
+
     async def smoke_test_and_apply_setup(
         self,
         interaction: discord.Interaction,
@@ -1482,16 +1715,21 @@ class EventsCog(commands.Cog):
         duration_minutes: int = 180,
         lock_delay_minutes: int = 60,
         description_template: str | None = None,
+        watch_sync: bool = True,
         *,
         apply: bool = True,
         unresolved: dict | None = None,
     ) -> tuple[bool, discord.Embed]:
         guild = interaction.guild
-        me = guild.me
         unresolved = unresolved or {}
         errors = []
         warnings = []
         checks = []
+        try:
+            me = guild.me
+        except Exception as exc:
+            me = None
+            errors.append(f'**Bot member:** could not be read ({type(exc).__name__}: {exc}).')
 
         def take_unresolved(label):
             note = unresolved.get(label)
@@ -1500,32 +1738,43 @@ class EventsCog(commands.Cog):
             errors.append(note)
             return True
 
-        def check_forum(forum_obj, label):
-            if not isinstance(forum_obj, discord.ForumChannel) or forum_obj.guild.id != guild.id:
-                errors.append(f"**{label}:** Must be a Forum Channel in this server.")
+        def check_forum(forum_obj, label, required=False):
+            if forum_obj is None:
+                if required:
+                    errors.append(f'**{label} (required):** not set.')
                 return False
-            f_perms = forum_obj.permissions_for(me)
-            missing = self._missing_perms(f_perms, [
-                ('view_channel', 'View Channel'),
-                ('send_messages', 'Send Messages (Create Posts)'),
-                ('send_messages_in_threads', 'Send Messages in Posts'),
-                ('embed_links', 'Embed Links'),
-                ('read_message_history', 'Read Post History'),
-                ('manage_threads', 'Manage Posts'),
-            ])
-            if missing:
-                errors.append(f"**{label} ({forum_obj.mention}):** Bot is missing: {', '.join(missing)}.")
-            if forum_obj.flags.require_tag:
-                errors.append(f"**{label} ({forum_obj.mention}):** Disable *'Require people to select tags when posting'* in channel settings.")
-            if not missing and not forum_obj.flags.require_tag:
-                checks.append(f"**{label}:** {forum_obj.mention} (permissions & tag settings verified)")
-                return True
-            return False
+            try:
+                if not isinstance(forum_obj, discord.ForumChannel) or forum_obj.guild.id != guild.id:
+                    errors.append(f"**{label}:** Must be a Forum Channel in this server.")
+                    return False
+                if me is None:
+                    errors.append(f"**{label} ({forum_obj.mention}):** could not check permissions because the bot member is not available in this server.")
+                    return False
+                f_perms = forum_obj.permissions_for(me)
+                missing = self._missing_perms(f_perms, [
+                    ('view_channel', 'View Channel'),
+                    ('send_messages', 'Send Messages (Create Posts)'),
+                    ('send_messages_in_threads', 'Send Messages in Posts'),
+                    ('embed_links', 'Embed Links'),
+                    ('read_message_history', 'Read Post History'),
+                    ('manage_threads', 'Manage Posts'),
+                ])
+                if missing:
+                    errors.append(f"**{label} ({forum_obj.mention}):** Bot is missing: {', '.join(missing)}.")
+                if forum_obj.flags.require_tag:
+                    errors.append(f"**{label} ({forum_obj.mention}):** Disable *'Require people to select tags when posting'* in channel settings.")
+                if not missing and not forum_obj.flags.require_tag:
+                    checks.append(f"**{label}:** {forum_obj.mention} (permissions & tag settings verified)")
+                    return True
+                return False
+            except Exception as exc:
+                errors.append(f"**{label}:** {type(exc).__name__}: {exc}")
+                return False
 
         # 1. Default raid forum, then any optional instance or tier forums.
         # Routing is implied: matching tier forum, else instance forum for ≤6-player events, else raid forum.
         if not take_unresolved('Raid Forum'):
-            if check_forum(raid_forum, 'Raid Forum'):
+            if check_forum(raid_forum, 'Raid Forum', required=True):
                 f_perms = raid_forum.permissions_for(me)
                 if voice_category and not getattr(f_perms, 'create_instant_invite', False) and not server_invite_url:
                     warnings.append(f"**Raid Forum ({raid_forum.mention}):** Bot lacks `Create Invite` and no `server_invite_url` was provided; mirrored servers will not see a voice invite link until one is granted.")
@@ -1546,56 +1795,63 @@ class EventsCog(commands.Cog):
             if f_obj is not None:
                 check_forum(f_obj, label)
 
+        def check_text(channel, label, perms, success):
+            if take_unresolved(label):
+                return
+            if channel is None:
+                errors.append(f'**{label} (required):** not set.')
+                return
+            try:
+                if not isinstance(channel, discord.TextChannel) or channel.guild.id != guild.id:
+                    errors.append(f'**{label}:** Must be a Text or Announcement Channel in this server.')
+                    return
+                if me is None:
+                    errors.append(f'**{label} ({channel.mention}):** could not check permissions because the bot member is not available in this server.')
+                    return
+                missing = self._missing_perms(channel.permissions_for(me), perms)
+                if missing:
+                    errors.append(f"**{label} ({channel.mention}):** Bot is missing: {', '.join(missing)}.")
+                else:
+                    checks.append(success(channel))
+            except Exception as exc:
+                errors.append(f"**{label}:** {type(exc).__name__}: {exc}")
+
         # 2. Mandatory: Announcement (Outgoing Discovery Push) Channel
-        if take_unresolved('Announcement Channel'):
-            pass
-        elif not isinstance(announcement_channel, discord.TextChannel) or announcement_channel.guild.id != guild.id:
-            errors.append('**Announcement Channel:** Must be a Text or Announcement Channel in this server.')
-        else:
-            a_perms = announcement_channel.permissions_for(me)
-            missing = self._missing_perms(a_perms, [
-                ('view_channel', 'View Channel'),
-                ('send_messages', 'Send Messages'),
-                ('read_message_history', 'Read Message History'),
-            ])
-            if missing:
-                errors.append(f"**Announcement Push Channel ({announcement_channel.mention}):** Bot is missing: {', '.join(missing)}.")
-            else:
-                checks.append(f"**Announcement Push Channel:** {announcement_channel.mention} (permissions verified)")
+        check_text(
+            announcement_channel, 'Announcement Channel',
+            [('view_channel', 'View Channel'), ('send_messages', 'Send Messages'), ('read_message_history', 'Read Message History')],
+            lambda channel: f"**Announcement Push Channel:** {channel.mention} (permissions verified)",
+        )
 
         # 3. Mandatory: Event Panel Channel
-        if take_unresolved('Event Panel Channel'):
-            pass
-        elif not isinstance(panel_channel, discord.TextChannel) or panel_channel.guild.id != guild.id:
-            errors.append('**Event Panel Channel:** Must be a Text Channel in this server.')
-        else:
-            p_perms = panel_channel.permissions_for(me)
-            missing = self._missing_perms(p_perms, [
-                ('view_channel', 'View Channel'),
-                ('send_messages', 'Send Messages'),
-                ('embed_links', 'Embed Links'),
-                ('read_message_history', 'Read Message History'),
-            ])
-            if missing:
-                errors.append(f"**Event Panel Channel ({panel_channel.mention}):** Bot is missing: {', '.join(missing)}.")
-            else:
-                checks.append(f"**Event Panel Channel:** {panel_channel.mention} ({len(PRESETS)} cluster panels in release order)")
+        check_text(
+            panel_channel, 'Event Panel Channel',
+            [('view_channel', 'View Channel'), ('send_messages', 'Send Messages'), ('embed_links', 'Embed Links'), ('read_message_history', 'Read Message History')],
+            lambda channel: f"**Event Panel Channel:** {channel.mention} ({len(PRESETS)} cluster panels in release order)",
+        )
 
         # 4. Mandatory: Voice Category
         if take_unresolved('Voice Category'):
             pass
-        elif not isinstance(voice_category, discord.CategoryChannel) or voice_category.guild.id != guild.id:
-            errors.append('**Voice Category:** Must be a Category in this server.')
+        elif voice_category is None:
+            errors.append('**Voice Category (required):** not set.')
         else:
-            v_perms = voice_category.permissions_for(me)
-            missing = self._missing_perms(v_perms, [
-                ('view_channel', 'View Channel'),
-                ('manage_channels', 'Manage Channels'),
-            ])
-            if missing:
-                errors.append(f"**Voice Category ({voice_category.name}):** Bot is missing: {', '.join(missing)}.")
-            else:
-                checks.append(f"**Voice Category:** {voice_category.name} (permissions verified)")
+            try:
+                if not isinstance(voice_category, discord.CategoryChannel) or voice_category.guild.id != guild.id:
+                    errors.append('**Voice Category:** Must be a Category in this server.')
+                elif me is None:
+                    errors.append(f'**Voice Category ({voice_category.name}):** could not check permissions because the bot member is not available in this server.')
+                else:
+                    missing = self._missing_perms(voice_category.permissions_for(me), [
+                        ('view_channel', 'View Channel'),
+                        ('manage_channels', 'Manage Channels'),
+                    ])
+                    if missing:
+                        errors.append(f"**Voice Category ({voice_category.name}):** Bot is missing: {', '.join(missing)}.")
+                    else:
+                        checks.append(f"**Voice Category:** {voice_category.name} (permissions verified)")
+            except Exception as exc:
+                errors.append(f"**Voice Category:** {type(exc).__name__}: {exc}")
 
         # 5. Optional: Watch (Incoming Discovery Pull) Channels.
         # Passing none leaves the saved list alone. Passing channels adds them.
@@ -1612,7 +1868,10 @@ class EventsCog(commands.Cog):
             if channel is None or getattr(channel, 'id', None) in seen_watches:
                 continue
             seen_watches.add(channel.id)
-            problem = self.watch_channel_problem(guild, channel)
+            try:
+                problem = self.watch_channel_problem(guild, channel)
+            except Exception as exc:
+                problem = f"**Event Watch Channel:** {type(exc).__name__}: {exc}"
             if problem:
                 errors.append(problem)
             else:
@@ -1639,43 +1898,57 @@ class EventsCog(commands.Cog):
         if take_unresolved('Calendar Channel'):
             pass
         elif calendar_channel is not None:
-            if not isinstance(calendar_channel, discord.TextChannel) or calendar_channel.guild.id != guild.id:
-                errors.append('**Calendar Channel:** Must be a Text Channel in this server.')
-            else:
-                c_perms = calendar_channel.permissions_for(me)
-                missing = self._missing_perms(c_perms, [
-                    ('view_channel', 'View Channel'),
-                    ('send_messages', 'Send Messages'),
-                    ('embed_links', 'Embed Links'),
-                ])
-                if missing:
-                    errors.append(f"**Calendar Channel ({calendar_channel.mention}):** Bot is missing: {', '.join(missing)}.")
+            try:
+                if not isinstance(calendar_channel, discord.TextChannel) or calendar_channel.guild.id != guild.id:
+                    errors.append('**Calendar Channel:** Must be a Text Channel in this server.')
+                elif me is None:
+                    errors.append(f'**Calendar Channel ({calendar_channel.mention}):** could not check permissions because the bot member is not available in this server.')
                 else:
-                    checks.append(f"**Calendar Channel:** {calendar_channel.mention} (permissions verified)")
+                    missing = self._missing_perms(calendar_channel.permissions_for(me), [
+                        ('view_channel', 'View Channel'),
+                        ('send_messages', 'Send Messages'),
+                        ('embed_links', 'Embed Links'),
+                    ])
+                    if missing:
+                        errors.append(f"**Calendar Channel ({calendar_channel.mention}):** Bot is missing: {', '.join(missing)}.")
+                    else:
+                        checks.append(f"**Calendar Channel:** {calendar_channel.mention} (permissions verified)")
+            except Exception as exc:
+                errors.append(f"**Calendar Channel:** {type(exc).__name__}: {exc}")
         if discord_events:
-            if not getattr(me.guild_permissions, 'manage_events', False):
-                errors.append('**Calendar Event (`discord_events=True`):** Bot is missing the server-wide `Manage Events` permission.')
+            try:
+                allowed = me is not None and getattr(me.guild_permissions, 'manage_events', False)
+            except Exception as exc:
+                allowed = False
+                errors.append(f'**Calendar Event:** {type(exc).__name__}: {exc}')
             else:
-                checks.append('**Calendar Event:** Enabled (`Manage Events` verified)'
-                              + ('' if calendar_channel is not None else '; set a calendar channel for it to appear'))
+                if not allowed:
+                    errors.append('**Calendar Event (`discord_events=True`):** Bot is missing the server-wide `Manage Events` permission.')
+                else:
+                    checks.append('**Calendar Event:** Enabled (`Manage Events` verified)'
+                                  + ('' if calendar_channel is not None else '; set a calendar channel for it to appear'))
 
         # 8. Optional: RSS Channel
         if take_unresolved('RSS Channel'):
             pass
         elif rss_channel is not None:
-            if not isinstance(rss_channel, discord.TextChannel) or rss_channel.guild.id != guild.id:
-                errors.append('**RSS Channel:** Must be a Text Channel in this server.')
-            else:
-                r_perms = rss_channel.permissions_for(me)
-                missing = self._missing_perms(r_perms, [
-                    ('view_channel', 'View Channel'),
-                    ('send_messages', 'Send Messages'),
-                    ('embed_links', 'Embed Links'),
-                ])
-                if missing:
-                    errors.append(f"**RSS Channel ({rss_channel.mention}):** Bot is missing: {', '.join(missing)}.")
+            try:
+                if not isinstance(rss_channel, discord.TextChannel) or rss_channel.guild.id != guild.id:
+                    errors.append('**RSS Channel:** Must be a Text Channel in this server.')
+                elif me is None:
+                    errors.append(f'**RSS Channel ({rss_channel.mention}):** could not check permissions because the bot member is not available in this server.')
                 else:
-                    checks.append(f"**RSS Channel:** {rss_channel.mention} (permissions verified)")
+                    missing = self._missing_perms(rss_channel.permissions_for(me), [
+                        ('view_channel', 'View Channel'),
+                        ('send_messages', 'Send Messages'),
+                        ('embed_links', 'Embed Links'),
+                    ])
+                    if missing:
+                        errors.append(f"**RSS Channel ({rss_channel.mention}):** Bot is missing: {', '.join(missing)}.")
+                    else:
+                        checks.append(f"**RSS Channel:** {rss_channel.mention} (permissions verified)")
+            except Exception as exc:
+                errors.append(f"**RSS Channel:** {type(exc).__name__}: {exc}")
 
         # 9. Optional: Server Timezone
         resolved_tz = None
@@ -1700,19 +1973,7 @@ class EventsCog(commands.Cog):
                 errors.append('**Server Invite URL:** Could not verify that invite link. Use a valid, non-expiring Discord invite to this server.')
 
         if errors:
-            embed = discord.Embed(
-                title='Setup Smoke Test Failed — Missing Permissions or Invalid Settings',
-                colour=discord.Colour(0xe74c3c),
-                description=(
-                    "Fix the following items in Discord and run `/setup` or `/settings` again:\n\n"
-                    + '\n'.join(f"• {e}" for e in errors)
-                ),
-            )
-            if checks:
-                embed.add_field(name='Passed Checks', value='\n'.join(f"• {c}" for c in checks)[:1024], inline=False)
-            if warnings:
-                embed.add_field(name='Notes', value='\n'.join(f"• {w}" for w in warnings)[:1024], inline=False)
-            return False, embed
+            return False, self.setup_failure_embed(errors, checks, warnings)
 
         if not apply:
             embed = discord.Embed(
@@ -1737,8 +1998,18 @@ class EventsCog(commands.Cog):
             t3_forum_id=t3_forum.id if t3_forum else 0,
             t4_forum_id=t4_forum.id if t4_forum else 0,
             t5_forum_id=t5_forum.id if t5_forum else 0,
+            watch_sync=watch_sync,
         )
         self.store.write('INSERT OR REPLACE INTO NetworkSettings VALUES (?,?)', (guild.id, announcement_channel.id))
+        if watch_sync:
+            checks.append('**Watch sync:** on. Watched mirrorkey codes create raid posts.')
+            created, failed = await self.materialize_watch_calendar(guild.id)
+            if created:
+                checks.append(f'**Watch sync:** created {created} raid post(s) that were listed on the calendar only.')
+            for item in failed:
+                warnings.append(f'**Watch sync:** could not create a raid post: {item}')
+        else:
+            checks.append('**Watch sync:** off. Watched events stay on the calendar and do not create raid posts.')
 
         for channel in validated:
             if await self.store_watch(guild, channel):
@@ -2086,9 +2357,8 @@ class TroubleshootView(discord.ui.View):
         await interaction.response.defer(ephemeral=True)
         try:
             embed = await self.cog.troubleshoot_saved_setup(interaction.guild)
-        except discord.HTTPException as exc:
-            await interaction.followup.send(f'Could not run troubleshooting: {exc}', ephemeral=True)
-            return
+        except Exception as exc:
+            embed = self.cog.setup_failure_embed([f'**Troubleshooting stopped:** {type(exc).__name__}: {exc}'])
         await interaction.followup.send(embed=embed, ephemeral=True)
 
 

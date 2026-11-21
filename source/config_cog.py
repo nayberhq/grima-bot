@@ -117,7 +117,7 @@ class ConfigCog(commands.Cog):
                     "Events use the first forum that applies: a matching tier forum (`t1_forum`–`t5_forum`), then `instance_forum` for ≤6-player events, then `raid_forum`. A T3 instance uses `t3_forum` when that is set; a T2 instance uses `instance_forum` when T2 has no forum; a T2 raid uses `raid_forum` unless `t2_forum` is set.\n\n"
                     "**Step C — Run `/setup` or `/settings` (Includes Permission Smoke Test)**\n"
                     "• **`/setup`** — one-shot configuration with slash parameters (`raid_forum`, `announcement_channel`, `panel_channel`, `voice_category`, optional instance and tier forums, `watch_channel`, roles, calendar/RSS, timings, optional `description_message_link`).\n"
-                    "• **`/settings`** — paged editor prefilled from saved configuration; the last page sets the event description template from a message link (with placeholder tag examples); use **Save** when finished. Watch channels are changed with `/watch`, not this editor.\n"
+                    "• **`/settings`** — page 1 is the `(required)` channels. **Save** appears after those are set; later pages are optional. The last page sets the description template. Use `/watch` for watch channels and **Watch sync** for calendar-only mode.\n"
                     "• If any permission or channel flag is missing, the command halts with an exact checklist of what to fix.\n"
                     "• On first setup (or when the panel channel changes), Gríma posts all **8 LOTRO Cluster Panels** (with LOTRO Wiki artwork) in chronological release order and keeps them sticky at the bottom of the panel channel. Re-running with the same panel channel leaves existing panels in place."
                 ),
@@ -137,7 +137,7 @@ class ConfigCog(commands.Cog):
                     "**Incoming Pull Channels (`/watch`, or `watch_channel` in `/setup`)**\n"
                     "1. Create one or more local channels (e.g. `#raid-network-pull`) that **Follow** your partner servers' Announcement push channels. Gríma can watch as many as you add.\n"
                     "2. Ensure **grima-bot** has `View Channel` + `Read Message History` in each channel.\n"
-                    "3. Run `/watch`. The add menu takes up to 25 channels at a time; run it again to add more. The remove menu lists current channels, 25 per page, and **Remove all** clears the list. `/setup`'s optional `watch_channel` adds one channel and leaves every other watched channel in place.\n"
+                    "3. Run `/watch` to add (25 at a time) or remove channels. `watch_channel` in `/setup` adds one and keeps the rest. **Watch sync** in `/settings` creates raid posts, or lists them on the calendar only.\n"
                     "4. Use `/network-status` (`retry:True`) to inspect or retry any failed event discoveries.\n\n"
                     "**Manual Sync & Cross-Server Broadcasts**\n"
                     "• **Manual Share/Pull:** Run `/event-share` inside an event post to get its code (`revoke:True` to disable new mirrors); partner raid leaders run `/event-sync code:<code>`.\n"

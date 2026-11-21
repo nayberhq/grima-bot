@@ -103,25 +103,37 @@ class CalendarCog(commands.Cog):
     def _calendar_raids(self, guild_id):
         conn = self.bot.conn
         poll_kind = self._open_poll_kind()
-        return conn.execute(f'''SELECT r.channel_id,r.raid_id,r.name,r.tier,r.time,r.guild_id,{poll_kind} FROM Raids r
+        return conn.execute(f'''SELECT r.channel_id,r.raid_id,r.name,r.tier,r.time,r.guild_id,{poll_kind},r.guild_id FROM Raids r
             LEFT JOIN SharedEvents e USING (raid_id) WHERE r.guild_id=?
             AND (e.raid_id IS NULL OR (e.cancelled=0 AND r.time+e.duration>CAST(strftime('%s','now') AS INTEGER)))
             AND NOT EXISTS (SELECT 1 FROM EventPolls tp WHERE tp.raid_id=r.raid_id AND tp.kind='time' AND tp.resolved=0)
-            UNION ALL SELECT c.thread_id,c.message_id,r.name,r.tier,r.time,r.guild_id,{poll_kind}
+            UNION ALL SELECT c.thread_id,c.message_id,r.name,r.tier,r.time,r.guild_id,{poll_kind},c.guild_id
             FROM EventCopies c JOIN Raids r USING (raid_id) JOIN SharedEvents e USING (raid_id)
             WHERE c.guild_id=? AND r.guild_id!=? AND e.cancelled=0
             AND r.time+e.duration>CAST(strftime('%s','now') AS INTEGER)
             AND NOT EXISTS (SELECT 1 FROM EventPolls tp WHERE tp.raid_id=r.raid_id AND tp.kind='time' AND tp.resolved=0)
-            ORDER BY 5''', (guild_id, guild_id, guild_id)).fetchall()
+            UNION ALL SELECT r.channel_id,r.raid_id,r.name,r.tier,r.time,r.guild_id,{poll_kind},r.guild_id
+            FROM WatchCalendar w JOIN Raids r USING (raid_id) JOIN SharedEvents e USING (raid_id)
+            WHERE w.guild_id=? AND r.guild_id!=? AND e.cancelled=0
+            AND r.time+e.duration>CAST(strftime('%s','now') AS INTEGER)
+            AND NOT EXISTS (SELECT 1 FROM EventCopies c WHERE c.raid_id=r.raid_id AND c.guild_id=w.guild_id)
+            AND NOT EXISTS (SELECT 1 FROM EventPolls tp WHERE tp.raid_id=r.raid_id AND tp.kind='time' AND tp.resolved=0)
+            ORDER BY 5''', (guild_id, guild_id, guild_id, guild_id, guild_id)).fetchall()
 
     def _calendar_polls(self, guild_id):
         """Open polls posted on this server, including mirrors of a poll that already has copies."""
-        return self.bot.conn.execute('''SELECT c.thread_id,c.message_id,r.name,r.tier,r.time,r.guild_id,p.kind
+        return self.bot.conn.execute('''SELECT c.thread_id,c.message_id,r.name,r.tier,r.time,r.guild_id,p.kind,c.guild_id
             FROM EventCopies c JOIN Raids r USING (raid_id) JOIN SharedEvents e USING (raid_id)
             JOIN EventPolls p ON p.raid_id=r.raid_id AND p.resolved=0
             WHERE c.guild_id=? AND c.locked=0 AND e.cancelled=0
             AND (p.kind='time' OR r.time+e.duration>CAST(strftime('%s','now') AS INTEGER))
-            ORDER BY r.time''', (guild_id,)).fetchall()
+            UNION ALL SELECT r.channel_id,r.raid_id,r.name,r.tier,r.time,r.guild_id,p.kind,r.guild_id
+            FROM WatchCalendar w JOIN Raids r USING (raid_id) JOIN SharedEvents e USING (raid_id)
+            JOIN EventPolls p ON p.raid_id=r.raid_id AND p.resolved=0
+            WHERE w.guild_id=? AND e.cancelled=0
+            AND NOT EXISTS (SELECT 1 FROM EventCopies c WHERE c.raid_id=r.raid_id AND c.guild_id=w.guild_id)
+            AND (p.kind='time' OR r.time+e.duration>CAST(strftime('%s','now') AS INTEGER))
+            ORDER BY 5''', (guild_id, guild_id)).fetchall()
 
     def calendar_server_links_embed(self, guild_id, raids, extra=()):
         shown = list(raids[:20]) + list(extra)
@@ -174,7 +186,8 @@ class CalendarCog(commands.Cog):
         label = f"{raid[2]} {raid[3]}" if raid[3] else raid[2]
         if len(raid) > 6 and raid[6]:
             label = f"{label} (poll)"
-        link = f"https://discord.com/channels/{guild_id}/{raid[0]}/{raid[1]}"
+        link_guild = raid[7] if len(raid) > 7 and raid[7] else guild_id
+        link = f"https://discord.com/channels/{link_guild}/{raid[0]}/{raid[1]}"
         return f"<t:{int(raid[4])}:f> · {prefix}[{label}](<{link}>)"
 
     def _poll_line(self, guild_id, poll, store):
@@ -186,7 +199,8 @@ class CalendarCog(commands.Cog):
             badge = store.guild_badge(source_guild_id, fallback_name=fallback_name)
             prefix = f"{badge} " if badge else ""
             label = f"{poll[2]} {poll[3]}" if poll[3] else poll[2]
-            link = f"https://discord.com/channels/{guild_id}/{poll[0]}/{poll[1]}"
+            link_guild = poll[7] if len(poll) > 7 and poll[7] else guild_id
+            link = f"https://discord.com/channels/{link_guild}/{poll[0]}/{poll[1]}"
             return f"{prefix}[{label} (time poll)](<{link}>)"
         return line
 
@@ -262,8 +276,9 @@ class CalendarCog(commands.Cog):
             label = f"{raid[2]} {raid[3]}" if raid[3] else raid[2]
             if len(raid) > 6 and raid[6]:
                 label = f"{label} (poll)"
+            link_guild = raid[7] if len(raid) > 7 and raid[7] else guild_id
             lines.append(f"<t:{start}:f> (<t:{start}:R>) · {label}\n"
-                         f"https://discord.com/channels/{guild_id}/{raid[0]}/{raid[1]}")
+                         f"https://discord.com/channels/{link_guild}/{raid[0]}/{raid[1]}")
         header = "Next runs:" if lines else "No upcoming runs yet."
         while lines and len("\n\n".join([header, *lines, footer])) > self.EVENT_DESCRIPTION_LIMIT:
             lines.pop()

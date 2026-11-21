@@ -77,7 +77,7 @@ class NetworkCog(commands.Cog):
                                 ev = self.store.by_token(code)
                                 if ev:
                                     await self.events.ensure_origin_emoji(ev['guild_id'], kin_name, emoji_str, icon_url)
-                            try:await self.events.sync_event(pending['guild_id'],code)
+                            try:await self.events.deliver_watched_code(pending['guild_id'],code,message)
                             except InvalidShare:pass
                             except (ValueError,discord.HTTPException) as exc:
                                 self.store.write('INSERT OR REPLACE INTO WatchFailures VALUES (?,?,?,?,?)',(*args,code,str(exc)))
@@ -86,7 +86,7 @@ class NetworkCog(commands.Cog):
                 self.store.write('DELETE FROM PendingPublications WHERE guild_id=? AND source_id=? AND message_id=?',args)
             for row in self.store.rows('SELECT * FROM WatchFailures'):
                 try:
-                    await self.events.sync_event(row['guild_id'],row['code'])
+                    await self.events.deliver_watched_code(row['guild_id'],row['code'])
                 except InvalidShare:
                     pass
                 except (ValueError,discord.HTTPException) as exc:

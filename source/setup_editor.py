@@ -25,7 +25,7 @@ class SetupDraft:
         'raid_forum_id', 'announcement_id', 'panel_id', 'voice_category_id',
         'instance_forum_id', 't1_forum_id', 't2_forum_id', 't3_forum_id',
         't4_forum_id', 't5_forum_id', 'leader_role_id', 'kin_role_id',
-        'calendar_id', 'rss_id', 'discord_events', 'kin_icon', 'server_timezone',
+        'calendar_id', 'rss_id', 'discord_events', 'watch_sync', 'kin_icon', 'server_timezone',
         'server_invite_url', 'duration_minutes', 'lock_delay_minutes',
         'description_template_preview', 'description_template',
     )
@@ -46,6 +46,7 @@ class SetupDraft:
         self.calendar_id = 0
         self.rss_id = 0
         self.discord_events = False
+        self.watch_sync = True
         self.kin_icon = ''
         self.server_timezone = ''
         self.server_invite_url = ''
@@ -69,6 +70,8 @@ def load_setup_draft(store, conn, guild_id) -> SetupDraft:
         draft.t5_forum_id = ev.get('t5_forum_id') or 0
         draft.duration_minutes = max(15, (ev.get('duration') or 10800) // 60)
         draft.lock_delay_minutes = max(0, (ev.get('lock_delay') or 3600) // 60)
+        if ev.get('watch_sync') is not None:
+            draft.watch_sync = bool(ev['watch_sync'])
     net = store.one('SELECT push_id FROM NetworkSettings WHERE guild_id=?', (guild_id,))
     if net and net.get('push_id'):
         draft.announcement_id = net['push_id']
@@ -128,10 +131,22 @@ class SetupTextModal(discord.ui.Modal, title='Setup text options'):
         except ValueError:
             await interaction.response.send_message('Duration and lock delay must be numbers.', ephemeral=True)
             return
-        await interaction.response.edit_message(
-            embed=self.editor.embed(),
-            view=self.editor,
-        )
+        try:
+            errors, states = await self.editor.cog.probe_text_settings(
+                interaction.guild,
+                self.editor.draft.server_timezone,
+                self.editor.draft.kin_icon,
+                self.editor.draft.server_invite_url,
+                self.editor.draft.duration_minutes,
+                self.editor.draft.lock_delay_minutes,
+            )
+        except Exception as exc:
+            errors, states = [f'**Text fields:** {type(exc).__name__}: {exc}'], {}
+        self.editor.probes.update(states)
+        self.editor.reload()
+        await interaction.response.edit_message(embed=self.editor.embed(), view=self.editor)
+        if errors:
+            await interaction.followup.send('\n'.join(errors), ephemeral=True)
 
 
 class SetupDescriptionTemplateModal(discord.ui.Modal, title='Event description template'):
@@ -154,6 +169,8 @@ class SetupDescriptionTemplateModal(discord.ui.Modal, title='Event description t
             return
         self.editor.draft.description_template = body
         self.editor.draft.description_template_preview = body
+        self.editor.probes['description_template'] = 'ok'
+        self.editor.reload()
         await interaction.response.edit_message(
             embed=self.editor.embed(),
             view=self.editor,
@@ -161,13 +178,25 @@ class SetupDescriptionTemplateModal(discord.ui.Modal, title='Event description t
 
 
 class SetupEditorView(discord.ui.View):
-    PAGE_TITLES = (
-        'Core channels',
-        'Forum routing (1/2)',
-        'Forum routing (2/2)',
-        'Roles & feeds',
-        'Flags & text',
+    REQUIRED = (
+        ('raid_forum_id', 'Raid forum'),
+        ('announcement_id', 'Announcement push'),
+        ('panel_id', 'Event panels'),
+        ('voice_category_id', 'Voice category'),
     )
+    PAGE_TITLES = (
+        'Required channels',
+        'Optional forums (1/2)',
+        'Optional forums (2/2)',
+        'Optional roles & feeds',
+        'Optional flags & text',
+    )
+
+    def missing_required(self):
+        return [label for field, label in self.REQUIRED if not getattr(self.draft, field)]
+
+    def required_ready(self):
+        return not self.missing_required()
 
     def __init__(self, cog, user_id: int, draft: SetupDraft, guild_id: int | None = None):
         super().__init__(timeout=900)
@@ -176,6 +205,7 @@ class SetupEditorView(discord.ui.View):
         self.guild_id = guild_id
         self.draft = draft
         self.page = 0
+        self.probes = {}
         self.reload()
 
     def embed(self) -> discord.Embed:
@@ -184,14 +214,22 @@ class SetupEditorView(discord.ui.View):
             f"Timezone: `{d.server_timezone or 'default'}` · Duration: {d.duration_minutes}m · "
             f"Lock: {d.lock_delay_minutes}m · Calendar event: {'on' if d.discord_events else 'off'}"
         )
+        missing = self.missing_required()
+        if missing:
+            gate = '**Save** stays hidden until every required channel is set.\nMissing: ' + ', '.join(missing)
+        else:
+            gate = 'Required channels are set. **Save** checks permissions and writes them. Panels repost only if the panel channel changes.'
         embed = discord.Embed(
             title='Server setup',
             description=(
                 f"**{self.PAGE_TITLES[self.page]}** (page {self.page + 1}/{len(self.PAGE_TITLES)})\n"
-                f"{extra}\n\nChoose values, then **Save** on any page. Panels repost only if the panel channel changes."
+                f"{extra}\nWatch sync: {'create raid posts' if d.watch_sync else 'calendar only'}\n\n{gate}"
             ),
             colour=discord.Colour(0x3498db),
         )
+        checked = self._checked_lines()
+        if checked:
+            embed.add_field(name='Checked', value='\n'.join(checked)[:1024], inline=False)
         if self.page == 2 and self.guild_id:
             rows = self.cog.store.rows(
                 'SELECT source_channel_id FROM EventWatches WHERE guild_id=? ORDER BY source_channel_id',
@@ -225,10 +263,10 @@ class SetupEditorView(discord.ui.View):
     def reload(self):
         self.clear_items()
         if self.page == 0:
-            self._forum_select(0, 'Raid forum', 'raid_forum_id')
-            self._text_select(1, 'Announcement push', 'announcement_id')
-            self._text_select(2, 'Event panels', 'panel_id')
-            self._category_select(3, 'Voice category', 'voice_category_id')
+            self._forum_select(0, 'Raid forum (required)', 'raid_forum_id', refresh=True, kind='raid_forum')
+            self._text_select(1, 'Announcement push (required)', 'announcement_id', refresh=True, kind='announcement')
+            self._text_select(2, 'Event panels (required)', 'panel_id', refresh=True, kind='panel')
+            self._category_select(3, 'Voice category (required)', 'voice_category_id', refresh=True)
         elif self.page == 1:
             self._forum_select(0, 'Instance forum (optional)', 'instance_forum_id', optional=True)
             self._forum_select(1, 'T1 forum (optional)', 't1_forum_id', optional=True)
@@ -237,11 +275,12 @@ class SetupEditorView(discord.ui.View):
         elif self.page == 2:
             self._forum_select(0, 'T4 forum (optional)', 't4_forum_id', optional=True)
             self._forum_select(1, 'T5 forum (optional)', 't5_forum_id', optional=True)
+            self._watch_sync_select(2)
         elif self.page == 3:
             self._role_select(0, 'Raid leader role', 'leader_role_id')
             self._role_select(1, 'Kinship role', 'kin_role_id')
-            self._text_select(2, 'Calendar (optional)', 'calendar_id', optional=True)
-            self._text_select(3, 'RSS (optional)', 'rss_id', optional=True)
+            self._text_select(2, 'Calendar (optional)', 'calendar_id', optional=True, kind='calendar')
+            self._text_select(3, 'RSS (optional)', 'rss_id', optional=True, kind='rss')
         else:
             self._events_select(0)
             self._timezone_select(3)
@@ -259,10 +298,67 @@ class SetupEditorView(discord.ui.View):
     def _set_id(self, field: str, value: str):
         setattr(self.draft, field, int(value) if value and value != '0' else 0)
 
-    def _forum_select(self, row, label, field, optional=False):
+    def _marked(self, field, label):
+        state = self.probes.get(field)
+        if state == 'ok':
+            return f'✅ {label}'[:150]
+        if state == 'bad':
+            return f'⚠️ {label}'[:150]
+        return label
+
+    def _checked_lines(self):
+        names = {
+            'raid_forum_id': 'Raid forum',
+            'announcement_id': 'Announcement push',
+            'panel_id': 'Event panels',
+            'voice_category_id': 'Voice category',
+            'instance_forum_id': 'Instance forum',
+            't1_forum_id': 'T1 forum',
+            't2_forum_id': 'T2 forum',
+            't3_forum_id': 'T3 forum',
+            't4_forum_id': 'T4 forum',
+            't5_forum_id': 'T5 forum',
+            'leader_role_id': 'Raid leader role',
+            'kin_role_id': 'Kinship role',
+            'calendar_id': 'Calendar',
+            'rss_id': 'RSS',
+            'discord_events': 'Calendar event',
+            'server_timezone': 'Server timezone',
+            'watch_sync': 'Watch sync',
+            'kin_icon': 'Kin icon',
+            'server_invite_url': 'Server invite',
+            'description_template': 'Description template',
+        }
+        lines = []
+        for field, label in names.items():
+            state = self.probes.get(field)
+            if state == 'ok':
+                lines.append(f'✅ {label}')
+            elif state == 'bad':
+                lines.append(f'⚠️ {label}')
+        return lines
+
+    async def _apply_channel(self, interaction, field, kind, channel, optional):
+        if channel is None and optional:
+            self._set_id(field, '0')
+            self.probes.pop(field, None)
+            errors, notes = [], []
+        else:
+            self._set_id(field, str(channel.id))
+            try:
+                errors, notes = self.cog.probe_setup_channel(interaction.guild, channel, kind)
+            except Exception as exc:
+                errors, notes = [f'**{field}:** {type(exc).__name__}: {exc}'], []
+            self.probes[field] = 'bad' if errors else 'ok'
+        self.reload()
+        await interaction.response.edit_message(embed=self.embed(), view=self)
+        if errors or notes:
+            await interaction.followup.send('\n'.join(errors + notes), ephemeral=True)
+
+    def _forum_select(self, row, label, field, optional=False, refresh=False, kind='forum'):
         control = discord.ui.ChannelSelect(
             row=row,
-            placeholder=label,
+            placeholder=self._marked(field, label),
             channel_types=[discord.ChannelType.forum],
             min_values=0 if optional else 1,
             max_values=1,
@@ -272,19 +368,19 @@ class SetupEditorView(discord.ui.View):
             control.default_values = [discord.Object(id=current)]
 
         async def chosen(i: discord.Interaction):
-            if control.values:
-                self._set_id(field, str(control.values[0].id))
-            elif optional:
-                self._set_id(field, '0')
-            await i.response.defer()
+            channel = control.values[0] if control.values else None
+            if channel is None and not optional:
+                await i.response.defer()
+                return
+            await self._apply_channel(i, field, kind, channel, optional)
 
         control.callback = chosen
         self.add_item(control)
 
-    def _text_select(self, row, label, field, optional=False):
+    def _text_select(self, row, label, field, optional=False, refresh=False, kind='announcement'):
         control = discord.ui.ChannelSelect(
             row=row,
-            placeholder=label,
+            placeholder=self._marked(field, label),
             channel_types=[discord.ChannelType.text, discord.ChannelType.news],
             min_values=0 if optional else 1,
             max_values=1,
@@ -294,19 +390,19 @@ class SetupEditorView(discord.ui.View):
             control.default_values = [discord.Object(id=current)]
 
         async def chosen(i: discord.Interaction):
-            if control.values:
-                self._set_id(field, str(control.values[0].id))
-            elif optional:
-                self._set_id(field, '0')
-            await i.response.defer()
+            channel = control.values[0] if control.values else None
+            if channel is None and not optional:
+                await i.response.defer()
+                return
+            await self._apply_channel(i, field, kind, channel, optional)
 
         control.callback = chosen
         self.add_item(control)
 
-    def _category_select(self, row, label, field):
+    def _category_select(self, row, label, field, refresh=False):
         control = discord.ui.ChannelSelect(
             row=row,
-            placeholder=label,
+            placeholder=self._marked(field, label),
             channel_types=[discord.ChannelType.category],
             min_values=1,
             max_values=1,
@@ -316,15 +412,40 @@ class SetupEditorView(discord.ui.View):
             control.default_values = [discord.Object(id=current)]
 
         async def chosen(i: discord.Interaction):
-            if control.values:
-                self._set_id(field, str(control.values[0].id))
-            await i.response.defer()
+            channel = control.values[0] if control.values else None
+            await self._apply_channel(i, field, 'voice', channel, optional=False)
+
+        control.callback = chosen
+        self.add_item(control)
+
+    def _watch_sync_select(self, row):
+        options = [
+            discord.SelectOption(
+                label='Create raid posts from watched channels',
+                value='1',
+                default=bool(self.draft.watch_sync),
+            ),
+            discord.SelectOption(
+                label='Calendar only — do not create raid posts',
+                value='0',
+                default=not self.draft.watch_sync,
+            ),
+        ]
+        control = discord.ui.Select(row=row, placeholder=self._marked('watch_sync', 'Watch sync (optional)'), options=options)
+
+        async def chosen(i: discord.Interaction):
+            self.draft.watch_sync = control.values[0] == '1'
+            for option in control.options:
+                option.default = option.value == control.values[0]
+            self.probes['watch_sync'] = 'ok'
+            self.reload()
+            await i.response.edit_message(embed=self.embed(), view=self)
 
         control.callback = chosen
         self.add_item(control)
 
     def _role_select(self, row, label, field):
-        control = discord.ui.RoleSelect(row=row, placeholder=label, min_values=0, max_values=1)
+        control = discord.ui.RoleSelect(row=row, placeholder=self._marked(field, label), min_values=0, max_values=1)
         current = getattr(self.draft, field)
         if current:
             control.default_values = [discord.Object(id=current)]
@@ -332,9 +453,12 @@ class SetupEditorView(discord.ui.View):
         async def chosen(i: discord.Interaction):
             if control.values:
                 self._set_id(field, str(control.values[0].id))
+                self.probes[field] = 'ok'
             else:
                 self._set_id(field, '0')
-            await i.response.defer()
+                self.probes.pop(field, None)
+            self.reload()
+            await i.response.edit_message(embed=self.embed(), view=self)
 
         control.callback = chosen
         self.add_item(control)
@@ -344,11 +468,25 @@ class SetupEditorView(discord.ui.View):
             discord.SelectOption(label='Calendar event off', value='0', default=not self.draft.discord_events),
             discord.SelectOption(label='Calendar event on (needs a calendar channel)', value='1', default=self.draft.discord_events),
         ]
-        control = discord.ui.Select(row=row, placeholder='Discord calendar event', options=options)
+        control = discord.ui.Select(row=row, placeholder=self._marked('discord_events', 'Discord calendar event'), options=options)
 
         async def chosen(i: discord.Interaction):
             self.draft.discord_events = control.values[0] == '1'
-            await i.response.defer()
+            if self.draft.discord_events:
+                try:
+                    errors = self.cog.probe_manage_events(i.guild)
+                except Exception as exc:
+                    errors = [f'**Calendar event:** {type(exc).__name__}: {exc}']
+                self.probes['discord_events'] = 'bad' if errors else 'ok'
+            else:
+                errors = []
+                self.probes['discord_events'] = 'ok'
+            for option in control.options:
+                option.default = option.value == control.values[0]
+            self.reload()
+            await i.response.edit_message(embed=self.embed(), view=self)
+            if errors:
+                await i.followup.send('\n'.join(errors), ephemeral=True)
 
         control.callback = chosen
         self.add_item(control)
@@ -359,13 +497,18 @@ class SetupEditorView(discord.ui.View):
         if current and current not in zones:
             zones = [current, *zones[:24]]
         options = [discord.SelectOption(label=tz, value=tz, default=tz == current) for tz in zones]
-        control = discord.ui.Select(row=row, placeholder='Server timezone (calendar days, "server" times)',
-                                    options=options)
+        control = discord.ui.Select(
+            row=row,
+            placeholder=self._marked('server_timezone', 'Server timezone (calendar days, "server" times)'),
+            options=options,
+        )
 
         async def chosen(i: discord.Interaction):
             self.draft.server_timezone = control.values[0]
+            self.probes['server_timezone'] = 'ok'
             for option in control.options:
                 option.default = option.value == control.values[0]
+            self.reload()
             await i.response.edit_message(embed=self.embed(), view=self)
 
         control.callback = chosen
@@ -390,20 +533,27 @@ class SetupEditorView(discord.ui.View):
             await i.response.defer(ephemeral=True)
             try:
                 kwargs = await self.cog.resolve_setup_draft(i.guild, self.draft)
+                ok, result_embed = await self.cog.smoke_test_and_apply_setup(interaction=i, **kwargs)
             except ValueError as exc:
-                await i.followup.send(str(exc), ephemeral=True)
-                return
-            ok, result_embed = await self.cog.smoke_test_and_apply_setup(interaction=i, **kwargs)
-            await i.edit_original_response(embed=result_embed, view=None if ok else self)
+                ok = False
+                result_embed = self.cog.setup_failure_embed(str(exc).splitlines())
+            except Exception as exc:
+                ok = False
+                result_embed = self.cog.setup_failure_embed([f'**Setup stopped:** {type(exc).__name__}: {exc}'])
+            try:
+                await i.edit_original_response(embed=result_embed, view=None if ok else self)
+            except discord.HTTPException:
+                await i.followup.send(embed=result_embed, ephemeral=True)
             if ok:
                 self.stop()
 
         back.callback = go_back
         nxt.callback = go_next
-        save.callback = do_save
         self.add_item(back)
         self.add_item(nxt)
-        self.add_item(save)
+        if self.required_ready():
+            save.callback = do_save
+            self.add_item(save)
 
     async def open_text_modal(self, interaction: discord.Interaction):
         await interaction.response.send_modal(SetupTextModal(self))

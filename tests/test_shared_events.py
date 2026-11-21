@@ -1348,6 +1348,118 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.cog.watch_rows(1), [])
         self.assertIn('Stopped watching', fresh.notice)
 
+    async def test_smoke_test_names_every_missing_required_channel_and_check_error(self):
+        guild = NS(id=1, me=NS(guild_permissions=NS(manage_events=True)))
+        interaction = NS(guild=guild, user=NS(id=9))
+        forum, ann, panel_ch, voice_cat = self._setup_channels(guild)
+        ok, embed = await self.cog.smoke_test_and_apply_setup(
+            interaction=interaction,
+            raid_forum=None,
+            announcement_channel=ann,
+            panel_channel=None,
+            voice_category=voice_cat,
+        )
+        self.assertFalse(ok)
+        self.assertIn('These are the problems', embed.description)
+        self.assertIn('**Raid Forum (required):** not set.', embed.description)
+        self.assertIn('**Event Panel Channel (required):** not set.', embed.description)
+        self.assertNotIn('**Voice Category (required):** not set.', embed.description)
+
+        voice_cat.permissions_for = Mock(side_effect=RuntimeError('category exploded'))
+        ok, embed = await self.cog.smoke_test_and_apply_setup(
+            interaction=interaction,
+            raid_forum=forum,
+            announcement_channel=ann,
+            panel_channel=panel_ch,
+            voice_category=voice_cat,
+        )
+        self.assertFalse(ok)
+        self.assertIn('Voice Category', embed.description)
+        self.assertIn('category exploded', embed.description)
+
+    async def test_setting_a_channel_checks_permissions_immediately(self):
+        from setup_editor import SetupDraft, SetupEditorView
+        guild = NS(id=1, me=NS())
+        forum, _, _, _ = self._setup_channels(guild)
+        errors, notes = self.cog.probe_setup_channel(guild, forum, 'raid_forum')
+        self.assertEqual(errors, [])
+        self.assertEqual(notes, [])
+        forum.permissions_for = lambda _: NS(
+            view_channel=True, send_messages=False, send_messages_in_threads=True,
+            embed_links=True, read_message_history=True, manage_threads=True,
+            create_instant_invite=True,
+        )
+        errors, _notes = self.cog.probe_setup_channel(guild, forum, 'raid_forum')
+        self.assertTrue(any('Send Messages (Create Posts)' in error for error in errors))
+
+        view = SetupEditorView(self.cog, 9, SetupDraft(), guild_id=1)
+        select = view.children[0]
+        select._values = [forum]
+        interaction = NS(
+            guild=guild, user=NS(id=9),
+            response=NS(edit_message=AsyncMock()),
+            followup=NS(send=AsyncMock()),
+        )
+        await select.callback(interaction)
+        self.assertTrue(view.children[0].placeholder.startswith('⚠️'))
+        self.assertIn('Send Messages (Create Posts)', interaction.followup.send.await_args.args[0])
+        self.assertIn('⚠️ Raid forum', view.embed().fields[0].value)
+        self.assertEqual(view.draft.raid_forum_id, 10)
+
+        forum.permissions_for = lambda _: NS(
+            view_channel=True, send_messages=True, send_messages_in_threads=True,
+            embed_links=True, read_message_history=True, manage_threads=True,
+            create_instant_invite=True,
+        )
+        select = view.children[0]
+        select._values = [forum]
+        interaction.followup.send.reset_mock()
+        await select.callback(interaction)
+        self.assertTrue(view.children[0].placeholder.startswith('✅'))
+        interaction.followup.send.assert_not_awaited()
+
+    def test_settings_hides_save_until_required_channels_are_set(self):
+        from setup_editor import SetupDraft, SetupEditorView
+        draft = SetupDraft()
+        view = SetupEditorView(self.cog, 9, draft, guild_id=1)
+        self.assertEqual(view.children[0].placeholder, 'Raid forum (required)')
+        self.assertFalse(any(getattr(child, 'label', None) == 'Save' for child in view.children))
+        self.assertIn('Missing: Raid forum, Announcement push, Event panels, Voice category', view.embed().description)
+        draft.raid_forum_id = 10
+        draft.announcement_id = 12
+        draft.panel_id = 13
+        draft.voice_category_id = 11
+        view.reload()
+        self.assertTrue(any(getattr(child, 'label', None) == 'Save' for child in view.children))
+        view.page = 2
+        view.reload()
+        sync = next(child for child in view.children if getattr(child, 'placeholder', None) == 'Watch sync (optional)')
+        self.assertEqual([option.label for option in sync.options], [
+            'Create raid posts from watched channels',
+            'Calendar only — do not create raid posts',
+        ])
+
+    async def test_calendar_only_watch_lists_the_event_without_a_raid_post(self):
+        self.cog.store.configure(2, 20, 22, 10800, 3600, watch_sync=0)
+        self.cog.store.configure(2, 20, 22, 10800, 3600)
+        self.assertEqual(self.cog.store.settings(2)['watch_sync'], 0)
+        token = self.cog.store.share(100)
+        await self.cog.deliver_watched_code(2, token)
+        self.assertFalse(self.cog.store.rows('SELECT * FROM EventCopies WHERE guild_id=2'))
+        self.assertEqual(self.cog.store.one('SELECT raid_id FROM WatchCalendar WHERE guild_id=2')['raid_id'], 100)
+        runs = CalendarCog(self.bot).calendar_embeds(2)[-1]
+        self.assertIn('Folly', runs.fields[0].value)
+        self.assertIn('https://discord.com/channels/1/100/100', runs.fields[0].value)
+
+        self.cog.store.configure(2, 20, 22, 10800, 3600, watch_sync=1)
+        forum = NS(create_thread=AsyncMock(return_value=NS(thread=self.make_thread(200), message=NS(id=201))))
+        self.cog.validate_destinations = AsyncMock(return_value=forum)
+        created, failed = await self.cog.materialize_watch_calendar(2)
+        self.assertEqual(failed, [])
+        self.assertEqual(created, 1)
+        self.assertIsNone(self.cog.store.one('SELECT 1 FROM WatchCalendar WHERE guild_id=2'))
+        self.assertEqual(self.cog.store.one('SELECT thread_id FROM EventCopies WHERE guild_id=2')['thread_id'], 200)
+
     async def test_forum_routing_tier_then_instance_then_default(self):
         self.cog.store.configure(1, 10, 11, 3600, 600)
         default_only = self.cog.store.settings(1)
