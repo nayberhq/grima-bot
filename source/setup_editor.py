@@ -182,10 +182,9 @@ class SetupEditorView(discord.ui.View):
         ('raid_forum_id', 'Raid forum'),
         ('announcement_id', 'Announcement push'),
         ('panel_id', 'Event panels'),
-        ('voice_category_id', 'Voice category'),
     )
     PAGE_TITLES = (
-        'Required channels',
+        'Channels',
         'Optional forums (1/2)',
         'Optional forums (2/2)',
         'Optional roles & feeds',
@@ -266,7 +265,7 @@ class SetupEditorView(discord.ui.View):
             self._forum_select(0, 'Raid forum (required)', 'raid_forum_id', refresh=True, kind='raid_forum')
             self._text_select(1, 'Announcement push (required)', 'announcement_id', refresh=True, kind='announcement')
             self._text_select(2, 'Event panels (required)', 'panel_id', refresh=True, kind='panel')
-            self._category_select(3, 'Voice category (required)', 'voice_category_id', refresh=True)
+            self._category_select(3, 'Voice category (optional)', 'voice_category_id', refresh=True)
         elif self.page == 1:
             self._forum_select(0, 'Instance forum (optional)', 'instance_forum_id', optional=True)
             self._forum_select(1, 'T1 forum (optional)', 't1_forum_id', optional=True)
@@ -346,7 +345,7 @@ class SetupEditorView(discord.ui.View):
         else:
             self._set_id(field, str(channel.id))
             try:
-                errors, notes = self.cog.probe_setup_channel(interaction.guild, channel, kind)
+                errors, notes = await self.cog.probe_setup_channel(interaction.guild, channel, kind)
             except Exception as exc:
                 errors, notes = [f'**{field}:** {type(exc).__name__}: {exc}'], []
             self.probes[field] = 'bad' if errors else 'ok'
@@ -404,7 +403,7 @@ class SetupEditorView(discord.ui.View):
             row=row,
             placeholder=self._marked(field, label),
             channel_types=[discord.ChannelType.category],
-            min_values=1,
+            min_values=0,
             max_values=1,
         )
         current = getattr(self.draft, field)
@@ -413,7 +412,7 @@ class SetupEditorView(discord.ui.View):
 
         async def chosen(i: discord.Interaction):
             channel = control.values[0] if control.values else None
-            await self._apply_channel(i, field, 'voice', channel, optional=False)
+            await self._apply_channel(i, field, 'voice', channel, optional=True)
 
         control.callback = chosen
         self.add_item(control)

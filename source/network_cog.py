@@ -39,7 +39,7 @@ class NetworkCog(commands.Cog):
         owner = next((c for c in self.store.copies(event['raid_id']) if c['guild_id'] == event['guild_id']), None)
         if owner and owner.get('voice_id'):
             lines.append(f"<#{owner['voice_id']}>")
-        else:
+        elif owner and owner.get('voice_category_id'):
             lines.append('Voice channel created at start time')
         lines.append('')
         lines.append(f"Not in the {kinship} discord? join here!")

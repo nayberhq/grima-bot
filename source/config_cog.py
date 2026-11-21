@@ -108,16 +108,17 @@ class ConfigCog(commands.Cog):
                 colour=colour,
                 description=(
                     "Gríma configures your entire server and runs a **permission smoke test** in a single `/setup` command.\n\n"
-                    "**Step A — Create the Mandatory Channels & Category**\n"
+                    "**Step A — Create the Mandatory Channels**\n"
                     "• **Raid Forum (`#raids`):** Create a **Forum Channel**. In its settings, turn **OFF** *\"Require people to select tags when posting\"*. Grant the bot `View Channel`, `Create Posts` (`Send Messages`), `Send Messages in Posts`, `Manage Posts`, `Embed Links`, `Read Post History`, and `Create Invite`.\n"
                     "• **Announcement Push Channel (`#raid-network-push`):** Create a Text or Announcement Channel and grant the bot `View Channel`, `Send Messages`, and `Read Message History`.\n"
                     "• **Event Panel Channel (`#create-raid`):** Create a Text Channel for raid leaders and grant the bot `View Channel`, `Send Messages`, `Embed Links`, and `Read Message History`.\n"
-                    "• **Voice Category (`Raid Voice`):** Create a Category and grant the bot `View Channel` + `Manage Channels` so temporary raid voice channels are created at start time.\n\n"
+                    "• **Voice Category (optional):** A category with `View Channel` and `Manage Channels`. Leave it unset and events do not create or link a voice channel.\n\n"
                     "**Step B — Optional Forums (routing is implied)**\n"
                     "Events use the first forum that applies: a matching tier forum (`t1_forum`–`t5_forum`), then `instance_forum` for ≤6-player events, then `raid_forum`. A T3 instance uses `t3_forum` when that is set; a T2 instance uses `instance_forum` when T2 has no forum; a T2 raid uses `raid_forum` unless `t2_forum` is set.\n\n"
                     "**Step C — Run `/setup` or `/settings` (Includes Permission Smoke Test)**\n"
                     "• **`/setup`** — one-shot configuration with slash parameters (`raid_forum`, `announcement_channel`, `panel_channel`, `voice_category`, optional instance and tier forums, `watch_channel`, roles, calendar/RSS, timings, optional `description_message_link`).\n"
-                    "• **`/settings`** — page 1 is the `(required)` channels. **Save** appears after those are set; later pages are optional. The last page sets the description template. Use `/watch` for watch channels and **Watch sync** for calendar-only mode.\n"
+                    "• **`/settings`** — page 1 has the `(required)` channels and an optional voice category. **Save** appears after the required ones are set. Use `/watch` and **Watch sync** for calendar-only mode.\n"
+                    "• **`/setup-reset confirm:True`** clears this server's saved setup. Existing events stay.\n"
                     "• If any permission or channel flag is missing, the command halts with an exact checklist of what to fix.\n"
                     "• On first setup (or when the panel channel changes), Gríma posts all **8 LOTRO Cluster Panels** (with LOTRO Wiki artwork) in chronological release order and keeps them sticky at the bottom of the panel channel. Re-running with the same panel channel leaves existing panels in place."
                 ),

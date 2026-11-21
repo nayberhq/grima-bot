@@ -670,6 +670,17 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         voice.delete.assert_awaited_once()
         self.assertIsNone(self.cog.store.copies(100)[0]['voice_id'])
 
+    async def test_unset_voice_category_skips_creation_and_the_event_link(self):
+        now = int(time.time())
+        self.cog.store.write('UPDATE Raids SET time=?', (now,))
+        self.cog.store.write('UPDATE EventCopies SET voice_category_id=0 WHERE guild_id=1')
+        self.guilds[1].create_voice_channel = AsyncMock()
+        await self.cog.reconcile(100, now)
+        self.guilds[1].create_voice_channel.assert_not_awaited()
+        embed = self.thread.get_partial_message.return_value.edit.call_args.kwargs['embeds'][0]
+        self.assertNotIn('Event voice channel', [field.name for field in embed.fields])
+        self.assertIsNone(self.cog.store.copies(100)[0]['voice_id'])
+
     async def test_mirrors_link_owner_voice_and_invite_without_creating_voice(self):
         now=int(time.time())
         self.cog.store.write('UPDATE Raids SET time=?',(now,))
@@ -1377,11 +1388,76 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('Voice Category', embed.description)
         self.assertIn('category exploded', embed.description)
 
+        ok, embed = await self.cog.smoke_test_and_apply_setup(
+            interaction=interaction,
+            raid_forum=forum,
+            announcement_channel=ann,
+            panel_channel=panel_ch,
+            voice_category=None,
+        )
+        self.assertTrue(ok)
+        self.assertIn('will not create or link a voice channel', embed.description)
+        self.assertEqual(self.cog.store.settings(1)['voice_category_id'], 0)
+
+    async def test_setup_reset_clears_only_this_servers_configuration(self):
+        from setup_editor import load_setup_draft
+        self.cog.store.configure(1, 10, 11, 3600, 600, instance_forum_id=15, watch_sync=0)
+        self.cog.store.write('INSERT OR REPLACE INTO NetworkSettings VALUES (?,?)', (1, 12))
+        self.cog.store.write('INSERT OR REPLACE INTO EventWatches VALUES (?,?,?)', (1, 14, 0))
+        self.cog.store.write('INSERT OR REPLACE INTO WatchCalendar VALUES (?,?)', (1, 100))
+        self.cog.store.write("INSERT OR REPLACE INTO EventTemplates VALUES (?,?,?)", (1, 'description', 'Bring food'))
+        self.cog.store.write('INSERT OR REPLACE INTO CreationPanels VALUES (?,?,?,?)', (501, 13, 1, 'intro'))
+        self.cog.store.write('INSERT OR REPLACE INTO SourceInvites VALUES (?,?)', (1, 'https://discord.gg/owner'))
+        self.cog.store.configure(2, 20, 22, 10800, 3600)
+        self.conn.execute(
+            '''INSERT OR REPLACE INTO Settings
+               (guild_id, raid_leader, priority, icon, server, calendar, guild_events, rss)
+               VALUES (1, 55, 66, ?, ?, ?, 1, 16)''',
+            ('🛡️', 'America/New_York', '13/900'),
+        )
+        self.conn.commit()
+        panel = NS(delete=AsyncMock())
+        calendar = NS(delete=AsyncMock())
+        channel = NS(
+            get_partial_message=Mock(side_effect=lambda mid: panel if mid == 501 else calendar),
+        )
+        self.channels[13] = channel
+        self.guilds[1].get_channel = lambda cid: self.channels.get(cid)
+        self.raids.calendar_cog.remove_calendar_event = AsyncMock()
+        interaction = NS(
+            guild=self.guilds[1],
+            response=NS(send_message=AsyncMock(), defer=AsyncMock()),
+            followup=NS(send=AsyncMock()),
+        )
+
+        await self.cog.setup_reset_command.callback(self.cog, interaction, False)
+        self.assertIsNotNone(self.cog.store.settings(1))
+        interaction.response.send_message.assert_awaited()
+
+        await self.cog.reset_guild_setup(self.guilds[1])
+        self.assertIsNone(self.cog.store.settings(1))
+        self.assertIsNone(self.cog.store.one('SELECT push_id FROM NetworkSettings WHERE guild_id=1'))
+        self.assertEqual(self.cog.watch_rows(1), [])
+        self.assertIsNone(self.cog.store.one('SELECT raid_id FROM WatchCalendar WHERE guild_id=1'))
+        self.assertIsNone(self.cog.store.one("SELECT body FROM EventTemplates WHERE guild_id=1"))
+        self.assertEqual(self.cog.store.rows('SELECT * FROM CreationPanels WHERE guild_id=1'), [])
+        self.assertIsNone(self.cog.store.one('SELECT url FROM SourceInvites WHERE guild_id=1'))
+        self.assertEqual(self.cog.store.settings(2)['forum_id'], 20)
+        self.assertIsNotNone(self.cog.store.event(100))
+        panel.delete.assert_awaited_once()
+        calendar.delete.assert_awaited_once()
+        self.raids.calendar_cog.remove_calendar_event.assert_awaited_once()
+        draft = load_setup_draft(self.cog.store, self.conn, 1)
+        self.assertEqual(draft.raid_forum_id, 0)
+        self.assertEqual(draft.announcement_id, 0)
+        self.assertEqual(draft.leader_role_id, 0)
+        self.assertEqual(draft.server_timezone, '')
+
     async def test_setting_a_channel_checks_permissions_immediately(self):
         from setup_editor import SetupDraft, SetupEditorView
         guild = NS(id=1, me=NS())
         forum, _, _, _ = self._setup_channels(guild)
-        errors, notes = self.cog.probe_setup_channel(guild, forum, 'raid_forum')
+        errors, notes = await self.cog.probe_setup_channel(guild, forum, 'raid_forum')
         self.assertEqual(errors, [])
         self.assertEqual(notes, [])
         forum.permissions_for = lambda _: NS(
@@ -1389,7 +1465,7 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
             embed_links=True, read_message_history=True, manage_threads=True,
             create_instant_invite=True,
         )
-        errors, _notes = self.cog.probe_setup_channel(guild, forum, 'raid_forum')
+        errors, _notes = await self.cog.probe_setup_channel(guild, forum, 'raid_forum')
         self.assertTrue(any('Send Messages (Create Posts)' in error for error in errors))
 
         view = SetupEditorView(self.cog, 9, SetupDraft(), guild_id=1)
@@ -1418,17 +1494,52 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(view.children[0].placeholder.startswith('✅'))
         interaction.followup.send.assert_not_awaited()
 
+    async def test_channel_select_partial_is_loaded_before_the_type_check(self):
+        guild = NS(id=1, me=NS())
+        forum, _, _, _ = self._setup_channels(guild)
+
+        class Partial:
+            id = forum.id
+            guild_id = guild.id
+            mention = '<#10>'
+
+            def resolve(self):
+                return None
+
+            async def fetch(self):
+                return forum
+
+        errors, notes = await self.cog.probe_setup_channel(guild, Partial(), 'raid_forum')
+        self.assertEqual(errors, [])
+        self.assertEqual(notes, [])
+
+        class Hidden:
+            id = 99
+            mention = '<#99>'
+
+            def resolve(self):
+                return None
+
+            async def fetch(self):
+                raise discord.Forbidden(Mock(status=403, reason='Forbidden'), 'Missing Access')
+
+        errors, _notes = await self.cog.probe_setup_channel(guild, Hidden(), 'raid_forum')
+        self.assertTrue(errors)
+        self.assertNotIn('Must be a Forum Channel', errors[0])
+        self.assertIn('cannot see', errors[0])
+
     def test_settings_hides_save_until_required_channels_are_set(self):
         from setup_editor import SetupDraft, SetupEditorView
         draft = SetupDraft()
         view = SetupEditorView(self.cog, 9, draft, guild_id=1)
         self.assertEqual(view.children[0].placeholder, 'Raid forum (required)')
         self.assertFalse(any(getattr(child, 'label', None) == 'Save' for child in view.children))
-        self.assertIn('Missing: Raid forum, Announcement push, Event panels, Voice category', view.embed().description)
+        self.assertIn('Missing: Raid forum, Announcement push, Event panels', view.embed().description)
+        self.assertNotIn('Voice category', view.embed().description)
+        self.assertEqual(view.children[3].placeholder, 'Voice category (optional)')
         draft.raid_forum_id = 10
         draft.announcement_id = 12
         draft.panel_id = 13
-        draft.voice_category_id = 11
         view.reload()
         self.assertTrue(any(getattr(child, 'label', None) == 'Save' for child in view.children))
         view.page = 2

@@ -378,7 +378,8 @@ class EventsCog(commands.Cog):
             target_forum_id = settings['forum_id']
         else:
             target_forum_id = self.store.select_forum_id(settings, size=size, tier=tier)
-        forum = await self.validate_destinations(settings, forum_id=target_forum_id)
+        forum = await self.validate_destinations(
+            settings, require_voice=bool(settings.get('voice_category_id')), forum_id=target_forum_id)
         event = dict(name=name, tier=tier, time=timestamp)
         result = await forum.create_thread(name=self.title(event, guild_id),
             content='Preparing event…', allowed_mentions=discord.AllowedMentions.none(),
@@ -527,7 +528,7 @@ class EventsCog(commands.Cog):
                 owner = next((c for c in self.store.copies(raid_id) if c['guild_id']==event['guild_id']), None)
                 if owner and owner['voice_id']:
                     local_embed.add_field(name='Event voice channel', value=f"https://discord.com/channels/{event['guild_id']}/{owner['voice_id']}", inline=False)
-                elif not ended:
+                elif not ended and owner and owner.get('voice_category_id'):
                     local_embed.add_field(name='Event voice channel', value='Created in the owning server when the event starts.', inline=False)
                 if copy['guild_id'] != event['guild_id']:
                     local_embed.add_field(name='Join the event server',value=invite_url if invite_url else 'Invite unavailable. Ask the organizer to set server_invite_url in /setup in the owning server.',inline=False)
@@ -920,6 +921,7 @@ class EventsCog(commands.Cog):
                             await thread.edit(archived=False)
                     voice_open = event['time'] - VOICE_LEAD
                     if (not self.store.poll_open(raid_id) and copy['guild_id']==event['guild_id']
+                            and copy.get('voice_category_id')
                             and not ended and not copy['locked'] and now >= voice_open and not copy['voice_id']):
                         category = await self.channel(copy['voice_category_id'])
                         # A deterministic marker recovers a successful Discord creation
@@ -1194,8 +1196,44 @@ class EventsCog(commands.Cog):
     def _missing_perms(perms, required):
         return [label for attr, label in required if not getattr(perms, attr, False)]
 
-    def probe_setup_channel(self, guild, channel, kind) -> tuple[list[str], list[str]]:
+    async def _full_channel(self, guild, channel):
+        """Select menus return a partial channel. Load the real one before type and permission checks."""
+        if isinstance(channel, (discord.abc.GuildChannel, discord.Thread)):
+            return channel
+        mention = getattr(channel, 'mention', None) or f"<#{getattr(channel, 'id', '?')}>"
+        found = None
+        resolver = getattr(channel, 'resolve', None)
+        if resolver:
+            try:
+                found = resolver()
+            except Exception:
+                found = None
+        channel_id = getattr(channel, 'id', None)
+        if found is None and channel_id and hasattr(guild, 'get_channel_or_thread'):
+            found = guild.get_channel_or_thread(channel_id)
+        if found is None and channel_id and hasattr(guild, 'get_channel'):
+            found = guild.get_channel(channel_id)
+        if found is None and channel_id:
+            try:
+                fetch = getattr(channel, 'fetch', None)
+                found = await fetch() if fetch else await self.bot.fetch_channel(channel_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+                raise ValueError(f'**{mention}:** the bot cannot see that channel ({type(exc).__name__}: {exc}).') from exc
+            except Exception as exc:
+                raise ValueError(f'**{mention}:** {type(exc).__name__}: {exc}') from exc
+        if found is None:
+            raise ValueError(f'**{mention}:** that channel could not be loaded.')
+        gid = getattr(getattr(found, 'guild', None), 'id', None) or getattr(found, 'guild_id', None)
+        if gid is not None and gid != guild.id:
+            raise ValueError(f'**{mention}:** that channel is not in this server.')
+        return found
+
+    async def probe_setup_channel(self, guild, channel, kind) -> tuple[list[str], list[str]]:
         """Check one settings channel. Returns (problems, notes). Problems block a checkmark."""
+        try:
+            channel = await self._full_channel(guild, channel)
+        except ValueError as exc:
+            return [str(exc)], []
         label = {
             'raid_forum': 'Raid forum',
             'forum': 'Forum',
@@ -1526,9 +1564,9 @@ class EventsCog(commands.Cog):
         if panel is not None and not isinstance(panel, discord.TextChannel):
             problems.append('**Event panels (required):** must be a text channel.')
             panel = None
-        voice = await channel(draft.voice_category_id, 'Voice category', (discord.ChannelType.category,), required=True)
+        voice = await channel(draft.voice_category_id, 'Voice category', (discord.ChannelType.category,))
         if voice is not None and not isinstance(voice, discord.CategoryChannel):
-            problems.append('**Voice category (required):** must be a category.')
+            problems.append('**Voice category:** must be a category.')
             voice = None
 
         calendar = await channel(draft.calendar_id, 'Calendar channel', (discord.ChannelType.text, discord.ChannelType.news))
@@ -1643,7 +1681,7 @@ class EventsCog(commands.Cog):
             raid_forum=await resolve(draft.raid_forum_id, 'Raid Forum', required=True),
             announcement_channel=await resolve(draft.announcement_id, 'Announcement Channel', required=True),
             panel_channel=await resolve(draft.panel_id, 'Event Panel Channel', required=True),
-            voice_category=await resolve(draft.voice_category_id, 'Voice Category', required=True),
+            voice_category=await resolve(draft.voice_category_id, 'Voice Category'),
             instance_forum=await resolve(draft.instance_forum_id, 'Instance Forum'),
             t1_forum=await resolve(draft.t1_forum_id, 'T1 Forum'),
             t2_forum=await resolve(draft.t2_forum_id, 'T2 Forum'),
@@ -1695,7 +1733,7 @@ class EventsCog(commands.Cog):
         raid_forum: discord.ForumChannel,
         announcement_channel: discord.TextChannel,
         panel_channel: discord.TextChannel,
-        voice_category: discord.CategoryChannel,
+        voice_category: discord.CategoryChannel | None = None,
         instance_forum: discord.ForumChannel | None = None,
         t1_forum: discord.ForumChannel | None = None,
         t2_forum: discord.ForumChannel | None = None,
@@ -1834,7 +1872,7 @@ class EventsCog(commands.Cog):
         if take_unresolved('Voice Category'):
             pass
         elif voice_category is None:
-            errors.append('**Voice Category (required):** not set.')
+            checks.append('**Voice Category:** not set. Events will not create or link a voice channel.')
         else:
             try:
                 if not isinstance(voice_category, discord.CategoryChannel) or voice_category.guild.id != guild.id:
@@ -2092,7 +2130,7 @@ class EventsCog(commands.Cog):
         raid_forum='Default forum. Used when no matching tier forum is set, and for raids when no instance forum applies.',
         announcement_channel='Mandatory: Outgoing channel where mirrorkey discovery codes are posted.',
         panel_channel='Mandatory: Channel where sticky cluster raid creation panels are posted.',
-        voice_category='Mandatory: Category where temporary raid voice channels are created at start time.',
+        voice_category='Optional: Category for a temporary voice channel at start time. Leave empty and events will not create or link a voice channel.',
         instance_forum='Optional: ≤6-player events whose tier has no forum of its own.',
         t1_forum='Optional: Tier 1 events (instances and raids) go here instead of the instance or default forum.',
         t2_forum='Optional: Tier 2 / T2c events.',
@@ -2118,7 +2156,7 @@ class EventsCog(commands.Cog):
         raid_forum: discord.ForumChannel,
         announcement_channel: discord.TextChannel,
         panel_channel: discord.TextChannel,
-        voice_category: discord.CategoryChannel,
+        voice_category: discord.CategoryChannel | None = None,
         instance_forum: discord.ForumChannel | None = None,
         t1_forum: discord.ForumChannel | None = None,
         t2_forum: discord.ForumChannel | None = None,
@@ -2168,6 +2206,76 @@ class EventsCog(commands.Cog):
             description_template=description_template,
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+    async def reset_guild_setup(self, guild):
+        """Clear one server's saved setup. Existing events, rosters, and forum posts stay."""
+        guild_id = guild.id
+        notes = []
+
+        async def delete_message(channel_id, message_id, label):
+            channel = None
+            getter = getattr(guild, 'get_channel', None)
+            if getter:
+                channel = getter(channel_id)
+            if channel is None and hasattr(self.bot, 'get_channel'):
+                channel = self.bot.get_channel(channel_id)
+            if channel is None:
+                notes.append(f'{label} {message_id} is still in Discord; its channel is not loaded.')
+                return
+            try:
+                await channel.get_partial_message(message_id).delete()
+            except discord.NotFound:
+                pass
+            except (discord.Forbidden, discord.HTTPException, AttributeError) as exc:
+                notes.append(f'{label} {message_id} is still in Discord ({type(exc).__name__}: {exc}).')
+
+        for panel in self.store.rows('SELECT message_id, channel_id FROM CreationPanels WHERE guild_id=?', (guild_id,)):
+            await delete_message(panel['channel_id'], panel['message_id'], 'Panel message')
+        calendar = self.store.one('SELECT calendar FROM Settings WHERE guild_id=?', (guild_id,))
+        if calendar and calendar.get('calendar') and '/' in str(calendar['calendar']):
+            channel_id, message_id = str(calendar['calendar']).split('/', 1)
+            await delete_message(int(channel_id), int(message_id), 'Calendar message')
+        calendar_cog = self.raids.calendar_cog if self.raids and getattr(self.raids, 'calendar_cog', None) else None
+        drop = getattr(calendar_cog, 'remove_calendar_event', None)
+        if drop:
+            await drop(guild)
+
+        for table in (
+            'EventSettings', 'NetworkSettings', 'EventWatches', 'WatchCalendar',
+            'WatchFailures', 'PendingPublications', 'EventTemplates', 'CreationPanels',
+            'SourceInvites', 'GuildIdentity', 'PanelJobs',
+        ):
+            if self.store.one("SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name=?", (table,)):
+                self.store.write(f'DELETE FROM {table} WHERE guild_id=?', (guild_id,))
+        self.bot.conn.execute(
+            '''UPDATE Settings SET server=NULL, raid_leader=NULL, priority=NULL, icon=NULL,
+               calendar=NULL, guild_events=NULL, rss=NULL, calendar_event_id=NULL WHERE guild_id=?''',
+            (guild_id,),
+        )
+        self.bot.conn.commit()
+        return notes
+
+    @app_commands.command(name='setup-reset', description='Clear this server’s saved setup so /setup can be run again.')
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.describe(confirm='Must be True. Existing events, rosters, and forum posts are left in place.')
+    async def setup_reset_command(self, interaction: discord.Interaction, confirm: bool):
+        if not confirm:
+            await interaction.response.send_message(
+                'Nothing was cleared. Run `/setup-reset` again with **confirm** set to True.',
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        notes = await self.reset_guild_setup(interaction.guild)
+        lines = [
+            'Saved setup for this server was cleared. Existing events were left in place.',
+            'Run `/setup` or `/settings` to configure it again. Cluster panels are posted again on the next setup.',
+        ]
+        if notes:
+            lines.extend(['', *notes])
+        await interaction.followup.send('\n'.join(lines)[:1900], ephemeral=True)
 
     @app_commands.command(name='settings', description='Open the paged server settings editor (prefilled from saved configuration).')
     @app_commands.guild_only()
