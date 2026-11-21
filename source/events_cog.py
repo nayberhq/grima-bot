@@ -1416,6 +1416,11 @@ class EventsCog(commands.Cog):
             if getattr(channel, 'id', None) in seen:
                 continue
             seen.add(channel.id)
+            try:
+                channel = await self._full_channel(guild, channel)
+            except ValueError as exc:
+                errors.append(str(exc))
+                continue
             problem = self.watch_channel_problem(guild, channel)
             if problem:
                 errors.append(problem)
@@ -1907,7 +1912,10 @@ class EventsCog(commands.Cog):
                 continue
             seen_watches.add(channel.id)
             try:
+                channel = await self._full_channel(guild, channel)
                 problem = self.watch_channel_problem(guild, channel)
+            except ValueError as exc:
+                problem = str(exc)
             except Exception as exc:
                 problem = f"**Event Watch Channel:** {type(exc).__name__}: {exc}"
             if problem:

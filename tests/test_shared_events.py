@@ -1545,10 +1545,54 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         view.page = 2
         view.reload()
         sync = next(child for child in view.children if getattr(child, 'placeholder', None) == 'Watch sync (optional)')
+        watch = next(child for child in view.children if getattr(child, 'placeholder', None) == 'Watch channel (optional)')
+        self.assertIsInstance(watch, discord.ui.ChannelSelect)
         self.assertEqual([option.label for option in sync.options], [
             'Create raid posts from watched channels',
             'Calendar only — do not create raid posts',
         ])
+
+    async def test_settings_watch_select_adds_the_channel_immediately(self):
+        from setup_editor import SetupDraft, SetupEditorView
+        guild = NS(id=1, me=NS())
+        view = SetupEditorView(self.cog, 9, SetupDraft(), guild_id=1)
+        view.page = 2
+        view.reload()
+        watch = next(child for child in view.children if getattr(child, 'placeholder', None) == 'Watch channel (optional)')
+        channel = self._watch_channel(guild, 14)
+        watch._values = [channel]
+        interaction = NS(
+            guild=guild, user=NS(id=9),
+            response=NS(edit_message=AsyncMock()),
+            followup=NS(send=AsyncMock()),
+        )
+        await watch.callback(interaction)
+        self.assertEqual(self.cog.watch_rows(1)[0]['source_channel_id'], 14)
+        shown = next(child for child in view.children if getattr(child, 'placeholder', '').endswith('Watch channel (optional)'))
+        self.assertTrue(shown.placeholder.startswith('✅'))
+        self.assertIn('<#14>', view.embed().fields[-1].value)
+        interaction.followup.send.assert_not_awaited()
+
+    async def test_watch_add_loads_a_partial_channel_before_the_type_check(self):
+        guild = NS(id=1, me=NS())
+        real = self._watch_channel(guild, 14)
+
+        class Partial:
+            id = 14
+            guild_id = 1
+            mention = '<#14>'
+
+            def resolve(self):
+                return None
+
+            async def fetch(self):
+                return real
+
+        errors, added, kept = await self.cog.add_watch_channels(guild, [Partial()])
+        self.assertEqual(errors, [])
+        self.assertEqual(kept, [])
+        self.assertEqual(added[0].id, 14)
+        self.assertEqual(self.cog.watch_rows(1)[0]['source_channel_id'], 14)
 
     async def test_calendar_only_watch_lists_the_event_without_a_raid_post(self):
         self.cog.store.configure(2, 20, 22, 10800, 3600, watch_sync=0)

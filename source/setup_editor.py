@@ -186,7 +186,7 @@ class SetupEditorView(discord.ui.View):
     PAGE_TITLES = (
         'Channels',
         'Optional forums (1/2)',
-        'Optional forums (2/2)',
+        'Optional forums & watch',
         'Optional roles & feeds',
         'Optional flags & text',
     )
@@ -247,7 +247,7 @@ class SetupEditorView(discord.ui.View):
             hidden = len(mentions) - len(shown)
             if hidden:
                 body += f' (+{hidden} more)'
-            body += '\nAdd or remove any number with `/watch`.'
+            body += '\nAdd one here. Use `/watch` to add or remove any number.'
             embed.add_field(name=f'Watch channels ({len(mentions)})', value=body, inline=False)
         if self.page == len(self.PAGE_TITLES) - 1:
             preview = d.description_template_preview.strip()
@@ -275,6 +275,7 @@ class SetupEditorView(discord.ui.View):
             self._forum_select(0, 'T4 forum (optional)', 't4_forum_id', optional=True)
             self._forum_select(1, 'T5 forum (optional)', 't5_forum_id', optional=True)
             self._watch_sync_select(2)
+            self._watch_add_select(3)
         elif self.page == 3:
             self._role_select(0, 'Raid leader role', 'leader_role_id')
             self._role_select(1, 'Kinship role', 'kin_role_id')
@@ -324,6 +325,7 @@ class SetupEditorView(discord.ui.View):
             'discord_events': 'Calendar event',
             'server_timezone': 'Server timezone',
             'watch_sync': 'Watch sync',
+            'watch_channel': 'Watch channel',
             'kin_icon': 'Kin icon',
             'server_invite_url': 'Server invite',
             'description_template': 'Description template',
@@ -439,6 +441,30 @@ class SetupEditorView(discord.ui.View):
             self.probes['watch_sync'] = 'ok'
             self.reload()
             await i.response.edit_message(embed=self.embed(), view=self)
+
+        control.callback = chosen
+        self.add_item(control)
+
+    def _watch_add_select(self, row):
+        control = discord.ui.ChannelSelect(
+            row=row,
+            placeholder=self._marked('watch_channel', 'Watch channel (optional)'),
+            channel_types=[discord.ChannelType.text, discord.ChannelType.news, discord.ChannelType.public_thread],
+            min_values=1,
+            max_values=1,
+        )
+
+        async def chosen(i: discord.Interaction):
+            channel = control.values[0] if control.values else None
+            if channel is None:
+                await i.response.defer()
+                return
+            errors, added, kept = await self.cog.add_watch_channels(i.guild, [channel])
+            self.probes['watch_channel'] = 'bad' if errors else 'ok'
+            self.reload()
+            await i.response.edit_message(embed=self.embed(), view=self)
+            if errors:
+                await i.followup.send('\n'.join(errors), ephemeral=True)
 
         control.callback = chosen
         self.add_item(control)
