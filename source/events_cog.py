@@ -652,10 +652,11 @@ class EventsCog(commands.Cog):
             else:
                 self._cancel_poll(raid_id, 'This poll closed with no votes, so no event was scheduled.')
         else:
+            voters = self.store.poll_voter_ids(raid_id)
             self._schedule_event(
                 event, winner['name'], winner['size'], winner['creep'], tier=winner.get('tier') or '')
             self.store.write('UPDATE EventPolls SET resolved=1 WHERE raid_id=?', (raid_id,))
-            await self._ping_poll_change(raid_id)
+            await self._ping_poll_change(raid_id, voters)
         await self._refresh_calendar(event)
 
     async def resolve_time_poll_locked(self, raid_id):
@@ -669,6 +670,7 @@ class EventsCog(commands.Cog):
             self._cancel_poll(raid_id, 'This time poll closed with no votes, so no event was scheduled.')
             await self._refresh_calendar(event)
             return
+        voters = self.store.poll_voter_ids(raid_id)
         if self.store.held_choices(raid_id):
             self.store.write('UPDATE Raids SET time=? WHERE raid_id=?', (int(winner['starts']), raid_id))
             self.store.write('UPDATE SharedEvents SET start_pinged=0 WHERE raid_id=?', (raid_id,))
@@ -678,13 +680,15 @@ class EventsCog(commands.Cog):
                 (raid_id,))
             self.store.write('UPDATE SharedEvents SET revision=revision+1 WHERE raid_id=?', (raid_id,))
             updated = self.store.event(raid_id)
-            await self.ping_signups(
-                raid_id, f"The time is <t:{int(updated['time'])}:F>. Vote on the post for what to run.")
+            await self.ping_users(
+                raid_id, voters,
+                f"You voted in the last poll. That poll has become this poll. "
+                f"The time is <t:{int(updated['time'])}:F>. Please vote.")
         else:
             self._schedule_event(
                 event, poll['template_name'], poll['template_size'], poll['template_creep'], starts=winner['starts'])
             self.store.write('UPDATE EventPolls SET resolved=1 WHERE raid_id=?', (raid_id,))
-            await self._ping_poll_change(raid_id)
+            await self._ping_poll_change(raid_id, voters)
         await self._refresh_calendar(event)
 
     def format_poll_announcement(self, event):
@@ -808,17 +812,28 @@ class EventsCog(commands.Cog):
             raid_id, f"This event may change. Vote on the post for what to run. Poll closes <t:{int(closes)}:R>.")
         return closes
 
-    async def _ping_poll_change(self, raid_id):
+    async def _ping_poll_change(self, raid_id, voters):
         event = self.store.event(raid_id)
         if not event:
             return
         title = f"{event['name']} {event.get('tier') or ''}".strip()
-        await self.ping_signups(raid_id, f"This is now {title}, <t:{int(event['time'])}:F>.")
+        await self.ping_users(
+            raid_id, voters,
+            f"You voted in the last poll. That poll has become this event, {title}, "
+            f"<t:{int(event['time'])}:F>. Please sign up.")
 
     async def ping_signups(self, raid_id, notice):
         players = self.store.rows(
             'SELECT player_id FROM Players WHERE raid_id=? AND unavailable=0 AND player_id>0', (raid_id,))
-        mentions = ' '.join(f"<@{row['player_id']}>" for row in players)
+        return await self.ping_users(raid_id, [row['player_id'] for row in players], notice)
+
+    async def ping_users(self, raid_id, user_ids, notice):
+        seen = []
+        for user_id in user_ids:
+            user_id = int(user_id)
+            if user_id > 0 and user_id not in seen:
+                seen.append(user_id)
+        mentions = ' '.join(f"<@{user_id}>" for user_id in seen)
         if not mentions:
             return False
         text = f"{mentions}\n{notice}"
@@ -1138,6 +1153,85 @@ class EventsCog(commands.Cog):
     def _missing_perms(perms, required):
         return [label for attr, label in required if not getattr(perms, attr, False)]
 
+    def watch_rows(self, guild_id):
+        return self.store.rows(
+            'SELECT source_channel_id, last_message_id FROM EventWatches WHERE guild_id=? ORDER BY source_channel_id',
+            (guild_id,),
+        )
+
+    def watch_channel_problem(self, guild, channel) -> str | None:
+        mention = getattr(channel, 'mention', None) or f"<#{getattr(channel, 'id', '?')}>"
+        if not isinstance(channel, (discord.TextChannel, discord.Thread)) or getattr(getattr(channel, 'guild', None), 'id', None) != guild.id:
+            return f'**Event Watch Channel ({mention}):** Must be a Text/Announcement Channel or Thread in this server.'
+        me = getattr(guild, 'me', None)
+        if me is None:
+            return f'**Event Watch Channel ({mention}):** Bot member is unavailable in this server.'
+        missing = self._missing_perms(channel.permissions_for(me), [
+            ('view_channel', 'View Channel'),
+            ('read_message_history', 'Read Message History'),
+        ])
+        if missing:
+            return f"**Event Watch Channel ({mention}):** Bot is missing: {', '.join(missing)}."
+        return None
+
+    async def watch_cursor(self, channel) -> int:
+        latest = [message async for message in channel.history(limit=1)]
+        return latest[0].id if latest else discord.utils.time_snowflake(discord.utils.utcnow())
+
+    async def store_watch(self, guild, channel) -> bool:
+        """Remember a channel. Returns True when it was not already watched."""
+        prev = self.store.one(
+            'SELECT last_message_id FROM EventWatches WHERE guild_id=? AND source_channel_id=?',
+            (guild.id, channel.id),
+        )
+        if prev:
+            return False
+        self.store.write(
+            'INSERT OR REPLACE INTO EventWatches VALUES (?,?,?)',
+            (guild.id, channel.id, await self.watch_cursor(channel)),
+        )
+        return True
+
+    async def add_watch_channels(self, guild, channels):
+        """Add every valid channel. Invalid ones are reported and skipped."""
+        errors = []
+        added = []
+        kept = []
+        seen = set()
+        for channel in channels:
+            if getattr(channel, 'id', None) in seen:
+                continue
+            seen.add(channel.id)
+            problem = self.watch_channel_problem(guild, channel)
+            if problem:
+                errors.append(problem)
+                continue
+            if await self.store_watch(guild, channel):
+                added.append(channel)
+            else:
+                kept.append(channel)
+        return errors, added, kept
+
+    def remove_watch_channels(self, guild_id, channel_ids):
+        removed = []
+        for channel_id in channel_ids:
+            if self.store.one(
+                'SELECT 1 FROM EventWatches WHERE guild_id=? AND source_channel_id=?',
+                (guild_id, channel_id),
+            ):
+                self.store.write(
+                    'DELETE FROM EventWatches WHERE guild_id=? AND source_channel_id=?',
+                    (guild_id, channel_id),
+                )
+                removed.append(channel_id)
+        return removed
+
+    def clear_watch_channels(self, guild_id) -> int:
+        rows = self.watch_rows(guild_id)
+        if rows:
+            self.store.write('DELETE FROM EventWatches WHERE guild_id=?', (guild_id,))
+        return len(rows)
+
     async def resolve_kin_icon(self, guild, raw_icon: str) -> str | None:
         icon_str = raw_icon.strip()
         if Emoji.is_emoji(icon_str):
@@ -1240,16 +1334,6 @@ class EventsCog(commands.Cog):
         if not isinstance(voice, discord.CategoryChannel):
             raise ValueError('Voice category must be a category.')
 
-        watch = None
-        if draft.watch_channel_id:
-            watch = await optional_channel(
-                draft.watch_channel_id,
-                'Watch channel',
-                (discord.ChannelType.text, discord.ChannelType.news, discord.ChannelType.public_thread),
-            )
-            if watch and not isinstance(watch, (discord.TextChannel, discord.Thread)):
-                raise ValueError('Watch channel must be a text channel or thread.')
-
         calendar = await optional_channel(draft.calendar_id, 'Calendar channel', (discord.ChannelType.text, discord.ChannelType.news)) if draft.calendar_id else None
         if calendar and not isinstance(calendar, discord.TextChannel):
             raise ValueError('Calendar channel must be a text channel.')
@@ -1268,7 +1352,6 @@ class EventsCog(commands.Cog):
             t3_forum=await optional_forum(draft.t3_forum_id, 'T3 forum'),
             t4_forum=await optional_forum(draft.t4_forum_id, 'T4 forum'),
             t5_forum=await optional_forum(draft.t5_forum_id, 'T5 forum'),
-            watch_channel=watch,
             leader_role=await optional_role(draft.leader_role_id),
             kin_role=await optional_role(draft.kin_role_id),
             kin_icon=draft.kin_icon.strip() or None,
@@ -1339,6 +1422,12 @@ class EventsCog(commands.Cog):
                 unresolved[label] = f'**{label}:** saved role no longer exists.'
             return role
 
+        watch_channels = []
+        for row in self.watch_rows(guild.id):
+            channel = await resolve(row['source_channel_id'], f"Event Watch Channel <#{row['source_channel_id']}>")
+            if channel is not None:
+                watch_channels.append(channel)
+
         _, embed = await self.smoke_test_and_apply_setup(
             interaction=type('GuildOnly', (), {'guild': guild})(),
             raid_forum=await resolve(draft.raid_forum_id, 'Raid Forum', required=True),
@@ -1351,7 +1440,7 @@ class EventsCog(commands.Cog):
             t3_forum=await resolve(draft.t3_forum_id, 'T3 Forum'),
             t4_forum=await resolve(draft.t4_forum_id, 'T4 Forum'),
             t5_forum=await resolve(draft.t5_forum_id, 'T5 Forum'),
-            watch_channel=await resolve(draft.watch_channel_id, 'Event Watch Channel'),
+            watch_channels=watch_channels,
             leader_role=await resolve_role(draft.leader_role_id, 'Raid Leader Role'),
             kin_role=await resolve_role(draft.kin_role_id, 'Kinship Role'),
             kin_icon=draft.kin_icon.strip() or None,
@@ -1381,6 +1470,7 @@ class EventsCog(commands.Cog):
         t4_forum: discord.ForumChannel | None = None,
         t5_forum: discord.ForumChannel | None = None,
         watch_channel: discord.TextChannel | discord.Thread | None = None,
+        watch_channels: list | None = None,
         leader_role: discord.Role | None = None,
         kin_role: discord.Role | None = None,
         kin_icon: str | None = None,
@@ -1507,22 +1597,27 @@ class EventsCog(commands.Cog):
             else:
                 checks.append(f"**Voice Category:** {voice_category.name} (permissions verified)")
 
-        # 5. Optional: Watch (Incoming Discovery Pull) Channel
-        watch_target = None
-        if not take_unresolved('Event Watch Channel') and watch_channel is not None:
-            if not isinstance(watch_channel, (discord.TextChannel, discord.Thread)) or watch_channel.guild.id != guild.id:
-                errors.append('**Event Watch Channel:** Must be a Text/Announcement Channel or Thread in this server.')
+        # 5. Optional: Watch (Incoming Discovery Pull) Channels.
+        # Passing none leaves the saved list alone. Passing channels adds them.
+        for label in [key for key in unresolved if key.startswith('Event Watch Channel')]:
+            take_unresolved(label)
+        requested = []
+        if watch_channel is not None:
+            requested.append(watch_channel)
+        if watch_channels:
+            requested.extend(watch_channels)
+        validated = []
+        seen_watches = set()
+        for channel in requested:
+            if channel is None or getattr(channel, 'id', None) in seen_watches:
+                continue
+            seen_watches.add(channel.id)
+            problem = self.watch_channel_problem(guild, channel)
+            if problem:
+                errors.append(problem)
             else:
-                w_perms = watch_channel.permissions_for(me)
-                missing = self._missing_perms(w_perms, [
-                    ('view_channel', 'View Channel'),
-                    ('read_message_history', 'Read Message History'),
-                ])
-                if missing:
-                    errors.append(f"**Event Watch Channel ({watch_channel.mention}):** Bot is missing: {', '.join(missing)}.")
-                else:
-                    watch_target = watch_channel
-                    checks.append(f"**Event Watch (Pull) Channel:** {watch_channel.mention} (permissions verified)")
+                validated.append(channel)
+                checks.append(f"**Event Watch (Pull) Channel:** {channel.mention} (permissions verified)")
 
         # 6. Optional: Raid Leader Role & Kinship Role / Icon
         if not take_unresolved('Raid Leader Role') and leader_role is not None:
@@ -1645,16 +1740,11 @@ class EventsCog(commands.Cog):
         )
         self.store.write('INSERT OR REPLACE INTO NetworkSettings VALUES (?,?)', (guild.id, announcement_channel.id))
 
-        prev_watch = self.store.one('SELECT source_channel_id, last_message_id FROM EventWatches WHERE guild_id=?', (guild.id,))
-        if watch_target is None:
-            self.store.write('DELETE FROM EventWatches WHERE guild_id=?', (guild.id,))
-        elif prev_watch and prev_watch['source_channel_id'] == watch_target.id:
-            checks.append(f"**Event Watch (Pull) Channel:** {watch_target.mention} (unchanged cursor)")
-        else:
-            latest = [m async for m in watch_target.history(limit=1)]
-            cursor = latest[0].id if latest else discord.utils.time_snowflake(discord.utils.utcnow())
-            self.store.write('DELETE FROM EventWatches WHERE guild_id=?', (guild.id,))
-            self.store.write('INSERT OR REPLACE INTO EventWatches VALUES (?,?,?)', (guild.id, watch_target.id, cursor))
+        for channel in validated:
+            if await self.store_watch(guild, channel):
+                checks.append(f"**Event Watch (Pull) Channel:** {channel.mention} (watching new messages)")
+            else:
+                checks.append(f"**Event Watch (Pull) Channel:** {channel.mention} (unchanged cursor)")
 
         upsert(self.bot.conn, 'Settings', ['raid_leader'], [leader_role.id if leader_role else None], ['guild_id'], [guild.id])
         if kin_role is not None:
@@ -1738,7 +1828,7 @@ class EventsCog(commands.Cog):
         t3_forum='Optional: Tier 3 events.',
         t4_forum='Optional: Tier 4 events.',
         t5_forum='Optional: Tier 5 events.',
-        watch_channel='Optional: Channel to watch for incoming mirrorkey codes (e.g. a channel following partner announcements).',
+        watch_channel='Optional: Add one channel to the mirrorkey watch list. Does not remove channels already watched. Use /watch to add or remove any number.',
         leader_role='Optional. When set, only this role can create events and use leader controls. Leave unset and anyone can.',
         kin_role='Optional: Role used to distinguish kinship members on raid signups.',
         kin_icon='Optional: Emoji badge displayed next to kinship members on raid signups.',
@@ -1815,7 +1905,16 @@ class EventsCog(commands.Cog):
     async def settings_command(self, interaction: discord.Interaction):
         from setup_editor import SetupEditorView, load_setup_draft
         draft = load_setup_draft(self.store, self.bot.conn, interaction.guild_id)
-        view = SetupEditorView(self, interaction.user.id, draft)
+        view = SetupEditorView(self, interaction.user.id, draft, interaction.guild_id)
+        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
+
+    @app_commands.command(name='watch', description='Add or remove channels scanned for incoming mirrorkey codes.')
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.default_permissions(manage_guild=True)
+    async def watch_command(self, interaction: discord.Interaction):
+        from setup_editor import WatchListView
+        view = WatchListView(self, interaction.guild, interaction.user.id)
         await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
 
     @app_commands.command(name='event-share', description='Create or revoke the code other servers use to sync this raid.')

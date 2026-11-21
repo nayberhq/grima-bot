@@ -419,8 +419,15 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(f'<t:{start}:t>', self.channels[800].send.call_args.args[0])
         self.conn.execute("INSERT INTO Players(raid_id,player_id,byname,timestamp,unavailable,Warden) VALUES (100,99,'Bob',1,0,1)")
         await self.cog.reconcile(100, time.time())
-        self.assertIn('<@99>', self.thread.send.await_args.args[0])
-        self.assertIn('This is now Garden', self.thread.send.await_args.args[0])
+        notice = self.thread.send.await_args.args[0]
+        self.assertIn('<@1>', notice)
+        self.assertIn('<@2>', notice)
+        self.assertIn('<@3>', notice)
+        self.assertNotIn('<@99>', notice)
+        self.assertIn('You voted in the last poll', notice)
+        self.assertIn('this event', notice)
+        self.assertIn('Garden', notice)
+        self.assertIn('Please sign up', notice)
         event = self.cog.store.event(100)
         self.assertEqual(event['name'], 'Garden')
         self.assertEqual(event['size'], 6)
@@ -449,8 +456,12 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         await self.cog.deliver_poll_announcements()
         self.conn.execute("INSERT INTO Players(raid_id,player_id,byname,timestamp,unavailable,Warden) VALUES (100,99,'Bob',1,0,1)")
         await self.cog.reconcile(100, time.time())
-        self.assertIn('<@99>', self.thread.send.await_args.args[0])
-        self.assertIn('Vote on the post for what to run.', self.thread.send.await_args.args[0])
+        notice = self.thread.send.await_args.args[0]
+        self.assertIn('<@4>', notice)
+        self.assertNotIn('<@99>', notice)
+        self.assertIn('You voted in the last poll', notice)
+        self.assertIn('this poll', notice)
+        self.assertIn('Please vote', notice)
         poll = self.cog.store.poll_row(100)
         self.assertEqual(poll['kind'], 'content')
         self.assertFalse(poll['resolved'])
@@ -463,7 +474,11 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         self.cog.store.replace_votes(100, 4, [0])
         self.thread.send.reset_mock()
         await self.cog.reconcile(100, start + 3600 - POLL_LEAD)
-        self.assertIn('This is now Garden', self.thread.send.await_args.args[0])
+        notice = self.thread.send.await_args.args[0]
+        self.assertIn('<@4>', notice)
+        self.assertIn('this event', notice)
+        self.assertIn('Garden', notice)
+        self.assertIn('Please sign up', notice)
         event = self.cog.store.event(100)
         self.assertEqual(event['name'], 'Garden')
         self.assertTrue(event['share_token'])
@@ -915,8 +930,13 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         self.cog.store.replace_votes(100, 5, [0])
         self.thread.send.reset_mock()
         await self.cog.reconcile(100, time.time() + CONVERT_LENGTH)
-        self.assertIn('<@99>', self.thread.send.await_args.args[0])
-        self.assertIn('This is now Garden', self.thread.send.await_args.args[0])
+        notice = self.thread.send.await_args.args[0]
+        self.assertIn('<@5>', notice)
+        self.assertNotIn('<@99>', notice)
+        self.assertIn('You voted in the last poll', notice)
+        self.assertIn('this event', notice)
+        self.assertIn('Garden', notice)
+        self.assertIn('Please sign up', notice)
         event = self.cog.store.event(100)
         self.assertEqual(event['name'], 'Garden')
         self.assertEqual(event['size'], 6)
@@ -1215,6 +1235,118 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(ok)
         self.assertEqual(self.cog.store.one('SELECT last_message_id FROM EventWatches WHERE guild_id=1')['last_message_id'], 999)
         self.assertIn('unchanged cursor', embed.description)
+
+    def _watch_channel(self, guild, channel_id, *, readable=True):
+        channel = Mock(spec=discord.TextChannel)
+        channel.id = channel_id
+        channel.guild = guild
+        channel.mention = f'<#{channel_id}>'
+        channel.name = f'pull-{channel_id}'
+        channel.permissions_for = lambda _: NS(view_channel=readable, read_message_history=readable)
+
+        async def history(**kwargs):
+            if False:
+                yield
+        channel.history = history
+        return channel
+
+    def _setup_channels(self, guild):
+        forum = Mock(spec=discord.ForumChannel)
+        forum.id = 10
+        forum.guild = guild
+        forum.mention = '<#10>'
+        forum.flags = NS(require_tag=False)
+        forum.permissions_for = lambda _: NS(
+            view_channel=True, send_messages=True, send_messages_in_threads=True,
+            embed_links=True, read_message_history=True, manage_threads=True,
+            create_instant_invite=True,
+        )
+        ann = Mock(spec=discord.TextChannel)
+        ann.id = 12
+        ann.guild = guild
+        ann.mention = '<#12>'
+        ann.permissions_for = lambda _: NS(view_channel=True, send_messages=True, read_message_history=True)
+        panel_ch = Mock(spec=discord.TextChannel)
+        panel_ch.id = 13
+        panel_ch.guild = guild
+        panel_ch.mention = '<#13>'
+        panel_ch.permissions_for = lambda _: NS(view_channel=True, send_messages=True, embed_links=True, read_message_history=True)
+        voice_cat = Mock(spec=discord.CategoryChannel)
+        voice_cat.id = 11
+        voice_cat.guild = guild
+        voice_cat.name = 'Raid Voice'
+        voice_cat.permissions_for = lambda _: NS(view_channel=True, manage_channels=True)
+        return forum, ann, panel_ch, voice_cat
+
+    async def test_setup_adds_watches_without_removing_the_rest(self):
+        from network_cog import NetworkCog
+        network = NetworkCog(self.bot)
+        network.deploy_all_panels = AsyncMock()
+        self.bot.get_cog = lambda name: {'RaidCog': self.raids, 'EventsCog': self.cog, 'NetworkCog': network}.get(name)
+        self.cog.store.write('INSERT INTO EventWatches VALUES (1,14,999)')
+        guild = NS(id=1, me=NS(guild_permissions=NS(manage_events=True)))
+        interaction = NS(guild=guild, user=NS(id=9))
+        forum, ann, panel_ch, voice_cat = self._setup_channels(guild)
+        second = self._watch_channel(guild, 15)
+        ok, embed = await self.cog.smoke_test_and_apply_setup(
+            interaction=interaction,
+            raid_forum=forum,
+            announcement_channel=ann,
+            panel_channel=panel_ch,
+            voice_category=voice_cat,
+            watch_channels=[second],
+        )
+        self.assertTrue(ok, embed.description if embed else None)
+        watched = {row['source_channel_id']: row['last_message_id'] for row in self.cog.watch_rows(1)}
+        self.assertEqual(set(watched), {14, 15})
+        self.assertEqual(watched[14], 999)
+        self.assertIn('watching new messages', embed.description)
+
+        ok, _embed = await self.cog.smoke_test_and_apply_setup(
+            interaction=interaction,
+            raid_forum=forum,
+            announcement_channel=ann,
+            panel_channel=panel_ch,
+            voice_category=voice_cat,
+        )
+        self.assertTrue(ok)
+        self.assertEqual({row['source_channel_id'] for row in self.cog.watch_rows(1)}, {14, 15})
+
+    async def test_watch_panel_adds_and_removes_any_number_of_channels(self):
+        from setup_editor import WatchListView
+        guild = NS(id=1, me=NS(), get_channel_or_thread=lambda cid: NS(name=f'pull-{cid}'))
+        for channel_id in range(100, 126):
+            self.cog.store.write('INSERT INTO EventWatches VALUES (1,?,1)', (channel_id,))
+        view = WatchListView(self.cog, guild, user_id=9)
+        self.assertEqual(len(view.children[1].options), 25)
+        nxt = next(child for child in view.children if getattr(child, 'label', None) == 'Next')
+        interaction = NS(user=NS(id=9), response=NS(edit_message=AsyncMock(), send_message=AsyncMock()))
+        await nxt.callback(interaction)
+        self.assertEqual(view.page, 1)
+        self.assertEqual([option.value for option in view.children[1].options], ['125'])
+
+        remove = view.children[1]
+        remove._values = ['125']
+        await remove.callback(interaction)
+        self.assertEqual({row['source_channel_id'] for row in self.cog.watch_rows(1)}, set(range(100, 125)))
+        self.assertEqual(view.page, 0)
+
+        fresh = WatchListView(self.cog, guild, user_id=9)
+        added_ok = self._watch_channel(guild, 200)
+        added_bad = self._watch_channel(guild, 201, readable=False)
+        add = fresh.children[0]
+        add._values = [added_ok, added_bad, added_ok]
+        await add.callback(interaction)
+        watched = {row['source_channel_id'] for row in self.cog.watch_rows(1)}
+        self.assertIn(200, watched)
+        self.assertNotIn(201, watched)
+        self.assertIn('<#200>', fresh.notice)
+        self.assertIn('missing', fresh.notice)
+
+        clear = next(child for child in fresh.children if getattr(child, 'label', None) == 'Remove all')
+        await clear.callback(interaction)
+        self.assertEqual(self.cog.watch_rows(1), [])
+        self.assertIn('Stopped watching', fresh.notice)
 
     async def test_forum_routing_tier_then_instance_then_default(self):
         self.cog.store.configure(1, 10, 11, 3600, 600)

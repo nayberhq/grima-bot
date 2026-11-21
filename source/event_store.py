@@ -313,6 +313,10 @@ class EventStore:
     def poll_choices(self, raid_id):
         return self.rows('SELECT * FROM PollChoices WHERE raid_id=? ORDER BY position', (raid_id,))
 
+    def poll_voter_ids(self, raid_id):
+        return [row['user_id'] for row in self.rows(
+            'SELECT DISTINCT user_id FROM PollVotes WHERE raid_id=? AND user_id>0 ORDER BY user_id', (raid_id,))]
+
     def replace_votes(self, raid_id, user_id, positions):
         with self.conn:
             self.conn.execute('DELETE FROM PollVotes WHERE raid_id=? AND user_id=?', (raid_id, user_id))

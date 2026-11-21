@@ -24,7 +24,7 @@ class SetupDraft:
     __slots__ = (
         'raid_forum_id', 'announcement_id', 'panel_id', 'voice_category_id',
         'instance_forum_id', 't1_forum_id', 't2_forum_id', 't3_forum_id',
-        't4_forum_id', 't5_forum_id', 'watch_channel_id', 'leader_role_id', 'kin_role_id',
+        't4_forum_id', 't5_forum_id', 'leader_role_id', 'kin_role_id',
         'calendar_id', 'rss_id', 'discord_events', 'kin_icon', 'server_timezone',
         'server_invite_url', 'duration_minutes', 'lock_delay_minutes',
         'description_template_preview', 'description_template',
@@ -41,7 +41,6 @@ class SetupDraft:
         self.t3_forum_id = 0
         self.t4_forum_id = 0
         self.t5_forum_id = 0
-        self.watch_channel_id = 0
         self.leader_role_id = 0
         self.kin_role_id = 0
         self.calendar_id = 0
@@ -76,9 +75,6 @@ def load_setup_draft(store, conn, guild_id) -> SetupDraft:
     panels = store.rows('SELECT channel_id FROM CreationPanels WHERE guild_id=? LIMIT 1', (guild_id,))
     if panels:
         draft.panel_id = panels[0]['channel_id']
-    watch = store.one('SELECT source_channel_id FROM EventWatches WHERE guild_id=?', (guild_id,))
-    if watch:
-        draft.watch_channel_id = watch['source_channel_id']
     row = store.one(
         'SELECT raid_leader, priority, icon, rss, server, guild_events, calendar FROM Settings WHERE guild_id=?',
         (guild_id,),
@@ -168,15 +164,16 @@ class SetupEditorView(discord.ui.View):
     PAGE_TITLES = (
         'Core channels',
         'Forum routing (1/2)',
-        'Forum routing (2/2) & watch',
+        'Forum routing (2/2)',
         'Roles & feeds',
         'Flags & text',
     )
 
-    def __init__(self, cog, user_id: int, draft: SetupDraft):
+    def __init__(self, cog, user_id: int, draft: SetupDraft, guild_id: int | None = None):
         super().__init__(timeout=900)
         self.cog = cog
         self.user_id = user_id
+        self.guild_id = guild_id
         self.draft = draft
         self.page = 0
         self.reload()
@@ -195,6 +192,26 @@ class SetupEditorView(discord.ui.View):
             ),
             colour=discord.Colour(0x3498db),
         )
+        if self.page == 2 and self.guild_id:
+            rows = self.cog.store.rows(
+                'SELECT source_channel_id FROM EventWatches WHERE guild_id=? ORDER BY source_channel_id',
+                (self.guild_id,),
+            )
+            mentions = [f"<#{row['source_channel_id']}>" for row in rows]
+            shown = []
+            used = 0
+            for mention in mentions:
+                piece = (', ' if shown else '') + mention
+                if used + len(piece) > 800:
+                    break
+                shown.append(mention)
+                used += len(piece)
+            body = ', '.join(shown) if shown else 'None yet.'
+            hidden = len(mentions) - len(shown)
+            if hidden:
+                body += f' (+{hidden} more)'
+            body += '\nAdd or remove any number with `/watch`.'
+            embed.add_field(name=f'Watch channels ({len(mentions)})', value=body, inline=False)
         if self.page == len(self.PAGE_TITLES) - 1:
             preview = d.description_template_preview.strip()
             if preview:
@@ -220,7 +237,6 @@ class SetupEditorView(discord.ui.View):
         elif self.page == 2:
             self._forum_select(0, 'T4 forum (optional)', 't4_forum_id', optional=True)
             self._forum_select(1, 'T5 forum (optional)', 't5_forum_id', optional=True)
-            self._watch_select(2)
         elif self.page == 3:
             self._role_select(0, 'Raid leader role', 'leader_role_id')
             self._role_select(1, 'Kinship role', 'kin_role_id')
@@ -302,27 +318,6 @@ class SetupEditorView(discord.ui.View):
         async def chosen(i: discord.Interaction):
             if control.values:
                 self._set_id(field, str(control.values[0].id))
-            await i.response.defer()
-
-        control.callback = chosen
-        self.add_item(control)
-
-    def _watch_select(self, row):
-        control = discord.ui.ChannelSelect(
-            row=row,
-            placeholder='Watch channel (optional)',
-            channel_types=[discord.ChannelType.text, discord.ChannelType.news, discord.ChannelType.public_thread],
-            min_values=0,
-            max_values=1,
-        )
-        if self.draft.watch_channel_id:
-            control.default_values = [discord.Object(id=self.draft.watch_channel_id)]
-
-        async def chosen(i: discord.Interaction):
-            if control.values:
-                self._set_id('watch_channel_id', str(control.values[0].id))
-            else:
-                self._set_id('watch_channel_id', '0')
             await i.response.defer()
 
         control.callback = chosen
@@ -424,5 +419,153 @@ class SetupEditorView(discord.ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
             await interaction.response.send_message('This setup editor is not yours.', ephemeral=True)
+            return False
+        return True
+
+
+WATCH_PAGE = 25
+WATCH_TYPES = (discord.ChannelType.text, discord.ChannelType.news, discord.ChannelType.public_thread)
+
+
+class WatchListView(discord.ui.View):
+    """Add and remove mirrorkey watch channels. Changes apply immediately."""
+
+    def __init__(self, cog, guild, user_id: int):
+        super().__init__(timeout=900)
+        self.cog = cog
+        self.guild = guild
+        self.user_id = user_id
+        self.page = 0
+        self.notice = ''
+        self.reload()
+
+    def embed(self) -> discord.Embed:
+        rows = self.cog.watch_rows(self.guild.id)
+        embed = discord.Embed(
+            title='Watch channels',
+            description=(
+                'Gríma reads these channels for `mirrorkey:` codes.\n'
+                'The add menu accepts up to 25 channels at a time — use it again to add more. '
+                'The remove menu lists the current channels, 25 per page.'
+            ),
+            colour=discord.Colour(0x3498db),
+        )
+        pages = max(1, (len(rows) + WATCH_PAGE - 1) // WATCH_PAGE)
+        page = min(self.page, pages - 1)
+        visible = rows[page * WATCH_PAGE:(page + 1) * WATCH_PAGE]
+        if not rows:
+            listing = 'No channels yet.'
+        else:
+            listing = '\n'.join(f"• <#{row['source_channel_id']}>" for row in visible)
+            if pages > 1:
+                listing += f'\nPage {page + 1} of {pages}. Use Next and Previous to see the rest.'
+        embed.add_field(name=f'Watching ({len(rows)})', value=listing[:1024], inline=False)
+        if self.notice:
+            embed.add_field(name='Latest change', value=self.notice[:1024], inline=False)
+        return embed
+
+    def reload(self):
+        rows = self.cog.watch_rows(self.guild.id)
+        pages = max(1, (len(rows) + WATCH_PAGE - 1) // WATCH_PAGE)
+        self.page = min(self.page, pages - 1)
+        self.clear_items()
+        self._add_select()
+        start = self.page * WATCH_PAGE
+        visible = rows[start:start + WATCH_PAGE]
+        if visible:
+            self._remove_select(visible)
+        if rows:
+            self._action_row(pages)
+
+    def _channel_label(self, channel_id: int) -> str:
+        getter = getattr(self.guild, 'get_channel_or_thread', None) or getattr(self.guild, 'get_channel', None)
+        channel = getter(channel_id) if getter else None
+        name = getattr(channel, 'name', None)
+        if name:
+            return f'#{name}'[:100]
+        return str(channel_id)
+
+    def _add_select(self):
+        control = discord.ui.ChannelSelect(
+            row=0,
+            placeholder='Add channels (up to 25)',
+            channel_types=list(WATCH_TYPES),
+            min_values=1,
+            max_values=25,
+        )
+
+        async def chosen(interaction: discord.Interaction):
+            errors, added, kept = await self.cog.add_watch_channels(self.guild, list(control.values))
+            lines = list(errors)
+            if added:
+                lines.append('Added ' + ', '.join(channel.mention for channel in added) + '.')
+            if kept:
+                lines.append('Already watching ' + ', '.join(channel.mention for channel in kept) + '.')
+            self.notice = '\n'.join(lines)
+            self.reload()
+            await interaction.response.edit_message(embed=self.embed(), view=self)
+
+        control.callback = chosen
+        self.add_item(control)
+
+    def _remove_select(self, rows):
+        options = [
+            discord.SelectOption(label=self._channel_label(row['source_channel_id']), value=str(row['source_channel_id']))
+            for row in rows
+        ]
+        control = discord.ui.Select(
+            row=1,
+            placeholder='Remove channels' if self.page == 0 else f'Remove channels (page {self.page + 1})',
+            min_values=1,
+            max_values=len(options),
+            options=options,
+        )
+
+        async def chosen(interaction: discord.Interaction):
+            removed = self.cog.remove_watch_channels(self.guild.id, [int(value) for value in control.values])
+            self.notice = 'Removed ' + ', '.join(f'<#{channel_id}>' for channel_id in removed) + '.' if removed else 'Those channels were not on the list.'
+            self.reload()
+            await interaction.response.edit_message(embed=self.embed(), view=self)
+
+        control.callback = chosen
+        self.add_item(control)
+
+    def _action_row(self, pages: int):
+        if pages > 1:
+            back = discord.ui.Button(label='Previous', style=discord.ButtonStyle.secondary, row=2, disabled=self.page == 0)
+            nxt = discord.ui.Button(label='Next', style=discord.ButtonStyle.primary, row=2, disabled=self.page >= pages - 1)
+
+            async def go_back(interaction: discord.Interaction):
+                self.page -= 1
+                self.notice = ''
+                self.reload()
+                await interaction.response.edit_message(embed=self.embed(), view=self)
+
+            async def go_next(interaction: discord.Interaction):
+                self.page += 1
+                self.notice = ''
+                self.reload()
+                await interaction.response.edit_message(embed=self.embed(), view=self)
+
+            back.callback = go_back
+            nxt.callback = go_next
+            self.add_item(back)
+            self.add_item(nxt)
+
+        clear = discord.ui.Button(label='Remove all', style=discord.ButtonStyle.danger, row=2)
+
+        async def clear_all(interaction: discord.Interaction):
+            count = self.cog.clear_watch_channels(self.guild.id)
+            self.page = 0
+            self.notice = f'Stopped watching {count} channel(s).'
+            self.reload()
+            await interaction.response.edit_message(embed=self.embed(), view=self)
+
+        clear.callback = clear_all
+        self.add_item(clear)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message('This watch list is not yours.', ephemeral=True)
             return False
         return True
