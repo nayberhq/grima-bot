@@ -154,6 +154,7 @@ class Bot(commands.Bot):
                 await self.load_extension('treasure_cog')
             # Load custom cog
             await self.load_extension('custom_cog')
+            await self.load_extension('command_panel')
         except commands.ExtensionAlreadyLoaded:
             pass
 

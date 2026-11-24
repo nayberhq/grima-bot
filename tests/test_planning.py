@@ -254,14 +254,14 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.cog.save(self.event,teams,0)
         interaction=NS(response=NS(defer=AsyncMock()),followup=NS(send=AsyncMock()))
         self.cog.events.command_event=AsyncMock(return_value=None)
-        await PlanningCog.edit_command.callback(self.cog,interaction,1,1,1)
+        await PlanningCog.edit_command(self.cog,interaction,1,1,1)
         self.assertEqual(self.cog.plan(100)['revision'],1)
         self.cog.events.command_event.return_value=self.event
-        await PlanningCog.edit_command.callback(self.cog,interaction,1,1,1,str(PLAYERS[0]['player_id']),'Guardian','Red')
+        await PlanningCog.edit_command(self.cog,interaction,1,1,1,str(PLAYERS[0]['player_id']),'Guardian','Red')
         self.assertEqual(json.loads(self.cog.plan(100)['body'])[0]['members'][0]['spec'],'Red')
         self.assertEqual(self.cog.plan(100)['revision'],2)
         self.cog.players.return_value=[]
-        await PlanningCog.edit_command.callback(self.cog,interaction,2,1,1)
+        await PlanningCog.edit_command(self.cog,interaction,2,1,1)
         self.assertEqual(json.loads(self.cog.plan(100)['body'])[0]['members'],[])
 
     async def test_closed_event_does_not_mutate(self):
@@ -323,7 +323,7 @@ class PlannerExportLinkTests(unittest.IsolatedAsyncioTestCase):
     async def test_export_uses_authorized_snapshot_link_flow(self):
         cog = NS(open_planner=AsyncMock())
         interaction = object()
-        await PlanningCog.export_command.callback(cog, interaction)
+        await PlanningCog.export_command(cog, interaction)
         cog.open_planner.assert_awaited_once_with(interaction)
 
     async def test_raid_view_has_colored_planner_button_and_inbox_modal(self):

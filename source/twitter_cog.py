@@ -13,8 +13,7 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
-@app_commands.guild_only()
-class TwitterCog(commands.GroupCog, name=_("twitter"), description=_("Manage twitter settings.")):
+class TwitterCog(commands.Cog):
 
     def __init__(self, bot):
         self.bot = bot
@@ -78,7 +77,6 @@ class TwitterCog(commands.GroupCog, name=_("twitter"), description=_("Manage twi
             logger.warning("Twitter channel not found for guild {0}.".format(guild_id))
             upsert(self.conn, 'Settings', ['twitter'], [None], ['guild_id'], [guild_id])
 
-    @app_commands.command(name=_("on"), description=_("Turn on tweets in this channel."))
     async def tweets_on(self, interaction: discord.Interaction):
         if not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message(_("You must be an admin to set up tweets."), ephemeral=True)
@@ -93,7 +91,6 @@ class TwitterCog(commands.GroupCog, name=_("twitter"), description=_("Manage twi
         await interaction.response.send_message(_("@lotro tweets will be posted to this channel."))
         self.conn.commit()
 
-    @app_commands.command(name=_("off"), description=_("Turn off tweets in this channel."))
     async def tweets_off(self, interaction: discord.Interaction):
         if not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message(_("You must be an admin to turn off tweets."), ephemeral=True)

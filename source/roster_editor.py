@@ -50,7 +50,7 @@ class RosterEditor(discord.ui.View):
                     await i.response.send_message('Select a player and class/spec first.',ephemeral=True);return
                 c,s=self.choice.split('|') if self.choice else (None,None)
                 try:
-                    await type(self.cog).edit_command.callback(self.cog,i,self.revision,self.team,self.slot,str(self.player) if action=='save' else None,c,s)
+                    await self.cog.edit_command(i,self.revision,self.team,self.slot,str(self.player) if action=='save' else None,c,s)
                 except ValueError as exc:
                     await i.response.send_message(str(exc),ephemeral=True)
                 self.stop()

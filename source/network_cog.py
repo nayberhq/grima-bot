@@ -208,8 +208,6 @@ class NetworkCog(commands.Cog):
     async def cog_unload(self):
         for task in self.panel_tasks.values():task.cancel()
 
-    @app_commands.command(name='event-reconnect',description='Allow a disconnected server to sync again using a fresh share code.')
-    @app_commands.guild_only()
     async def reconnect(self,interaction:discord.Interaction,guild_id:str):
         event=await self.events.command_event(interaction)
         if not event:return
@@ -220,10 +218,8 @@ class NetworkCog(commands.Cog):
             await interaction.response.send_message('Use a numeric server ID.',ephemeral=True);return
         self.store.write('DELETE FROM EventBlocks WHERE raid_id=? AND guild_id=?',(event['raid_id'],int(guild_id)))
         code=event['share_token'] or self.store.share(event['raid_id'])
-        await interaction.response.send_message(f'Allowed reconnection. Destination administrator: /event-repair code:{code}',ephemeral=True)
+        await interaction.response.send_message(f'Allowed reconnection. Destination administrator: open /commands and choose event-repair, then enter {code}',ephemeral=True)
 
-    @app_commands.command(name='event-status',description='Inspect linked servers, stale updates and pending deliveries; optionally retry.')
-    @app_commands.guild_only()
     async def status(self, interaction:discord.Interaction,retry:bool=False):
         event=await self.events.command_event(interaction)
         if not event:return
@@ -249,9 +245,6 @@ class NetworkCog(commands.Cog):
         lines.append('Discovery publication: '+str(push or 'not published'))
         await interaction.followup.send(file=discord.File(io.BytesIO('\n'.join(lines).encode()),filename='event-status.txt'),ephemeral=True)
 
-    @app_commands.command(name='network-status',description='Inspect and retry this server’s failed event discoveries.')
-    @app_commands.guild_only()
-    @app_commands.checks.has_permissions(manage_guild=True)
     async def network_status(self,interaction:discord.Interaction,retry:bool=False):
         await interaction.response.defer(ephemeral=True)
         if retry:await self.tick()
@@ -260,8 +253,6 @@ class NetworkCog(commands.Cog):
         text=('\n'.join(str(r) for r in rows) or 'No failed discoveries.')+f"\nAwaiting manual announcement publication: {pending['n']}"
         await interaction.followup.send(file=discord.File(io.BytesIO(text.encode()),filename='network-status.txt'),ephemeral=True)
 
-    @app_commands.command(name='event-unlink',description='Disconnect a mirror and block it from automatically rejoining.')
-    @app_commands.guild_only()
     async def unlink(self,interaction:discord.Interaction,guild_id:str):
         event=await self.events.command_event(interaction,manage=False)
         if not event:return
@@ -290,9 +281,6 @@ class NetworkCog(commands.Cog):
             await self.events.raids.calendar_cog.update_calendar(target)
         await interaction.followup.send('Server disconnected and blocked from rejoining this event.',ephemeral=True)
 
-    @app_commands.command(name='event-repair',description='Repair or reconnect a server’s event copy using its sharing code.')
-    @app_commands.guild_only()
-    @app_commands.checks.has_permissions(manage_guild=True)
     async def repair(self,interaction:discord.Interaction,code:str):
         await interaction.response.defer(ephemeral=True)
         try:

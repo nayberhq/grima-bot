@@ -17,7 +17,7 @@ from discord.ext import commands, tasks
 
 from database import upsert
 from event_store import EventStore, forum_title, mirror_keys, extract_origin_badge, InvalidShare
-from time_cog import Time, time_zone_autocomplete
+from time_cog import Time
 
 with open('common_timezones.txt', 'r') as _zones:
     COMMON_TIMEZONES = _zones.read().splitlines()[:25]
@@ -353,10 +353,10 @@ class EventsCog(commands.Cog):
     async def validate_destinations(self, settings, require_voice=True, forum_id=None):
         forum = await self.channel(forum_id or settings['forum_id'])
         if require_voice and not settings['voice_category_id']:
-            raise ValueError('Hosting events requires a voice category. Set it with /setup.')
+            raise ValueError('Hosting events requires a voice category. Set it with /settings.')
         category = await self.channel(settings['voice_category_id']) if require_voice else None
         if not isinstance(forum, discord.ForumChannel) or (require_voice and not isinstance(category, discord.CategoryChannel)):
-            raise ValueError('Configure an existing forum and voice category with /setup.')
+            raise ValueError('Configure an existing forum and voice category with /settings.')
         if forum.guild.id != settings['guild_id'] or (category and category.guild.id != settings['guild_id']):
             raise ValueError('Forum and voice category must belong to this server.')
         perms = forum.permissions_for(forum.guild.me)
@@ -404,7 +404,7 @@ class EventsCog(commands.Cog):
         kinship = guild.name if guild and getattr(guild, 'name', None) else 'host'
         lines.append('')
         lines.append(f'Not in the {kinship} discord? join here!')
-        lines.append(invite_url if invite_url else 'Invite unavailable. Ask the organizer to set server_invite_url in /setup in the owning server.')
+        lines.append(invite_url if invite_url else 'Invite unavailable. Ask the organizer to set server_invite_url in /settings in the owning server.')
         if code:
             lines.append('')
             lines.append(f'mirrorkey:{code}')
@@ -531,7 +531,7 @@ class EventsCog(commands.Cog):
                 elif not ended and owner and owner.get('voice_category_id'):
                     local_embed.add_field(name='Event voice channel', value='Created in the owning server when the event starts.', inline=False)
                 if copy['guild_id'] != event['guild_id']:
-                    local_embed.add_field(name='Join the event server',value=invite_url if invite_url else 'Invite unavailable. Ask the organizer to set server_invite_url in /setup in the owning server.',inline=False)
+                    local_embed.add_field(name='Join the event server',value=invite_url if invite_url else 'Invite unavailable. Ask the organizer to set server_invite_url in /settings in the owning server.',inline=False)
                 show_poll = int(event['time']) - CONVERT_CUTOFF >= current
                 view = None if ended else (
                     CreepView(self.raids) if event['creep'] else RaidView(self.raids, raid_id=raid_id, show_poll=show_poll))
@@ -734,7 +734,7 @@ class EventsCog(commands.Cog):
             raise ValueError('Choose between 2 and 25 events.')
         origin = await self.create_origin(guild_id, title, '', timestamp, size=12, force_default_forum=True)
         if origin is None:
-            raise ValueError('Run /setup before creating a poll.')
+            raise ValueError('Run /settings before creating a poll.')
         thread, post, settings = origin
         raid_id = post.id
         upsert(self.bot.conn, 'Raids',
@@ -769,7 +769,7 @@ class EventsCog(commands.Cog):
             raise ValueError('The earliest hour must be more than 24 hours away, and within one year.')
         origin = await self.create_origin(guild_id, title, '', earliest, size=12, force_default_forum=True)
         if origin is None:
-            raise ValueError('Run /setup before creating a poll.')
+            raise ValueError('Run /settings before creating a poll.')
         thread, post, settings = origin
         raid_id = post.id
         upsert(self.bot.conn, 'Raids',
@@ -903,7 +903,7 @@ class EventsCog(commands.Cog):
                         self.store.write('INSERT OR REPLACE INTO SourceInvites VALUES (?,?)',(event['guild_id'],str(invite.url)))
                         self.store.touch(raid_id)
                     except discord.HTTPException:
-                        log.warning('Cannot create owner-server invite for event %s; set server_invite_url in /setup or grant Create Invite',raid_id)
+                        log.warning('Cannot create owner-server invite for event %s; set server_invite_url in /settings or grant Create Invite',raid_id)
             # Update the final embed before locking; the renderer removes controls.
             if ended:
                 for copy in self.store.copies(raid_id):
@@ -986,7 +986,7 @@ class EventsCog(commands.Cog):
         if self.store.poll_open(event['raid_id']):
             raise InvalidShare('This poll is not shared until it becomes an event.')
         if not settings:
-            raise ValueError('Run /setup in the destination server first.')
+            raise ValueError('Run /settings in the destination server first.')
         raid_id = event['raid_id']
         async with self.locks[raid_id]:
             event = self.store.by_token(code.strip())
@@ -1663,7 +1663,7 @@ class EventsCog(commands.Cog):
         async def resolve(channel_id, label, required=False):
             if not channel_id:
                 if required:
-                    unresolved[label] = f'**{label}:** not set. Choose it in `/setup` or `/settings`.'
+                    unresolved[label] = f'**{label}:** not set. Choose it in `/settings`.'
                 return None
             channel = await self._saved_channel(guild, channel_id)
             if channel is None:
@@ -2157,35 +2157,6 @@ class EventsCog(commands.Cog):
             embed.add_field(name='Notes', value='\n'.join(f"• {w}" for w in warnings)[:1024], inline=False)
         return True, embed
 
-    @app_commands.command(name='setup', description='Configure the raid forum, optional instance and tier forums, panels, and roles.')
-    @app_commands.guild_only()
-    @app_commands.checks.has_permissions(manage_guild=True)
-    @app_commands.default_permissions(manage_guild=True)
-    @app_commands.autocomplete(server_timezone=time_zone_autocomplete)
-    @app_commands.describe(
-        raid_forum='Default forum. Used when no matching tier forum is set, and for raids when no instance forum applies.',
-        announcement_channel='Mandatory: Outgoing channel where mirrorkey discovery codes are posted.',
-        panel_channel='Mandatory: Channel where sticky cluster raid creation panels are posted.',
-        voice_category='Optional: Category for a temporary voice channel at start time. Leave empty and events will not create or link a voice channel.',
-        instance_forum='Optional: ≤6-player events whose tier has no forum of its own.',
-        t1_forum='Optional: Tier 1 events (instances and raids) go here instead of the instance or default forum.',
-        t2_forum='Optional: Tier 2 / T2c events.',
-        t3_forum='Optional: Tier 3 events.',
-        t4_forum='Optional: Tier 4 events.',
-        t5_forum='Optional: Tier 5 events.',
-        watch_channel='Optional: Add one channel to the mirrorkey watch list. Does not remove channels already watched. Use /watch to add or remove any number.',
-        leader_role='Optional. When set, only this role can create events and use leader controls. Leave unset and anyone can.',
-        kin_role='Optional: Role used to distinguish kinship members on raid signups.',
-        kin_icon='Optional: Emoji badge displayed next to kinship members on raid signups.',
-        calendar_channel='Optional: Channel where the live auto-updating raid calendar embed is posted.',
-        discord_events='Optional: Keep one Discord event that links to the calendar (needs calendar_channel).',
-        rss_channel='Optional: Channel where official LOTRO forum RSS announcements are posted.',
-        server_timezone='Optional: Default server timezone (e.g. America/New_York).',
-        server_invite_url='Optional: Non-expiring invite URL to this server for cross-server voice links.',
-        duration_minutes='Optional: Default raid duration in minutes (15–1440, default 180).',
-        lock_delay_minutes='Optional: Minutes after event end before locking forum threads (0–10080, default 60).',
-        description_message_link='Optional: Discord message link copied into the reusable event description template (see `/settings`).',
-    )
     async def setup_command(
         self,
         interaction: discord.Interaction,
@@ -2291,15 +2262,10 @@ class EventsCog(commands.Cog):
         self.bot.conn.commit()
         return notes
 
-    @app_commands.command(name='setup-reset', description='Clear this server’s saved setup so /setup can be run again.')
-    @app_commands.guild_only()
-    @app_commands.checks.has_permissions(manage_guild=True)
-    @app_commands.default_permissions(manage_guild=True)
-    @app_commands.describe(confirm='Must be True. Existing events, rosters, and forum posts are left in place.')
     async def setup_reset_command(self, interaction: discord.Interaction, confirm: bool):
         if not confirm:
             await interaction.response.send_message(
-                'Nothing was cleared. Run `/setup-reset` again with **confirm** set to True.',
+                'Nothing was cleared. Open `/commands` and choose setup-reset, then confirm.',
                 ephemeral=True,
             )
             return
@@ -2307,7 +2273,7 @@ class EventsCog(commands.Cog):
         notes = await self.reset_guild_setup(interaction.guild)
         lines = [
             'Saved setup for this server was cleared. Existing events were left in place.',
-            'Run `/setup` or `/settings` to configure it again. Cluster panels are posted again on the next setup.',
+            'Run `/settings` to configure it again. Cluster panels are posted again on the next setup.',
         ]
         if notes:
             lines.extend(['', *notes])
@@ -2332,8 +2298,6 @@ class EventsCog(commands.Cog):
         view = WatchListView(self, interaction.guild, interaction.user.id)
         await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
 
-    @app_commands.command(name='event-share', description='Create or revoke the code other servers use to sync this raid.')
-    @app_commands.guild_only()
     async def share_command(self, interaction: discord.Interaction, revoke: bool = False):
         event = await self.command_event(interaction)
         if not event:
@@ -2349,11 +2313,9 @@ class EventsCog(commands.Cog):
             message = 'Sharing code revoked. Existing synchronized servers remain connected.'
         else:
             token = event['share_token'] or self.store.share(event['raid_id'])
-            message = f'Give this code to a partner server’s raid leader: `/event-sync code:{token}`\nOr post this keyword in a watched channel: `mirrorkey:{token}`\nIt grants access to this event’s roster and announcements. This code stays valid until explicitly revoked.'
+            message = f'Give this code to a partner server’s raid leader. They open `/commands` and choose event-sync, then enter: `{token}`\nOr post this keyword in a watched channel: `mirrorkey:{token}`\nIt grants access to this event’s roster and announcements. This code stays valid until explicitly revoked.'
         await interaction.response.send_message(message, ephemeral=True)
 
-    @app_commands.command(name='event-sync', description='Sync a shared raid into this server’s event forum.')
-    @app_commands.guild_only()
     async def sync_command(self, interaction: discord.Interaction, code: str):
         if not self.raids.calendar_cog.is_raid_leader(interaction.user, interaction.guild):
             await interaction.response.send_message('A server administrator or configured raid leader must sync events.', ephemeral=True)
@@ -2366,8 +2328,6 @@ class EventsCog(commands.Cog):
             return
         await interaction.followup.send(f"{'Synced' if created else 'Already synced'}: <#{thread_id}>", ephemeral=True)
 
-    @app_commands.command(name='event-announce', description='Send an announcement to every synchronized event thread.')
-    @app_commands.guild_only()
     async def announce_command(self, interaction: discord.Interaction, message: app_commands.Range[str, 1, 1800] | None = None):
         event = await self.command_event(interaction)
         if not event:
@@ -2391,8 +2351,6 @@ class EventsCog(commands.Cog):
         await self.deliver_announcements()
         await interaction.followup.send('Announcement queued for all linked threads; failed deliveries retry automatically.', ephemeral=True)
 
-    @app_commands.command(name='event-duration', description='Set this event’s duration in minutes.')
-    @app_commands.guild_only()
     async def duration_command(self, interaction: discord.Interaction, minutes: app_commands.Range[int, 15, 1440]):
         event = await self.command_event(interaction)
         if not event:

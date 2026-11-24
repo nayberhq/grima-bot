@@ -119,7 +119,7 @@ class PlanningCog(commands.Cog):
     def save(self, event, teams, expected):
         current = self.plan(event['raid_id'])
         if (current['revision'] if current else 0) != expected:
-            raise ValueError('Roster changed. Use /roster-show to get the latest revision, then retry.')
+            raise ValueError('Roster changed. Open /commands and choose roster-show for the latest revision, then retry.')
         latest = self.store.event(event['raid_id'])
         if not latest or self.store.lock_due(latest, time.time()):
             raise ValueError('This event is closed.')
@@ -312,13 +312,9 @@ class PlanningCog(commands.Cog):
                 suppress_embeds=True,
             )
 
-    @app_commands.command(name='planner-export', description='Open current signups in Vanguard, with JSON fallback for larger rosters.')
-    @app_commands.guild_only()
     async def export_command(self, interaction: discord.Interaction):
         await self.open_planner(interaction)
 
-    @app_commands.command(name='planner-import', description='Replace this event’s planned roster from Vanguard Session JSON.')
-    @app_commands.guild_only()
     async def import_command(self, interaction: discord.Interaction, session: discord.Attachment, expected_revision: app_commands.Range[int,0]):
         event = await self.events.command_event(interaction)
         if not event:
@@ -336,33 +332,27 @@ class PlanningCog(commands.Cog):
         await self.sync(event['raid_id'])
         await interaction.followup.send(f'Roster revision {revision} saved ({len(teams)} teams). Linked threads update directly; failed deliveries retry.', ephemeral=True)
 
-    @app_commands.command(name='roster-create',description='Start the authoritative shared roster without using Vanguard.')
-    @app_commands.guild_only()
     async def create_roster(self,interaction:discord.Interaction):
         event=await self.events.command_event(interaction)
         if not event:return
         self.save(event,[dict(label=event['name'],members=[])],0)
         await interaction.response.defer(ephemeral=True)
         await self.sync(event['raid_id'])
-        await interaction.followup.send('Roster revision 1 created. Add players with /roster-edit.',ephemeral=True)
+        await interaction.followup.send('Roster revision 1 created. Add players from /commands → roster-edit.',ephemeral=True)
 
     async def open_editor(self,interaction):
         event=await self.events.command_event(interaction)
         if not event:return
         if not self.plan(event['raid_id']) and self.store.one('SELECT 1 FROM LegacyMigration WHERE raid_id=?',(event['raid_id'],)):
-            await interaction.response.send_message('Legacy assignments need review before creating a replacement. Use /event-status for details; original Assignment rows are retained.',ephemeral=True);return
+            await interaction.response.send_message('Legacy assignments need review before creating a replacement. Open /commands and choose event-status; original Assignment rows are retained.',ephemeral=True);return
         if not self.plan(event['raid_id']):
             self.save(event,[dict(label=event['name'],members=[])],0)
         from roster_editor import RosterEditor
         await interaction.response.send_message('Choose team, slot, player and class/spec, then Save.',view=RosterEditor(self,event,interaction.user.id),ephemeral=True)
 
-    @app_commands.command(name='roster-manage',description='Edit the roster with player and slot dropdowns.')
-    @app_commands.guild_only()
     async def manage_command(self,interaction:discord.Interaction):
         await self.open_editor(interaction)
 
-    @app_commands.command(name='roster-show', description='Show the current planned roster and revision.')
-    @app_commands.guild_only()
     async def show_command(self, interaction: discord.Interaction):
         event = await self.events.command_event(interaction, manage=False)
         if not event:
@@ -373,15 +363,13 @@ class PlanningCog(commands.Cog):
             return
         await interaction.response.send_message(f"Revision {plan['revision']}", file=discord.File(io.BytesIO('\n\n'.join(self.pages(event, plan)).encode()), filename='roster.txt'), ephemeral=True)
 
-    @app_commands.command(name='roster-edit', description='Replace/remove a slot or append a signup; team and slot numbers start at 1.')
-    @app_commands.guild_only()
     async def edit_command(self, interaction: discord.Interaction, expected_revision: app_commands.Range[int,1], team: app_commands.Range[int,1,16], slot: app_commands.Range[int,1,25], player_id: str | None = None, class_name: str | None = None, specialization: Literal['Red','Blue','Yellow'] | None = None):
         event = await self.events.command_event(interaction)
         if not event:
             return
         plan = self.plan(event['raid_id'])
         if not plan:
-            raise ValueError('Use /roster-create to start a plan or import one from Vanguard.')
+            raise ValueError('Open /commands and choose roster-create, or import a plan from Vanguard.')
         teams = json.loads(plan['body'])
         if team > len(teams) or slot > len(teams[team-1]['members'])+1:
             raise ValueError('Choose an existing slot or the next slot to append.')
@@ -415,15 +403,13 @@ class PlanningCog(commands.Cog):
         await self.sync(event['raid_id'])
         await interaction.followup.send(f'Roster revision {revision} saved and synchronization queued.', ephemeral=True)
 
-    @app_commands.command(name='roster-swap', description='Swap two planned roster slots, within or between teams.')
-    @app_commands.guild_only()
     async def swap_command(self, interaction: discord.Interaction, expected_revision: app_commands.Range[int,1], team_a: app_commands.Range[int,1,16], slot_a: app_commands.Range[int,1,24], team_b: app_commands.Range[int,1,16], slot_b: app_commands.Range[int,1,24]):
         event = await self.events.command_event(interaction)
         if not event:
             return
         plan = self.plan(event['raid_id'])
         if not plan:
-            raise ValueError('Use /roster-create to start a plan or import one from Vanguard.')
+            raise ValueError('Open /commands and choose roster-create, or import a plan from Vanguard.')
         teams = json.loads(plan['body'])
         try:
             a, b = teams[team_a-1]['members'], teams[team_b-1]['members']

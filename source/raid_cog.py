@@ -201,8 +201,6 @@ class RaidCog(commands.Cog):
                     roster = False
                 await self.post_raid(name, tier, aim, timestamp, roster, guild.id, channel, interaction.user.id, creep)
 
-    @app_commands.command(name=_("remove_roles"), description=_("Deletes your class roles (used when signing up)."))
-    @app_commands.guild_only()
     async def roles_respond(self, interaction: discord.Interaction):
         await interaction.response.send_message(_("Removing your class roles..."))
         member = interaction.user
@@ -213,20 +211,6 @@ class RaidCog(commands.Cog):
             content = _("I am missing permissions to manage the class roles!")
         await interaction.edit_original_response(content=content)
 
-    @app_commands.command(name=_("specs"), description=_("Set a specialization for your class."))
-    @app_commands.describe(classes=_("The class to set your specialization for."),
-                           spec=_("Your chosen specialization."), tier=_("Apply this spec only to a specific tier"))
-    @app_commands.choices(spec=[
-        app_commands.Choice(name='Red \U0001F534', value=0b001),
-        app_commands.Choice(name='Blue \U0001F535', value=0b010),
-        app_commands.Choice(name='Yellow \U0001F7E1', value=0b100),
-        app_commands.Choice(name='Red \U0001F534 and Blue \U0001F535', value=0b011),
-        app_commands.Choice(name='Blue \U0001F535 and Yellow \U0001F7E1', value=0b110),
-        app_commands.Choice(name='Red \U0001F534 and Yellow \U0001F7E1', value=0b101),
-        app_commands.Choice(name='Red \U0001F534, Blue \U0001F535 and Yellow \U0001F7E1', value=0b111),
-        app_commands.Choice(name='\U0001F534 \U0001F7E0 \U0001F7E2', value=0b1000),
-        app_commands.Choice(name='Clear specialization', value=0b000),
-    ])
     async def specs_respond(self, interaction: discord.Interaction, classes: Classes, spec: app_commands.Choice[int], tier: Optional[app_commands.Range[int, 0, 5]]=0):
         if spec.value & 0b1000:
             msg = _("<@{0}> loving you is easy when your colours are like my dreams \U0001F3B6").format(interaction.user.id)
@@ -254,9 +238,6 @@ class RaidCog(commands.Cog):
                     self.event_store.touch(rid)
                     await events.refresh(rid)
 
-    @app_commands.command(name=_("list_players"), description=_("List the signed up players for a raid in order of sign up time."))
-    @app_commands.describe(raid_number=_("Specify the raid to list, e.g. 2 for the second upcoming raid. This defaults to 1 if omitted."), cut_off=_("Specify cut-off time in hours before raid time. This defaults to 24 hours if omitted."))
-    @app_commands.guild_only()
     async def list_respond(self, interaction: discord.Interaction, raid_number: Optional[int]=1, cut_off: Optional[int]=24):
         if not self.calendar_cog.is_raid_leader(interaction.user, interaction.guild):
             await interaction.response.send_message(_("You must be a raid leader to list players."))
@@ -304,7 +285,6 @@ class RaidCog(commands.Cog):
         embed.add_field(name="\u200b", value="\u200b")
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name=_("list_raids"), description=_("Lists the events you have signed up for."))
     async def list_raids_respond(self, interaction: discord.Interaction):
         raids = select(self.conn, 'Players', ['raid_id'], ['player_id', 'unavailable'], [interaction.user.id, False])
         for i, raid in enumerate(raids):
@@ -921,7 +901,7 @@ class RaidView(discord.ui.View):
                     from signup_picker import SignupPicker
                     await i.response.send_message('Choose your specialization to finish signing up.',view=SignupPicker(self.raid_cog,raid_id,i.user.id,class_name),ephemeral=True)
                     return
-                err_msg = _("You have not yet set a {0} specialization for tier {1}. Please first use /specs.").format(class_name, tier_num)
+                err_msg = _("You have not yet set a {0} specialization for tier {1}. Please first use /profile.").format(class_name, tier_num)
                 await i.response.send_message(err_msg, ephemeral=True)
                 return
 
@@ -968,7 +948,7 @@ class RaidView(discord.ui.View):
                 await i.response.send_message('Choose a class and specialization.', view=SignupPicker(self.raid_cog,raid_id,i.user.id), ephemeral=True)
                 return
             if tier_digits:
-                err_msg = _("You have not assigned yourself any class roles yet for this tier, please set a class specialization first with /specs.")
+                err_msg = _("You have not assigned yourself any class roles yet for this tier, please set a class specialization first with /profile.")
                 await i.response.send_message(err_msg, ephemeral=True)
                 return
 

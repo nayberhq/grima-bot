@@ -89,10 +89,10 @@ class ConfigCog(commands.Cog):
     @staticmethod
     def welcome_msg(guild_name):
         msg = _("Greetings {0}! I am here to coordinate your LOTRO raids and cross-server events.\n\n"
-                "Administrators can configure the server with `/setup` (slash parameters and smoke test) or adjust saved options in `/settings` (a private paged editor).\n\n"
-                "Once configured, `/setup` posts sticky raid creation panels grouped chronologically by LOTRO release cluster "
-                "(newest clusters at the bottom) in your panel channel so raid leaders can schedule any raid with a single click.\n\n"
-                "Run `/help` anytime for the complete step-by-step server setup guide (raid forum, push/pull announcement sync, and roles channel).\n"
+                "Administrators configure the server with `/settings`. `/watch` chooses channels scanned for shared-event codes. "
+                "`/commands` opens everything else, including setup and setup-reset. `/profile` sets your class, specialization, and personal timezone.\n\n"
+                "Saving the required channels in `/settings` posts sticky raid creation panels in the panel channel.\n\n"
+                "Open `/commands` and choose help for the full setup guide.\n"
                 "Repository & docs: <https://github.com/nayberhq/grima-bot>"
                 ).format(guild_name)
         return msg
@@ -104,23 +104,22 @@ class ConfigCog(commands.Cog):
 
         if topic in ('all', 'forum'):
             forum_embed = discord.Embed(
-                title="1. Unified /setup, Raid Forum & Sticky Cluster Panels",
+                title="1. /settings, Raid Forum & Sticky Cluster Panels",
                 colour=colour,
                 description=(
-                    "Gríma configures your entire server and runs a **permission smoke test** in a single `/setup` command.\n\n"
+                    "Gríma configures the server from `/settings`. `/commands` → setup opens the same editor and runs the permission smoke test.\n\n"
                     "**Step A — Create the Mandatory Channels**\n"
-                    "• **Raid Forum (`#raids`):** Create a **Forum Channel**. In its settings, turn **OFF** *\"Require people to select tags when posting\"*. Grant the bot `View Channel`, `Create Posts` (`Send Messages`), `Send Messages in Posts`, `Manage Posts`, `Embed Links`, `Read Post History`, and `Create Invite`.\n"
-                    "• **Announcement Push Channel (`#raid-network-push`):** Create a Text or Announcement Channel and grant the bot `View Channel`, `Send Messages`, and `Read Message History`.\n"
-                    "• **Event Panel Channel (`#create-raid`):** Create a Text Channel for raid leaders and grant the bot `View Channel`, `Send Messages`, `Embed Links`, and `Read Message History`.\n"
-                    "• **Voice Category (optional):** A category with `View Channel` and `Manage Channels`. Leave it unset and events do not create or link a voice channel.\n\n"
-                    "**Step B — Optional Forums (routing is implied)**\n"
-                    "Events use the first forum that applies: a matching tier forum (`t1_forum`–`t5_forum`), then `instance_forum` for ≤6-player events, then `raid_forum`. A T3 instance uses `t3_forum` when that is set; a T2 instance uses `instance_forum` when T2 has no forum; a T2 raid uses `raid_forum` unless `t2_forum` is set.\n\n"
-                    "**Step C — Run `/setup` or `/settings` (Includes Permission Smoke Test)**\n"
-                    "• **`/setup`** — one-shot configuration with slash parameters (`raid_forum`, `announcement_channel`, `panel_channel`, `voice_category`, optional instance and tier forums, `watch_channel`, roles, calendar/RSS, timings, optional `description_message_link`).\n"
-                    "• **`/settings`** — page 1 has the `(required)` channels and an optional voice category. **Save** appears after the required ones are set. Use `/watch` and **Watch sync** for calendar-only mode.\n"
-                    "• **`/setup-reset confirm:True`** clears this server's saved setup. Existing events stay.\n"
-                    "• If any permission or channel flag is missing, the command halts with an exact checklist of what to fix.\n"
-                    "• On first setup (or when the panel channel changes), Gríma posts all **8 LOTRO Cluster Panels** (with LOTRO Wiki artwork) in chronological release order and keeps them sticky at the bottom of the panel channel. Re-running with the same panel channel leaves existing panels in place."
+                    "• **Raid Forum (`#raids`):** Create a **Forum Channel**. Turn **OFF** *\"Require people to select tags when posting\"*. Grant the bot `View Channel`, `Create Posts`, `Send Messages in Posts`, `Manage Posts`, `Embed Links`, `Read Post History`, and `Create Invite`.\n"
+                    "• **Announcement Push Channel (`#raid-network-push`):** Text or Announcement Channel with `View Channel`, `Send Messages`, and `Read Message History`.\n"
+                    "• **Event Panel Channel (`#create-raid`):** Text Channel with `View Channel`, `Send Messages`, `Embed Links`, and `Read Message History`.\n"
+                    "• **Voice Category (optional):** `View Channel` and `Manage Channels`. Leave it unset and events do not create or link a voice channel.\n\n"
+                    "**Step B — Optional Forums**\n"
+                    "Events use the first forum that applies: a matching tier forum (`t1_forum`–`t5_forum`), then `instance_forum` for ≤6-player events, then `raid_forum`.\n\n"
+                    "**Step C — `/settings`**\n"
+                    "• Page 1 is the `(required)` channels: `raid_forum`, `announcement_channel`, and `panel_channel`, plus an optional voice category. **Save** appears after those three are set.\n"
+                    "• Later pages cover instance and tier forums, `watch_channel`, roles, calendar, RSS, and timings. `/watch` adds or removes watched channels.\n"
+                    "• `/commands` → setup-reset clears this server's saved setup. Existing events stay.\n"
+                    "• A missing permission stops setup with a checklist. The first successful setup posts the cluster panels in the panel channel."
                 ),
             )
             embeds.append(forum_embed)
@@ -130,20 +129,16 @@ class ConfigCog(commands.Cog):
                 title="2. Announcements Push & Pull Channel Sync",
                 colour=colour,
                 description=(
-                    "Servers using the same `grima-bot` deployment can automatically publish and mirror shared events via `mirrorkey:<code>` markers.\n\n"
-                    "**Outgoing Push Channel (`announcement_channel` in `/setup`)**\n"
-                    "1. Configured via the mandatory `announcement_channel` parameter in `/setup`.\n"
-                    "2. Whenever a new shared event is created from the cluster panels, Gríma posts `<Event> — <Timestamp>` with `mirrorkey:<code>` to this channel.\n"
-                    "3. *Announcement (News) Channels:* Gríma does not auto-publish; click **Publish** on messages you want crossposted to following servers.\n\n"
-                    "**Incoming Pull Channels (`/watch`, or `watch_channel` in `/setup`)**\n"
-                    "1. Create one or more local channels (e.g. `#raid-network-pull`) that **Follow** your partner servers' Announcement push channels. Gríma can watch as many as you add.\n"
-                    "2. Ensure **grima-bot** has `View Channel` + `Read Message History` in each channel.\n"
-                    "3. Run `/watch` or `/settings` to add or remove channels. **Watch channel calendar** lists them (on by default). **Watch channel event syncing** creates raid posts (off by default).\n"
-                    "4. Use `/network-status` (`retry:True`) to inspect or retry any failed event discoveries.\n\n"
-                    "**Manual Sync & Cross-Server Broadcasts**\n"
-                    "• **Manual Share/Pull:** Run `/event-share` inside an event post to get its code (`revoke:True` to disable new mirrors); partner raid leaders run `/event-sync code:<code>`.\n"
-                    "• **Broadcast Updates:** Run `/event-announce message:<text>` inside an event post to send an announcement to every linked server's forum thread.\n"
-                    "• **Manage & Repair:** Use `/event-status`, `/event-repair code:<code>`, `/event-unlink`, or `/event-reconnect`."
+                    "Servers on the same deployment mirror events with `mirrorkey:<code>`.\n\n"
+                    "**Outgoing push (`announcement_channel`)**\n"
+                    "Set it in `/settings`. New shared events post `<Event> — <Timestamp>` with `mirrorkey:<code>`. On an Announcement channel, click **Publish** yourself; Gríma does not auto-publish.\n\n"
+                    "**Incoming pull (`/watch`)**\n"
+                    "1. Follow a partner's announcement channel (for example `#raid-network-pull`).\n"
+                    "2. Grant the bot `View Channel` and `Read Message History`.\n"
+                    "3. Add the channel with `/watch` or the `watch_channel` field in `/settings`. **Watch channel calendar** is on by default. **Watch channel event syncing** is off by default.\n"
+                    "4. Open `/commands` and choose network-status to inspect or retry failed discoveries.\n\n"
+                    "**Share, sync, and repair**\n"
+                    "Open `/commands` inside the event post. event-share creates the code, and event-share revoke stops new mirrors. A partner raid leader uses event-sync. event-announce sends a message to every linked thread. event-status, event-repair, event-unlink, and event-reconnect manage the links."
                 ),
             )
             embeds.append(sync_embed)
@@ -153,16 +148,13 @@ class ConfigCog(commands.Cog):
                 title="3. Roles Channel, Class Specs & Server Permissions",
                 colour=colour,
                 description=(
-                    "**Step A — Set Up a `#roles` / `#class-setup` Channel**\n"
-                    "Create a text channel (e.g. `#roles`) where members can configure their classes, specializations, and timezones:\n"
-                    "• **Set Class Specializations (`/specs`):** Players run `/specs classes:<Class> spec:<Red/Blue/Yellow> [tier:<1-5>]` to save their specialization (omit `tier` to apply across all tiers, or set per-tier specs).\n"
-                    "• **Inline Forum Signup Picker:** In shared forum events, if a player clicks `✅` or a class button before running `/specs`, Gríma automatically opens a private **Class & Specialization Picker** so they can choose their class/spec and finish signing up immediately.\n"
-                    "• **Classic Discord Class Roles (`/remove_roles`):** For legacy text-channel raids, clicking a class button assigns a matching Discord role (grant the bot `Manage Roles` and place `grima-bot`'s role above the LOTRO class roles in `Server Settings → Roles`). Players can clear their class roles anytime with `/remove_roles`.\n"
-                    "• **Personal Timezone (`/time_zones personal`):** Players can set their personal timezone so times they type when creating events are parsed in their local time.\n\n"
-                    "**Step B — Configure Raid Leader, Kinship & Optional Channels in `/setup`**\n"
-                    "• **Raid Leader Role (`leader_role` in `/setup`):** Members with this role can create events from the cluster panels, edit raid settings, build/edit rosters (`/roster-create`, `/roster-manage`, `/roster-edit`, `/roster-swap`), and run `/event-sync`.\n"
-                    "• **Kinship Role & Icon (`kin_role` & `kin_icon` in `/setup`):** Badges kinship members on raid signups.\n"
-                    "• **Optional Live Calendar & RSS (`calendar_channel`, `discord_events`, `rss_channel` in `/setup`):** Posts an auto-updating raid summary embed, keeps one Discord event linking to the calendar, and/or posts official LOTRO forum RSS news."
+                    "**`/profile`**\n"
+                    "Players set class, specialization, an optional tier (or all tiers), and a personal timezone. **Clear class roles** removes the Discord class roles a signup can grant. Grant the bot `Manage Roles` and place it above the class roles.\n"
+                    "Signing up in a forum event without a saved spec opens a private class picker.\n\n"
+                    "**`/commands`**\n"
+                    "Raid leaders build rosters and sync events from this panel. Open it inside the event post for roster and event actions.\n\n"
+                    "**`/settings` roles and extras**\n"
+                    "`leader_role` limits who can create events. Leave it unset and anyone can. `kin_role` and `kin_icon` badge kinship members. The calendar channel, Discord scheduled events, and RSS channel are optional."
                 ),
             )
             embeds.append(roles_embed)
@@ -189,37 +181,19 @@ class ConfigCog(commands.Cog):
             msg = self.welcome_msg(guild.name)
             await channel.send(msg)
 
-    @app_commands.command(name=_("help"), description=_("Show the server setup guide for raid forums, push/pull sync, and roles."))
-    @app_commands.describe(
-        topic=_("Choose which setup section to display (defaults to All)."),
-        public=_("Post the guide publicly in the channel instead of only to you (defaults to False)."),
-    )
-    @app_commands.choices(topic=[
-        app_commands.Choice(name="All — Complete Server Setup Guide", value="all"),
-        app_commands.Choice(name="1. Raid Forum Channel & Creation Panels", value="forum"),
-        app_commands.Choice(name="2. Announcements Push & Pull Channel Sync", value="sync"),
-        app_commands.Choice(name="3. Roles Channel, Class Specs & Permissions", value="roles"),
-    ])
-    @app_commands.guild_only()
     async def help_respond(self, interaction: discord.Interaction, topic: app_commands.Choice[str] | None = None, public: bool = False):
         selected = topic.value if topic else "all"
         embeds = self.build_help_embeds(selected)
         await interaction.response.send_message(embeds=embeds, ephemeral=not public)
 
-    @app_commands.command(name=_("about"), description=_("Show information about this bot."))
-    @app_commands.guild_only()
     async def about_respond(self, interaction: discord.Interaction):
         about = await self.about_embed()
         await interaction.response.send_message(embed=about)
 
-    @app_commands.command(name=_("welcome"), description=_("Resend the welcome message."))
-    @app_commands.guild_only()
     async def welcome_respond(self, interaction: discord.Interaction):
         welcome = self.welcome_msg(interaction.guild.name)
         await interaction.response.send_message(welcome)
 
-    @app_commands.command(name=_("privacy"), description=_("Show information on data collection."))
-    @app_commands.guild_only()
     async def privacy_respond(self, interaction: discord.Interaction):
         privacy = _("**Summary:**\n"
                      "When you sign up for a raid the bot stores the time, your discord id, discord nickname and the class("

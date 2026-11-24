@@ -271,10 +271,6 @@ class TreasureCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @app_commands.command(name=_("loot"), description=_("Shows drop chances for loot."))
-    @app_commands.guild_only()
-    @app_commands.describe(chest=_("The name of the container to see the drop table for."), classes=_("The class for which to see the drop table."), level=_("The character level for which to see the drop table."), tracery=_("Whether the tracery drop table should be shown in full."))
-    @app_commands.autocomplete(chest=container_autocomplete)
     async def loot_respond(self, interaction: discord.Interaction, chest: str, classes: Optional[Classes]=Classes.Captain, level: Optional[app_commands.Range[int, 1, 160]]=160, tracery: Optional[bool]=False):
         if chest not in containers.keys():
             await interaction.response.send_message(_("Unknown container."))

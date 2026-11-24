@@ -498,8 +498,6 @@ class CalendarCog(commands.Cog):
             return None
         return int(time)
 
-    @app_commands.command(name=_("events"), description=_("Shows upcoming official LotRO events in your local time."))
-    @app_commands.guild_only()
     async def events_respond(self, interaction: discord.Interaction):
         await interaction.response.send_message(_("Waiting for lotro.com to respond..."))
         events = await self.events_embed(interaction.guild_id)

@@ -32,12 +32,6 @@ async def time_zone_autocomplete(interaction: discord.Interaction, current: str)
     ]
 
 
-@app_commands.guild_only()
-class TimeGroup(app_commands.Group):
-    def __init__(self):
-        super().__init__(name=_("time_zones"), description=_("Manage time zone settings."))
-
-
 class Time(commands.Converter):
     async def convert(self, ctx, argument):
         return self.converter(ctx.bot, ctx.guild.id, ctx.author.id, argument)
@@ -105,8 +99,6 @@ class TimeCog(commands.Cog):
             result = self.bot.server_tz
         return result
 
-    @app_commands.command(name=_("server_time"), description=_("Shows the current server time."))
-    @app_commands.guild_only()
     async def server_time_respond(self, interaction: discord.Interaction):
         tz_str = self.get_server_timezone(interaction.guild_id)
         server_tz = pytz.timezone(tz_str)
@@ -116,11 +108,6 @@ class TimeCog(commands.Cog):
         content = _("Current server time: {0}").format(formatted_time)
         await interaction.response.send_message(content)
 
-    group = TimeGroup()
-
-    @group.command(name=_("personal"), description=_("Set your time zone to be used when interpreting your raid commands."))
-    @app_commands.describe(timezone=_("Select a city representing your time zone."))
-    @app_commands.autocomplete(timezone=time_zone_autocomplete)
     async def time_zone_personal(self, interaction: discord.Interaction, timezone: Optional[str]):
         if timezone:
             try:

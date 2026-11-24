@@ -1433,7 +1433,7 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
             followup=NS(send=AsyncMock()),
         )
 
-        await self.cog.setup_reset_command.callback(self.cog, interaction, False)
+        await self.cog.setup_reset_command(interaction, False)
         self.assertIsNotNone(self.cog.store.settings(1))
         interaction.response.send_message.assert_awaited()
 

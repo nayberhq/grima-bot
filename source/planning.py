@@ -251,7 +251,7 @@ def decode_plan_code(code):
         except (ValueError, UnicodeError) as exc:
             raise ValueError('Invalid session JSON; export a valid Session JSON or Grima plan code from Vanguard.') from exc
     if not text.startswith('grimaplan:') or len(text)>4000:
-        raise ValueError('Paste a Vanguard Session JSON or Grima plan code, or use /planner-import for larger plans.')
+        raise ValueError('Paste a Vanguard Session JSON or Grima plan code, or use /commands → planner-import for larger plans.')
     try:
         token=text[len('grimaplan:'):].strip()
         packed=base64.b64decode(token+'='*((-len(token))%4),altchars=b'-_',validate=True)
