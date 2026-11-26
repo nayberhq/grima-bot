@@ -350,24 +350,41 @@ class EventsCog(commands.Cog):
             return None
         return event
 
-    async def validate_destinations(self, settings, require_voice=True, forum_id=None):
+    async def validate_destinations(self, settings, require_voice=False, forum_id=None):
+        """Check the forum an event will be posted in. A voice category is optional and never blocks posting."""
         forum = await self.channel(forum_id or settings['forum_id'])
-        if require_voice and not settings['voice_category_id']:
-            raise ValueError('Hosting events requires a voice category. Set it with /settings.')
-        category = await self.channel(settings['voice_category_id']) if require_voice else None
-        if not isinstance(forum, discord.ForumChannel) or (require_voice and not isinstance(category, discord.CategoryChannel)):
-            raise ValueError('Configure an existing forum and voice category with /settings.')
-        if forum.guild.id != settings['guild_id'] or (category and category.guild.id != settings['guild_id']):
-            raise ValueError('Forum and voice category must belong to this server.')
+        if not isinstance(forum, discord.ForumChannel):
+            raise ValueError('Configure an existing raid forum with /settings.')
+        if forum.guild.id != settings['guild_id']:
+            raise ValueError('The raid forum must belong to this server.')
         perms = forum.permissions_for(forum.guild.me)
         if not all((perms.view_channel, perms.send_messages, perms.send_messages_in_threads,
                     perms.embed_links, perms.read_message_history, perms.manage_threads)):
             raise ValueError('The bot needs View Channel, Send Messages, Send Messages in Threads, Embed Links, Read Message History and Manage Threads in the forum.')
-        if category and not category.permissions_for(category.guild.me).manage_channels:
-            raise ValueError('The bot needs Manage Channels in the voice category.')
         if forum.flags.require_tag:
             raise ValueError('Disable required tags on the event forum before using it.')
+        if require_voice:
+            category = await self.voice_category(settings)
+            if category is None:
+                raise ValueError('That voice category is not a category in this server.')
+            if not category.permissions_for(category.guild.me).manage_channels:
+                raise ValueError('The bot needs Manage Channels in the voice category.')
         return forum
+
+    async def voice_category(self, settings):
+        """The category used for a temporary voice channel, or None when voice is unset or unusable."""
+        category_id = (settings or {}).get('voice_category_id') or 0
+        if not category_id:
+            return None
+        try:
+            category = await self.channel(category_id)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            return None
+        if not isinstance(category, discord.CategoryChannel):
+            return None
+        if getattr(getattr(category, 'guild', None), 'id', None) != settings['guild_id']:
+            return None
+        return category
 
     async def create_origin(self, guild_id, name, tier, timestamp, size=12, force_default_forum=False):
         settings = self.store.settings(guild_id)
@@ -378,8 +395,7 @@ class EventsCog(commands.Cog):
             target_forum_id = settings['forum_id']
         else:
             target_forum_id = self.store.select_forum_id(settings, size=size, tier=tier)
-        forum = await self.validate_destinations(
-            settings, require_voice=bool(settings.get('voice_category_id')), forum_id=target_forum_id)
+        forum = await self.validate_destinations(settings, forum_id=target_forum_id)
         event = dict(name=name, tier=tier, time=timestamp)
         result = await forum.create_thread(name=self.title(event, guild_id),
             content='Preparing event…', allowed_mentions=discord.AllowedMentions.none(),
@@ -923,18 +939,22 @@ class EventsCog(commands.Cog):
                     if (not self.store.poll_open(raid_id) and copy['guild_id']==event['guild_id']
                             and copy.get('voice_category_id')
                             and not ended and not copy['locked'] and now >= voice_open and not copy['voice_id']):
-                        category = await self.channel(copy['voice_category_id'])
-                        # A deterministic marker recovers a successful Discord creation
-                        # if the process died before saving its ID.
-                        marker = f'event-{raid_id}'
-                        voice = discord.utils.get(category.voice_channels, name=marker)
-                        if voice is None:
-                            voice = await guild.create_voice_channel(marker, category=category,
-                                reason=f'Raid {raid_id} starts within the hour')
-                        self.store.write('UPDATE EventCopies SET voice_id=?, revision=0 WHERE thread_id=?',
-                                         (voice.id, copy['thread_id']))
-                        copy['voice_id'] = voice.id
-                        self.store.touch(raid_id)
+                        category = await self.voice_category({'guild_id': copy['guild_id'], 'voice_category_id': copy['voice_category_id']})
+                        if category is None:
+                            self.store.write('UPDATE EventCopies SET voice_category_id=0 WHERE thread_id=?', (copy['thread_id'],))
+                            copy['voice_category_id'] = 0
+                        else:
+                            # A deterministic marker recovers a successful Discord creation
+                            # if the process died before saving its ID.
+                            marker = f'event-{raid_id}'
+                            voice = discord.utils.get(category.voice_channels, name=marker)
+                            if voice is None:
+                                voice = await guild.create_voice_channel(marker, category=category,
+                                    reason=f'Raid {raid_id} starts within the hour')
+                            self.store.write('UPDATE EventCopies SET voice_id=?, revision=0 WHERE thread_id=?',
+                                             (voice.id, copy['thread_id']))
+                            copy['voice_id'] = voice.id
+                            self.store.touch(raid_id)
                     if copy['voice_id'] and (copy['guild_id']!=event['guild_id'] or (not ended and now < voice_open)):
                         # A running event may be rescheduled; retire the early channel
                         # when empty, and recreate it at the new start.
@@ -1879,7 +1899,7 @@ class EventsCog(commands.Cog):
             lambda channel: f"**Event Panel Channel:** {channel.mention} ({len(PRESETS)} cluster panels in release order)",
         )
 
-        # 4. Mandatory: Voice Category
+        # 4. Optional: Voice Category. Unset means events do not create or link a voice channel.
         if take_unresolved('Voice Category'):
             pass
         elif voice_category is None:

@@ -649,7 +649,10 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         self.cog.store.write('UPDATE Raids SET time=?', (now,))
         voice = NS(id=500, name='event-100', members=[NS(id=99)], delete=AsyncMock(), edit=AsyncMock())
         self.channels[500] = voice
-        self.channels[11] = NS(voice_channels=[])
+        category = Mock(spec=discord.CategoryChannel)
+        category.voice_channels = []
+        category.guild = self.guilds[1]
+        self.channels[11] = category
         self.guilds[1].create_voice_channel = AsyncMock(return_value=voice)
         await self.cog.reconcile(100, now-3601)
         self.guilds[1].create_voice_channel.assert_not_awaited()
@@ -670,6 +673,25 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         voice.delete.assert_awaited_once()
         self.assertIsNone(self.cog.store.copies(100)[0]['voice_id'])
 
+    async def test_posting_an_event_does_not_require_a_voice_category(self):
+        forum = Mock(spec=discord.ForumChannel)
+        forum.guild = NS(id=1, me=NS())
+        forum.flags = NS(require_tag=False)
+        forum.permissions_for = lambda _member: NS(
+            view_channel=True, send_messages=True, send_messages_in_threads=True,
+            embed_links=True, read_message_history=True, manage_threads=True,
+        )
+        thread = self.make_thread(900)
+        forum.create_thread = AsyncMock(return_value=NS(thread=thread, message=NS(id=901)))
+        self.channels[10] = forum
+        self.cog.store.configure(1, 10, 0, 3600, 600)
+        checked = await self.cog.validate_destinations(self.cog.store.settings(1))
+        self.assertIs(checked, forum)
+        self.cog.store.configure(1, 10, 404, 3600, 600)
+        origin = await self.cog.create_origin(1, 'Folly', 'T2', int(time.time()) + 3600)
+        self.assertIsNotNone(origin)
+        self.assertEqual(origin[2]['voice_category_id'], 404)
+
     async def test_unset_voice_category_skips_creation_and_the_event_link(self):
         now = int(time.time())
         self.cog.store.write('UPDATE Raids SET time=?', (now,))
@@ -687,7 +709,11 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         self.cog.store.add_copy(100,2,200,200,0)
         mirror=self.make_thread(200)
         voice=NS(id=500,members=[],delete=AsyncMock(),edit=AsyncMock())
-        self.channels[500]=voice;self.channels[11]=NS(voice_channels=[])
+        category = Mock(spec=discord.CategoryChannel)
+        category.voice_channels = []
+        category.guild = self.guilds[1]
+        self.channels[500] = voice
+        self.channels[11] = category
         self.guilds[1].create_voice_channel=AsyncMock(return_value=voice)
         self.guilds[2].create_voice_channel=AsyncMock()
         await self.cog.reconcile(100,now)
