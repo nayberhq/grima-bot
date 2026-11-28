@@ -47,6 +47,21 @@ def forbidden():
     return discord.Forbidden(NS(status=403, reason='Forbidden'), 'test denial')
 
 
+def thread_signup_channel(thread_id):
+    channel = Mock(spec=discord.Thread, id=thread_id, send=AsyncMock(return_value=NS(delete=AsyncMock())))
+    channel.type = discord.ChannelType.public_thread
+    return channel
+
+
+def assert_silent_follow(test, channel, user_id):
+    channel.send.assert_awaited_once()
+    text, = channel.send.await_args.args
+    test.assertEqual(text, f'<@{user_id}>')
+    test.assertTrue(channel.send.await_args.kwargs['silent'])
+    test.assertIs(channel.send.await_args.kwargs['allowed_mentions'].users, True)
+    channel.send.return_value.delete.assert_awaited_once()
+
+
 def database():
     conn = sqlite3.connect(':memory:')
     for table in ('raid', 'player', 'assign', 'settings', 'specs'):
@@ -618,14 +633,19 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         interaction = NS(message=NS(id=200), user=user,
             guild=NS(id=2, roles=[role]), channel=self.channels[200],
             response=NS(send_message=AsyncMock(), defer=AsyncMock()))
-        interaction.channel = Mock(spec=discord.Thread, id=200, send=AsyncMock(return_value=NS(delete=AsyncMock())))
+        interaction.channel = thread_signup_channel(200)
         await view.sign_up_class(interaction, 'Warden')
-        interaction.channel.send.assert_not_awaited()
+        assert_silent_follow(self, interaction.channel, 99)
         rows = self.conn.execute('SELECT raid_id,player_id,Warden FROM Players').fetchall()
         self.assertEqual(rows, [(100, 99, 1)])
         for thread_id in (100, 200):
             self.channels[thread_id].get_partial_message.return_value.edit.assert_awaited()
+        interaction.channel.send.reset_mock()
+        await view.sign_up_class(interaction, 'Captain')
+        interaction.channel.send.assert_not_awaited()
+        self.assertEqual(self.conn.execute('SELECT Captain FROM Players WHERE player_id=99').fetchone()[0], 1)
         await view.sign_up_cancel(interaction)
+        interaction.channel.send.assert_not_awaited()
         interaction.channel.remove_user.assert_not_called()
         self.assertEqual(self.conn.execute('SELECT count(*) FROM Players').fetchone()[0], 0)
 
@@ -868,14 +888,17 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         from signup_picker import SignupPicker
         picker=SignupPicker(self.raids,100,99,'Warden');picker.spec=2
         i=NS(user=NS(id=99,display_name='Warden',roles=[]),guild=NS(id=2),channel=self.thread,response=NS(edit_message=AsyncMock(),send_message=AsyncMock()))
-        i.channel = Mock(spec=discord.Thread, id=100, send=AsyncMock(return_value=NS(delete=AsyncMock())))
+        i.channel = thread_signup_channel(100)
         await picker.submit.callback(i)
-        i.channel.send.assert_not_awaited()
+        assert_silent_follow(self, i.channel, 99)
         self.assertEqual(self.cog.store.one('SELECT raid_id,player_id,Warden FROM Players'),dict(raid_id=100,player_id=99,Warden=1))
         saved_spec = self.conn.execute('SELECT Warden FROM Specs WHERE player_id=99').fetchone()[0]
         for tier_idx in range(5):
             self.assertEqual((saved_spec >> (tier_idx * 3)) & 0b111, 2)
         i.response.edit_message.assert_awaited_once()
+        i.channel.send.reset_mock()
+        await picker.submit.callback(i)
+        i.channel.send.assert_not_awaited()
 
     async def test_saved_specs_auto_apply_on_signup_from_any_synced_server(self):
         self.cog.store.write("UPDATE Raids SET tier='T3' WHERE raid_id=100")
@@ -894,9 +917,9 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
             channel=self.channels[200],
             response=NS(send_message=AsyncMock(), defer=AsyncMock()),
         )
-        interaction.channel = Mock(spec=discord.Thread, id=200, send=AsyncMock(return_value=NS(delete=AsyncMock())))
+        interaction.channel = thread_signup_channel(200)
         await view.sign_up_all(interaction)
-        interaction.channel.send.assert_not_awaited()
+        assert_silent_follow(self, interaction.channel, 777)
         # Should NOT prompt with SignupPicker; should immediately sign up on canonical raid 100
         self.assertIsNone(interaction.response.send_message.call_args.kwargs.get('view'))
         self.assertEqual(
