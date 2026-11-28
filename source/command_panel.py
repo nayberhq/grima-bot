@@ -152,6 +152,8 @@ class ProfileView(discord.ui.LayoutView):
     def overview(self) -> str:
         lines = ['Saved.'] if self.saved else []
         for name in self.names:
+            if not self._visible_mask(name):
+                continue
             icon = self._spec_emoji(name)
             shown = str(icon) if icon else name
             lines.append(f'{shown} {self.tiers[name]}')
@@ -235,10 +237,10 @@ class ProfileView(discord.ui.LayoutView):
             except Exception as exc:
                 await _oops(interaction, exc)
                 return
-            await self._refresh_events()
             self.saved = True
             self._build()
             await interaction.response.edit_message(view=self)
+            await self._refresh_events()
 
         buttons.append(self._button(
             'profile:save', save, label='Save', style=discord.ButtonStyle.success,

@@ -94,8 +94,8 @@ class ProfileTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_profile_cycles_colors_and_tiers_without_writing(self):
-        self.assertIn('Hunter T1', self.view.overview())
-        self.assertIn('Guardian T1', self.view.overview())
+        self.assertEqual(self.view.overview(), 'Hunter T1')
+        self.assertNotIn('Guardian', self.view.overview())
         self.assertEqual(self.view.values['Hunter'] & 0b111, 0b001)
         self.assertEqual(self._button('profile:spec:Hunter').label, 'Hunter')
         self.assertEqual(self._button('profile:tier:Hunter').label, 'T1')
@@ -106,10 +106,12 @@ class ProfileTests(unittest.IsolatedAsyncioTestCase):
         self.raids.emojis_dict['Hunter_Blue'] = '<:Hunter_Blue:5>'
         self.assertIn('<:Hunter_Blue:5> T1', self.view.overview())
         self.assertEqual(self.conn.execute('SELECT Hunter FROM Specs WHERE player_id=7').fetchone()[0], 1)
-        for label in ('T2', 'T*', 'T1'):
+        for label in ('T2', 'T*'):
             await self._button('profile:tier:Hunter').callback(interaction)
             self.assertEqual(self.view.tiers['Hunter'], label)
-            self.assertTrue(self.view.overview().splitlines()[0].endswith(label))
+            self.assertNotIn('Hunter', self.view.overview())
+        await self._button('profile:tier:Hunter').callback(interaction)
+        self.assertEqual(self.view.tiers['Hunter'], 'T1')
         self.assertIn('<:Hunter_Blue:5> T1', self.view.overview())
         ids = [getattr(child, 'custom_id', '') for child in self.view.walk_children()]
         self.assertEqual(len([item for item in ids if item.startswith('profile:spec:')]), 2)
@@ -141,6 +143,25 @@ class ProfileTests(unittest.IsolatedAsyncioTestCase):
         interaction.response.edit_message.assert_awaited()
         interaction.followup.send.assert_not_awaited()
 
+    async def test_save_answers_before_refreshing_events(self):
+        self.conn.execute('CREATE TABLE Players (raid_id INTEGER, player_id INTEGER, unavailable INTEGER)')
+        self.conn.execute('INSERT INTO Players VALUES (4, 7, 0)')
+        order = []
+
+        async def edit_message(**kwargs):
+            order.append('edit')
+
+        async def refresh(raid_id):
+            order.append(('refresh', raid_id))
+
+        self.raids.event_store = NS(event=lambda raid_id: True, touch=lambda raid_id: order.append(('touch', raid_id)))
+        self.bot.get_cog = lambda name: {'RaidCog': self.raids, 'EventsCog': NS(refresh=refresh)}.get(name)
+        interaction = self._interaction()
+        interaction.response.edit_message = edit_message
+        await self._button('profile:save').callback(interaction)
+        self.assertEqual(order, ['edit', ('touch', 4), ('refresh', 4)])
+        self.assertTrue(self.view.overview().startswith('Saved.'))
+
     def test_full_class_list_fits_one_message(self):
         names = ['Beorning', 'Brawler', 'Burglar', 'Captain', 'Champion', 'Guardian', 'Hunter', 'Loremaster', 'Mariner', 'Minstrel', 'Runekeeper', 'Warden']
         conn = sqlite3.connect(':memory:')
@@ -156,7 +177,7 @@ class ProfileTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len([item for item in ids if item.startswith('profile:tier:')]), 12)
         self.assertIn('profile:save', ids)
         self.assertIn('profile:timezone', ids)
-        self.assertEqual([line for line in view.overview().splitlines()], [f'{name} T1' for name in names])
+        self.assertEqual(view.overview(), 'No classes configured.')
 
 
 class PanelHandoffTests(unittest.IsolatedAsyncioTestCase):
