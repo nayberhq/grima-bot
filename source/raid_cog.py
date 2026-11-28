@@ -465,6 +465,27 @@ class RaidCog(commands.Cog):
             return False
         return True
 
+    def is_available(self, raid_id, user_id):
+        return select_one(self.conn, 'Players', ['player_id'],
+                          ['raid_id', 'player_id', 'unavailable'],
+                          [raid_id, user_id, False]) is not None
+
+    async def follow_thread(self, channel, user):
+        """Add a player to the event thread with a silent mention that is deleted immediately."""
+        if getattr(channel, 'type', None) not in (
+                discord.ChannelType.public_thread,
+                discord.ChannelType.private_thread,
+                discord.ChannelType.news_thread):
+            return
+        mention = user.mention if hasattr(user, 'mention') else f"<@{user.id}>"
+        try:
+            message = await channel.send(
+                mention, silent=True,
+                allowed_mentions=discord.AllowedMentions(users=True))
+            await message.delete()
+        except discord.HTTPException:
+            logger.warning('Could not add %s to thread %s', user.id, channel.id)
+
     async def update_raid_post(self, raid_id, channel, delay=assign_delay):
         raid_id = self.resolve_raid_id(raid_id)
         events = self.bot.get_cog('EventsCog')
@@ -905,6 +926,7 @@ class RaidView(discord.ui.View):
                 await i.response.send_message(err_msg, ephemeral=True)
                 return
 
+        already = self.raid_cog.is_available(raid_id, i.user.id)
         sign_up = not select_one(self.conn, 'Players', [class_name], eq_columns=['player_id', 'raid_id'], eq_values=[i.user.id, raid_id])
         if not sign_up:
             sign_ups = select_one(self.conn, 'Players', self.raid_cog.role_names, eq_columns=['player_id', 'raid_id'], eq_values=[i.user.id, raid_id])
@@ -916,6 +938,8 @@ class RaidView(discord.ui.View):
                [byname, timestamp, False, sign_up], ['player_id', 'raid_id'], [i.user.id, raid_id])
         self.conn.commit()
         await i.response.send_message(msg, ephemeral=True, delete_after=sign_up_delay)
+        if sign_up and not already:
+            await self.raid_cog.follow_thread(i.channel, i.user)
         await self.raid_cog.update_raid_post(raid_id, i.channel, delay=sign_up_delay)
 
     async def sign_up_all(self, i):
@@ -952,12 +976,15 @@ class RaidView(discord.ui.View):
                 await i.response.send_message(err_msg, ephemeral=True)
                 return
 
+        already = self.raid_cog.is_available(raid_id, i.user.id)
         upsert(self.conn, 'Players', columns, values, ['player_id', 'raid_id'], [i.user.id, raid_id])
         self.conn.commit()
         if is_shared:
             await i.response.send_message('Signed up with your saved specializations. Your selection is shared across linked servers.', ephemeral=True, delete_after=sign_up_delay)
         else:
             await i.response.defer()
+        if not already:
+            await self.raid_cog.follow_thread(i.channel, i.user)
         await self.raid_cog.update_raid_post(raid_id, i.channel, delay=0)
 
     async def sign_up_cancel(self, i):
@@ -1012,11 +1039,14 @@ class CreepView(discord.ui.View):
         raid_id = self.raid_cog.resolve_raid_id(i.message.id)
         timestamp = int(time.time())
         byname = self.raid_cog.process_name(i.guild.id, i.user)
+        already = self.raid_cog.is_available(raid_id, i.user.id)
         upsert(self.conn, 'Players', ['byname', 'timestamp', 'unavailable', creep_name],
                [byname, timestamp, False, True], ['player_id', 'raid_id'], [i.user.id, raid_id])
         self.conn.commit()
         msg = _("Your sign up has been received and the raid post will be updated momentarily.")
         await i.response.send_message(msg, ephemeral=True, delete_after=sign_up_delay)
+        if not already:
+            await self.raid_cog.follow_thread(i.channel, i.user)
         await self.raid_cog.update_raid_post(raid_id, i.channel, delay=sign_up_delay)
 
     async def sign_up_cancel(self, i):

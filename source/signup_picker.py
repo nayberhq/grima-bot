@@ -43,8 +43,11 @@ class SignupPicker(discord.ui.View):
         else:
             value=self.spec*(1+8+64+512+4096)
         upsert(self.raids.conn,'Specs',[self.class_name],[value],['player_id'],[i.user.id])
+        already=self.raids.is_available(self.raid_id,i.user.id)
         upsert(self.raids.conn,'Players',['byname','timestamp','unavailable',self.class_name],[self.raids.process_name(i.guild.id,i.user),int(time.time()),False,True],['player_id','raid_id'],[i.user.id,self.raid_id])
         self.raids.conn.commit()
         await i.response.edit_message(content='Signed up. Your selection is shared across every linked server.',view=None)
+        if not already:
+            await self.raids.follow_thread(i.channel,i.user)
         await self.raids.update_raid_post(self.raid_id,i.channel,delay=0)
         self.stop()
