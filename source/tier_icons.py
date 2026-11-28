@@ -24,17 +24,15 @@ def render_tier_icon(source: bytes, label: str) -> bytes:
     """Return a 128 pixel PNG of the class icon with the tier letters centered on it."""
     image = Image.open(BytesIO(source)).convert('RGBA')
     image = image.resize((128, 128), Image.Resampling.LANCZOS)
-    draw = ImageDraw.Draw(image)
-    font = _font(52)
-    stroke = 4
-    box = draw.textbbox((0, 0), label, font=font, stroke_width=stroke)
-    width, height = box[2] - box[0], box[3] - box[1]
-    origin_x = (128 - width) / 2 - box[0]
-    origin_y = (128 - height) / 2 - box[1]
-    draw.text(
-        (origin_x, origin_y), label, font=font, fill=(255, 255, 255, 255),
+    stroke = 10
+    scratch = Image.new('RGBA', (320, 240), (0, 0, 0, 0))
+    ImageDraw.Draw(scratch).text(
+        (12, 12), label, font=_font(120), fill=(255, 255, 255, 255),
         stroke_width=stroke, stroke_fill=(0, 0, 0, 255),
     )
+    glyph = scratch.crop(scratch.getbbox())
+    glyph = glyph.resize((112, 84), Image.Resampling.LANCZOS)
+    image.paste(glyph, ((128 - glyph.width) // 2, (128 - glyph.height) // 2), glyph)
     output = BytesIO()
     image.save(output, format='PNG')
     return output.getvalue()
