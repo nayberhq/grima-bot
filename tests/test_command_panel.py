@@ -84,7 +84,7 @@ class ProfileTests(unittest.IsolatedAsyncioTestCase):
         self.view = ProfileView(NS(bot=self.bot), 7, 1)
 
     def _button(self, custom_id):
-        return next(child for child in self.view.children if getattr(child, 'custom_id', None) == custom_id)
+        return next(child for child in self.view.walk_children() if getattr(child, 'custom_id', None) == custom_id)
 
     def _interaction(self):
         return NS(
@@ -94,19 +94,26 @@ class ProfileTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_profile_cycles_colors_and_tiers_without_writing(self):
-        self.assertIn('Personal timezone: server timezone', self.view.embed().description)
+        self.assertIn('Hunter T1', self.view.overview())
+        self.assertIn('Guardian T1', self.view.overview())
         self.assertEqual(self.view.values['Hunter'] & 0b111, 0b001)
         self.assertEqual(self._button('profile:spec:Hunter').label, 'Hunter')
         self.assertEqual(self._button('profile:tier:Hunter').label, 'T1')
+        self.assertEqual(self._button('profile:timezone').placeholder, 'Personal timezone')
         interaction = self._interaction()
         await self._button('profile:spec:Hunter').callback(interaction)
         self.assertEqual(self.view.values['Hunter'] & 0b111, 0b010)
+        self.raids.emojis_dict['Hunter_Blue'] = '<:Hunter_Blue:5>'
+        self.assertIn('<:Hunter_Blue:5> T1', self.view.overview())
         self.assertEqual(self.conn.execute('SELECT Hunter FROM Specs WHERE player_id=7').fetchone()[0], 1)
         for label in ('T2', 'T*', 'T1'):
             await self._button('profile:tier:Hunter').callback(interaction)
             self.assertEqual(self.view.tiers['Hunter'], label)
-        self.assertEqual(len([child for child in self.view.children if getattr(child, 'custom_id', '').startswith('profile:spec:')]), 2)
-        self.assertEqual(len([child for child in self.view.children if getattr(child, 'custom_id', '').startswith('profile:tier:')]), 2)
+            self.assertTrue(self.view.overview().splitlines()[0].endswith(label))
+        self.assertIn('<:Hunter_Blue:5> T1', self.view.overview())
+        ids = [getattr(child, 'custom_id', '') for child in self.view.walk_children()]
+        self.assertEqual(len([item for item in ids if item.startswith('profile:spec:')]), 2)
+        self.assertEqual(len([item for item in ids if item.startswith('profile:tier:')]), 2)
 
     async def test_star_tier_writes_every_stored_tier_on_save(self):
         interaction = self._interaction()
@@ -115,18 +122,24 @@ class ProfileTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.view.tiers['Hunter'], 'T*')
         await self._button('profile:spec:Hunter').callback(interaction)
         self.assertEqual(self.view.values['Hunter'] & 0x7FFF, 1 * (1 + 8 + 64 + 512 + 4096))
-        self.view.timezone = 'America/New_York'
+        zone = self._button('profile:timezone')
+        zone._values = ['America/New_York']
+        await zone.callback(interaction)
+        self.assertIsNone(self.conn.execute('SELECT timezone FROM Timezone WHERE player_id=7').fetchone())
+        self.assertEqual(self.view.timezone, 'America/New_York')
         await self._button('profile:save').callback(interaction)
-        self.assertEqual(self.view.screen, 'grid')
         stored = self.conn.execute('SELECT Hunter FROM Specs WHERE player_id=7').fetchone()[0]
         self.assertEqual(stored & 0x7FFF, 4681)
         self.assertEqual(stored >> 15, 2)
         self.assertEqual(self.conn.execute('SELECT timezone FROM Timezone WHERE player_id=7').fetchone()[0], 'America/New_York')
+        self.assertTrue(self.view.overview().startswith('Saved.'))
+        self.assertIn('Hunter T*', self.view.overview())
         reopened = ProfileView(NS(bot=self.bot), 7, 1)
         self.assertEqual(reopened.tiers['Hunter'], 'T*')
         self.assertEqual(reopened.values['Hunter'] & 0x7FFF, 4681)
+        self.assertEqual(reopened.timezone, 'America/New_York')
         interaction.response.edit_message.assert_awaited()
-        self.assertEqual(interaction.response.edit_message.await_args.kwargs['content'], 'Saved.')
+        interaction.followup.send.assert_not_awaited()
 
     def test_full_class_list_fits_one_message(self):
         names = ['Beorning', 'Brawler', 'Burglar', 'Captain', 'Champion', 'Guardian', 'Hunter', 'Loremaster', 'Mariner', 'Minstrel', 'Runekeeper', 'Warden']
@@ -136,9 +149,14 @@ class ProfileTests(unittest.IsolatedAsyncioTestCase):
         conn.execute('CREATE TABLE Timezone (player_id INTEGER PRIMARY KEY, timezone TEXT)')
         bot = NS(conn=conn, role_names=names, get_cog=lambda name: None)
         view = ProfileView(NS(bot=bot), 1, 1)
-        self.assertEqual(len(view.children), 25)
-        self.assertTrue(all(child.row <= 4 for child in view.children))
-        self.assertEqual(view.children[-1].label, 'Save')
+        items = list(view.walk_children())
+        self.assertLessEqual(len(items), 40)
+        ids = [getattr(item, 'custom_id', '') for item in items]
+        self.assertEqual(len([item for item in ids if item.startswith('profile:spec:')]), 12)
+        self.assertEqual(len([item for item in ids if item.startswith('profile:tier:')]), 12)
+        self.assertIn('profile:save', ids)
+        self.assertIn('profile:timezone', ids)
+        self.assertEqual([line for line in view.overview().splitlines()], [f'{name} T1' for name in names])
 
 
 class PanelHandoffTests(unittest.IsolatedAsyncioTestCase):
