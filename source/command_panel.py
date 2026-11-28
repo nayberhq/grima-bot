@@ -78,9 +78,25 @@ async def _call(cog, name, *args):
 COLOR_CYCLE = (0, 0b001, 0b010, 0b100, 0b011, 0b110, 0b101, 0b111)
 TIER_CYCLE = ('T1', 'T2', 'T*')
 _ALL_TIERS = 1 + 8 + 64 + 512 + 4096
+_COLOR_MASK = (1 << 15) - 1
+_TIER_CODE = {'T1': 0, 'T2': 1, 'T*': 2}
+_TIER_NAME = {0: 'T1', 1: 'T2', 2: 'T*'}
+
+
+def _colors(value: int) -> int:
+    return int(value or 0) & _COLOR_MASK
+
+
+def _pack(colors: int, which: str) -> int:
+    return _colors(colors) | (_TIER_CODE.get(which, 0) << 15)
+
+
+def _stored_tier(value: int) -> str:
+    return _TIER_NAME.get((int(value or 0) >> 15) & 0b11, 'T1')
 
 
 def _tier_bits(value: int, which: str) -> int:
+    value = _colors(value)
     if which == 'T1':
         return value & 0b111
     if which == 'T2':
@@ -126,6 +142,7 @@ class ProfileView(discord.ui.View):
                 values = row if isinstance(row, tuple) else (row,)
                 for name, value in zip(self.names, values):
                     self.values[name] = int(value or 0)
+                    self.tiers[name] = _stored_tier(self.values[name])
         personal = select_one(self.cog.bot.conn, 'Timezone', ['timezone'], ['player_id'], [self.user_id])
         self.timezone = personal if isinstance(personal, str) else ''
 
@@ -188,7 +205,7 @@ class ProfileView(discord.ui.View):
             async def click(interaction: discord.Interaction):
                 which = self.tiers[name]
                 mask = _next_mask(_tier_bits(self.values[name], which), name in duo)
-                self.values[name] = _write_bits(self.values[name], which, mask)
+                self.values[name] = _pack(_write_bits(_colors(self.values[name]), which, mask), which)
                 self._build()
                 await interaction.response.edit_message(embed=self.embed(), view=self)
             return click
@@ -197,6 +214,7 @@ class ProfileView(discord.ui.View):
             async def click(interaction: discord.Interaction):
                 current = self.tiers[name]
                 self.tiers[name] = TIER_CYCLE[(TIER_CYCLE.index(current) + 1) % len(TIER_CYCLE)]
+                self.values[name] = _pack(self.values[name], self.tiers[name])
                 self._build()
                 await interaction.response.edit_message(embed=self.embed(), view=self)
             return click
@@ -209,15 +227,24 @@ class ProfileView(discord.ui.View):
             suffix = {'T1': 'T1', 'T2': 'T2', 'T*': 'Tstar'}[which]
             buttons.append((self._emoji(f'{name}_{suffix}'), which, f'profile:tier:{name}', cycle_tier(name)))
 
-        async def open_timezone(interaction: discord.Interaction):
-            self.screen = 'zone'
+        async def save(interaction: discord.Interaction):
+            try:
+                self._commit()
+            except Exception as exc:
+                await _oops(interaction, exc)
+                return
+            await self._refresh_events()
             self._build()
-            await interaction.response.edit_message(embed=self.embed(), view=self)
+            await interaction.response.edit_message(content='Saved.', embed=self.embed(), view=self)
+            await interaction.followup.send(
+                'Personal timezone. Choosing one saves it.',
+                view=ProfileTimezone(self), ephemeral=True,
+            )
 
         for index, (emoji, label, custom_id, callback) in enumerate(buttons):
             self._add_button(index, custom_id, callback, emoji=emoji, label=label)
         self._add_button(
-            len(buttons), 'profile:save', open_timezone,
+            len(buttons), 'profile:save', save,
             label='Save', style=discord.ButtonStyle.success,
         )
 
@@ -243,14 +270,11 @@ class ProfileView(discord.ui.View):
             await interaction.response.edit_message(embed=self.embed(), view=self)
 
         async def save_all(interaction: discord.Interaction):
-            from database import upsert
-            for name, value in self.values.items():
-                upsert(self.cog.bot.conn, 'Specs', [name], [value], ['player_id'], [self.user_id])
-            upsert(
-                self.cog.bot.conn, 'Timezone', ['timezone'],
-                [self.timezone or None], ['player_id'], [self.user_id],
-            )
-            self.cog.bot.conn.commit()
+            try:
+                self._commit()
+            except Exception as exc:
+                await _oops(interaction, exc)
+                return
             await self._refresh_events()
             self.screen = 'grid'
             self._build()
@@ -260,6 +284,17 @@ class ProfileView(discord.ui.View):
         self.add_item(zone_select)
         self._add_button(5, 'profile:back', go_back, label='Back')
         self._add_button(6, 'profile:zone-save', save_all, label='Save', style=discord.ButtonStyle.success)
+
+    def _commit(self):
+        from database import upsert
+        for name in self.names:
+            self.values[name] = _pack(self.values[name], self.tiers.get(name, 'T1'))
+            upsert(self.cog.bot.conn, 'Specs', [name], [self.values[name]], ['player_id'], [self.user_id])
+        upsert(
+            self.cog.bot.conn, 'Timezone', ['timezone'],
+            [self.timezone or None], ['player_id'], [self.user_id],
+        )
+        self.cog.bot.conn.commit()
 
     async def _refresh_events(self):
         raids = self.cog.bot.get_cog('RaidCog')
@@ -284,6 +319,38 @@ class ProfileView(discord.ui.View):
             await interaction.response.send_message('This profile is not yours.', ephemeral=True)
             return False
         return True
+
+
+class ProfileTimezone(discord.ui.View):
+    """Timezone choice after the class profile has already been saved."""
+
+    def __init__(self, profile: ProfileView):
+        super().__init__(timeout=900)
+        self.profile = profile
+        from events_cog import COMMON_TIMEZONES
+        current = profile.timezone
+        zones = list(COMMON_TIMEZONES[:23])
+        if current and current not in zones:
+            zones = [current, *zones[:22]]
+        options = [discord.SelectOption(label='Use server timezone', value='__server__', default=not current)]
+        options.extend(discord.SelectOption(label=zone, value=zone, default=zone == current) for zone in zones)
+        select = discord.ui.Select(placeholder='Personal timezone', options=options[:25])
+
+        async def pick(interaction: discord.Interaction):
+            if interaction.user.id != profile.user_id:
+                await interaction.response.send_message('This profile is not yours.', ephemeral=True)
+                return
+            value = select.values[0]
+            profile.timezone = '' if value == '__server__' else value
+            try:
+                profile._commit()
+            except Exception as exc:
+                await _oops(interaction, exc)
+                return
+            await interaction.response.send_message('Timezone saved.', ephemeral=True)
+
+        select.callback = pick
+        self.add_item(select)
 
 
 class CommandPanel(commands.Cog):

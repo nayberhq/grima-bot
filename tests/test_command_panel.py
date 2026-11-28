@@ -87,7 +87,11 @@ class ProfileTests(unittest.IsolatedAsyncioTestCase):
         return next(child for child in self.view.children if getattr(child, 'custom_id', None) == custom_id)
 
     def _interaction(self):
-        return NS(response=NS(edit_message=AsyncMock(), is_done=lambda: False, send_message=AsyncMock()))
+        return NS(
+            user=NS(id=7),
+            response=NS(edit_message=AsyncMock(), is_done=lambda: False, send_message=AsyncMock()),
+            followup=NS(send=AsyncMock()),
+        )
 
     async def test_profile_cycles_colors_and_tiers_without_writing(self):
         self.assertIn('Personal timezone: server timezone', self.view.embed().description)
@@ -110,21 +114,19 @@ class ProfileTests(unittest.IsolatedAsyncioTestCase):
         await self._button('profile:tier:Hunter').callback(interaction)
         self.assertEqual(self.view.tiers['Hunter'], 'T*')
         await self._button('profile:spec:Hunter').callback(interaction)
-        self.assertEqual(self.view.values['Hunter'], 1 * (1 + 8 + 64 + 512 + 4096))
+        self.assertEqual(self.view.values['Hunter'] & 0x7FFF, 1 * (1 + 8 + 64 + 512 + 4096))
+        self.view.timezone = 'America/New_York'
         await self._button('profile:save').callback(interaction)
-        self.assertEqual(self.view.screen, 'zone')
-        self.assertIsNone(self.conn.execute('SELECT timezone FROM Timezone WHERE player_id=7').fetchone())
-        zone = next(child for child in self.view.children if getattr(child, 'placeholder', None) == 'Personal timezone')
-        zone._values = ['America/New_York']
-        await zone.callback(interaction)
-        self.assertIsNone(self.conn.execute('SELECT timezone FROM Timezone WHERE player_id=7').fetchone())
-        await self._button('profile:back').callback(interaction)
         self.assertEqual(self.view.screen, 'grid')
-        self.assertEqual(self.view.timezone, 'America/New_York')
-        await self._button('profile:save').callback(interaction)
-        await self._button('profile:zone-save').callback(interaction)
-        self.assertEqual(self.conn.execute('SELECT Hunter FROM Specs WHERE player_id=7').fetchone()[0], 4681)
+        stored = self.conn.execute('SELECT Hunter FROM Specs WHERE player_id=7').fetchone()[0]
+        self.assertEqual(stored & 0x7FFF, 4681)
+        self.assertEqual(stored >> 15, 2)
         self.assertEqual(self.conn.execute('SELECT timezone FROM Timezone WHERE player_id=7').fetchone()[0], 'America/New_York')
+        reopened = ProfileView(NS(bot=self.bot), 7, 1)
+        self.assertEqual(reopened.tiers['Hunter'], 'T*')
+        self.assertEqual(reopened.values['Hunter'] & 0x7FFF, 4681)
+        interaction.response.edit_message.assert_awaited()
+        self.assertEqual(interaction.response.edit_message.await_args.kwargs['content'], 'Saved.')
 
     def test_full_class_list_fits_one_message(self):
         names = ['Beorning', 'Brawler', 'Burglar', 'Captain', 'Champion', 'Guardian', 'Hunter', 'Loremaster', 'Mariner', 'Minstrel', 'Runekeeper', 'Warden']
