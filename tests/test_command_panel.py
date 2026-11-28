@@ -75,7 +75,7 @@ class ProfileTests(unittest.IsolatedAsyncioTestCase):
         self.conn.execute('CREATE TABLE Timezone (player_id INTEGER PRIMARY KEY, timezone TEXT)')
         self.conn.execute('INSERT INTO Specs VALUES (7, 1, 0)')
         self.conn.commit()
-        self.raids = NS(specs_respond=AsyncMock(), roles_respond=AsyncMock())
+        self.raids = NS(emojis_dict={}, specs=['', 'Red', 'Blue', 'Red_Blue', 'Yellow', 'Red_Yellow', 'Blue_Yellow', 'Triple'])
         self.bot = NS(
             conn=self.conn,
             role_names=['Hunter', 'Guardian'],
@@ -83,30 +83,60 @@ class ProfileTests(unittest.IsolatedAsyncioTestCase):
         )
         self.view = ProfileView(NS(bot=self.bot), 7, 1)
 
-    async def test_profile_shows_saved_spec_and_saves_the_selected_bits(self):
-        self.assertIn('Hunter: Red', self.view.embed().description)
+    def _button(self, custom_id):
+        return next(child for child in self.view.children if getattr(child, 'custom_id', None) == custom_id)
+
+    def _interaction(self):
+        return NS(response=NS(edit_message=AsyncMock(), is_done=lambda: False, send_message=AsyncMock()))
+
+    async def test_profile_cycles_colors_and_tiers_without_writing(self):
         self.assertIn('Personal timezone: server timezone', self.view.embed().description)
-        save = next(child for child in self.view.children if getattr(child, 'label', None) == 'Save specialization')
-        interaction = NS(response=NS(is_done=lambda: False, send_message=AsyncMock()), followup=NS(send=AsyncMock()))
-        await save.callback(interaction)
-        args = self.raids.specs_respond.await_args.args
-        self.assertEqual(args[1].name, 'Hunter')
-        self.assertEqual(args[2].value, 0b001)
-        self.assertEqual(args[3], 0)
+        self.assertEqual(self.view.values['Hunter'] & 0b111, 0b001)
+        self.assertEqual(self._button('profile:spec:Hunter').label, 'Hunter')
+        self.assertEqual(self._button('profile:tier:Hunter').label, 'T1')
+        interaction = self._interaction()
+        await self._button('profile:spec:Hunter').callback(interaction)
+        self.assertEqual(self.view.values['Hunter'] & 0b111, 0b010)
+        self.assertEqual(self.conn.execute('SELECT Hunter FROM Specs WHERE player_id=7').fetchone()[0], 1)
+        for label in ('T2', 'T*', 'T1'):
+            await self._button('profile:tier:Hunter').callback(interaction)
+            self.assertEqual(self.view.tiers['Hunter'], label)
+        self.assertEqual(len([child for child in self.view.children if getattr(child, 'custom_id', '').startswith('profile:spec:')]), 2)
+        self.assertEqual(len([child for child in self.view.children if getattr(child, 'custom_id', '').startswith('profile:tier:')]), 2)
 
-    async def test_clear_roles_uses_the_existing_role_remover(self):
-        clear = next(child for child in self.view.children if getattr(child, 'label', None) == 'Clear class roles')
-        await clear.callback(NS())
-        self.raids.roles_respond.assert_awaited()
-
-    async def test_personal_timezone_is_saved_on_the_profile(self):
-        zone = next(child for child in self.view.children if getattr(child, 'placeholder', None) == 'Personal timezone (optional)')
+    async def test_star_tier_writes_every_stored_tier_on_save(self):
+        interaction = self._interaction()
+        await self._button('profile:tier:Hunter').callback(interaction)
+        await self._button('profile:tier:Hunter').callback(interaction)
+        self.assertEqual(self.view.tiers['Hunter'], 'T*')
+        await self._button('profile:spec:Hunter').callback(interaction)
+        self.assertEqual(self.view.values['Hunter'], 1 * (1 + 8 + 64 + 512 + 4096))
+        await self._button('profile:save').callback(interaction)
+        self.assertEqual(self.view.screen, 'zone')
+        self.assertIsNone(self.conn.execute('SELECT timezone FROM Timezone WHERE player_id=7').fetchone())
+        zone = next(child for child in self.view.children if getattr(child, 'placeholder', None) == 'Personal timezone')
         zone._values = ['America/New_York']
-        interaction = NS(response=NS(edit_message=AsyncMock()))
         await zone.callback(interaction)
-        saved = self.conn.execute('SELECT timezone FROM Timezone WHERE player_id=7').fetchone()[0]
-        self.assertEqual(saved, 'America/New_York')
-        interaction.response.edit_message.assert_awaited()
+        self.assertIsNone(self.conn.execute('SELECT timezone FROM Timezone WHERE player_id=7').fetchone())
+        await self._button('profile:back').callback(interaction)
+        self.assertEqual(self.view.screen, 'grid')
+        self.assertEqual(self.view.timezone, 'America/New_York')
+        await self._button('profile:save').callback(interaction)
+        await self._button('profile:zone-save').callback(interaction)
+        self.assertEqual(self.conn.execute('SELECT Hunter FROM Specs WHERE player_id=7').fetchone()[0], 4681)
+        self.assertEqual(self.conn.execute('SELECT timezone FROM Timezone WHERE player_id=7').fetchone()[0], 'America/New_York')
+
+    def test_full_class_list_fits_one_message(self):
+        names = ['Beorning', 'Brawler', 'Burglar', 'Captain', 'Champion', 'Guardian', 'Hunter', 'Loremaster', 'Mariner', 'Minstrel', 'Runekeeper', 'Warden']
+        conn = sqlite3.connect(':memory:')
+        columns = ', '.join(f'"{name}" INTEGER' for name in names)
+        conn.execute(f'CREATE TABLE Specs (player_id INTEGER PRIMARY KEY, {columns})')
+        conn.execute('CREATE TABLE Timezone (player_id INTEGER PRIMARY KEY, timezone TEXT)')
+        bot = NS(conn=conn, role_names=names, get_cog=lambda name: None)
+        view = ProfileView(NS(bot=bot), 1, 1)
+        self.assertEqual(len(view.children), 25)
+        self.assertTrue(all(child.row <= 4 for child in view.children))
+        self.assertEqual(view.children[-1].label, 'Save')
 
 
 class PanelHandoffTests(unittest.IsolatedAsyncioTestCase):

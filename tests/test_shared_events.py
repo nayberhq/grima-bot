@@ -47,6 +47,24 @@ def forbidden():
     return discord.Forbidden(NS(status=403, reason='Forbidden'), 'test denial')
 
 
+def public_thread(channel_id):
+    channel = Mock(spec=discord.Thread, id=channel_id, send=AsyncMock(return_value=NS(delete=AsyncMock())))
+    channel.type = discord.ChannelType.public_thread
+    return channel
+
+
+def assert_silent_follow(case, channel, user):
+    channel.send.assert_awaited_once()
+    args, kwargs = channel.send.await_args
+    case.assertEqual(args, (user.mention,))
+    case.assertTrue(kwargs['silent'])
+    mentions = kwargs['allowed_mentions']
+    case.assertEqual(list(mentions.users), [user])
+    case.assertFalse(mentions.everyone)
+    case.assertFalse(mentions.roles)
+    channel.send.return_value.delete.assert_awaited_once()
+
+
 def database():
     conn = sqlite3.connect(':memory:')
     for table in ('raid', 'player', 'assign', 'settings', 'specs'):
@@ -614,15 +632,18 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         self.make_thread(200)
         view = RaidView(self.raids)
         role = NS(id=80, name='Warden')
-        user = NS(id=99, roles=[role], display_name='Remote Warden')
+        user = NS(id=99, roles=[role], display_name='Remote Warden', mention='<@99>')
         interaction = NS(message=NS(id=200), user=user,
             guild=NS(id=2, roles=[role]), channel=self.channels[200],
             response=NS(send_message=AsyncMock(), defer=AsyncMock()))
-        interaction.channel = Mock(spec=discord.Thread, id=200, send=AsyncMock(return_value=NS(delete=AsyncMock())))
+        interaction.channel = public_thread(200)
         await view.sign_up_class(interaction, 'Warden')
+        assert_silent_follow(self, interaction.channel, user)
+        interaction.channel.send.reset_mock()
+        await view.sign_up_class(interaction, 'Champion')
         interaction.channel.send.assert_not_awaited()
-        rows = self.conn.execute('SELECT raid_id,player_id,Warden FROM Players').fetchall()
-        self.assertEqual(rows, [(100, 99, 1)])
+        rows = self.conn.execute('SELECT raid_id,player_id,Warden,Champion FROM Players').fetchall()
+        self.assertEqual(rows, [(100, 99, 1, 1)])
         for thread_id in (100, 200):
             self.channels[thread_id].get_partial_message.return_value.edit.assert_awaited()
         await view.sign_up_cancel(interaction)
@@ -867,15 +888,19 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
     async def test_inline_signup_saves_spec_and_canonical_player(self):
         from signup_picker import SignupPicker
         picker=SignupPicker(self.raids,100,99,'Warden');picker.spec=2
-        i=NS(user=NS(id=99,display_name='Warden',roles=[]),guild=NS(id=2),channel=self.thread,response=NS(edit_message=AsyncMock(),send_message=AsyncMock()))
-        i.channel = Mock(spec=discord.Thread, id=100, send=AsyncMock(return_value=NS(delete=AsyncMock())))
+        user=NS(id=99,display_name='Warden',roles=[],mention='<@99>')
+        i=NS(user=user,guild=NS(id=2),channel=self.thread,response=NS(edit_message=AsyncMock(),send_message=AsyncMock()))
+        i.channel = public_thread(100)
+        await picker.submit.callback(i)
+        assert_silent_follow(self, i.channel, user)
+        i.response.edit_message.assert_awaited_once()
+        i.channel.send.reset_mock()
         await picker.submit.callback(i)
         i.channel.send.assert_not_awaited()
         self.assertEqual(self.cog.store.one('SELECT raid_id,player_id,Warden FROM Players'),dict(raid_id=100,player_id=99,Warden=1))
         saved_spec = self.conn.execute('SELECT Warden FROM Specs WHERE player_id=99').fetchone()[0]
         for tier_idx in range(5):
             self.assertEqual((saved_spec >> (tier_idx * 3)) & 0b111, 2)
-        i.response.edit_message.assert_awaited_once()
 
     async def test_saved_specs_auto_apply_on_signup_from_any_synced_server(self):
         self.cog.store.write("UPDATE Raids SET tier='T3' WHERE raid_id=100")
@@ -886,7 +911,7 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
         self.conn.execute('INSERT INTO Specs (player_id, Warden) VALUES (?, ?)', (777, all_tiers_val))
         self.conn.commit()
         view = RaidView(self.raids)
-        user = NS(id=777, roles=[], display_name='CrossServerWarden')
+        user = NS(id=777, roles=[], display_name='CrossServerWarden', mention='<@777>')
         interaction = NS(
             message=NS(id=200),
             user=user,
@@ -894,9 +919,9 @@ class EventTests(unittest.IsolatedAsyncioTestCase):
             channel=self.channels[200],
             response=NS(send_message=AsyncMock(), defer=AsyncMock()),
         )
-        interaction.channel = Mock(spec=discord.Thread, id=200, send=AsyncMock(return_value=NS(delete=AsyncMock())))
+        interaction.channel = public_thread(200)
         await view.sign_up_all(interaction)
-        interaction.channel.send.assert_not_awaited()
+        assert_silent_follow(self, interaction.channel, user)
         # Should NOT prompt with SignupPicker; should immediately sign up on canonical raid 100
         self.assertIsNone(interaction.response.send_message.call_args.kwargs.get('view'))
         self.assertEqual(

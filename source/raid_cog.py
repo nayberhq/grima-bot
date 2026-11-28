@@ -123,6 +123,11 @@ class RaidCog(commands.Cog):
         self.creep_emojis = [by_name[name] for name in (self.creep_names or ()) if name in by_name]
         self.spec_emojis = [by_name[name] for name in spec_names if name in by_name]
         self.emojis_dict = {e.name: str(e) for e in self.class_emojis + self.creep_emojis + self.spec_emojis}
+        for role in self.role_names:
+            for suffix in ('T1', 'T2', 'Tstar'):
+                emoji = by_name.get(f'{role}_{suffix}')
+                if emoji:
+                    self.emojis_dict[emoji.name] = str(emoji)
         return True
 
     async def sync_spec_emojis(self, emoji_dir=Path(__file__).resolve().parents[1] / 'emojis'):
@@ -139,26 +144,43 @@ class RaidCog(commands.Cog):
             logger.warning('Could not list application emojis', exc_info=True)
             return []
         files = {p.stem.replace('-', '').lower(): p for p in Path(emoji_dir).glob('*.webp')}
+        plain = {
+            p.stem.replace('-', '').lower(): p
+            for p in Path(emoji_dir).glob('*.png') if '_' not in p.stem
+        }
         replaced = []
+
+        async def upload(name, data):
+            sha = hashlib.sha256(data).hexdigest()
+            if known.get(name) == sha and name in existing:
+                return
+            try:
+                for old in existing.get(name, ()):
+                    await old.delete()
+                await self.bot.create_application_emoji(name=name, image=data)
+            except discord.HTTPException:
+                logger.warning('Could not replace emoji %s', name, exc_info=True)
+                return
+            self.conn.execute('INSERT OR REPLACE INTO EmojiArt (name, sha) VALUES (?, ?)', (name, sha))
+            known[name] = sha
+            replaced.append(name)
+
         for role in self.role_names:
             for color in ('Red', 'Blue', 'Yellow'):
                 name = f'{role}_{color}'
                 path = files.get(name.replace('-', '').lower())
-                if path is None:
-                    continue
-                data = path.read_bytes()
-                sha = hashlib.sha256(data).hexdigest()
-                if known.get(name) == sha and name in existing:
-                    continue
-                try:
-                    for old in existing.get(name, ()):
-                        await old.delete()
-                    await self.bot.create_application_emoji(name=name, image=data)
-                except discord.HTTPException:
-                    logger.warning('Could not replace emoji %s', name, exc_info=True)
-                    continue
-                self.conn.execute('INSERT OR REPLACE INTO EmojiArt (name, sha) VALUES (?, ?)', (name, sha))
-                replaced.append(name)
+                if path is not None:
+                    await upload(name, path.read_bytes())
+            base = plain.get(role.replace('-', '').lower())
+            if base is None:
+                continue
+            try:
+                from tier_icons import TIER_LABELS, render_tier_icon
+                source = base.read_bytes()
+                for label, suffix in TIER_LABELS:
+                    await upload(f'{role}_{suffix}', render_tier_icon(source, label))
+            except Exception:
+                logger.warning('Could not draw tier icons for %s', role, exc_info=True)
         self.conn.commit()
         if replaced:
             logger.info('Uploaded ring-style emojis: %s', ', '.join(replaced))
@@ -464,6 +486,26 @@ class RaidCog(commands.Cog):
             await interaction.response.send_message('This event has ended.', ephemeral=True)
             return False
         return True
+
+    def already_available(self, raid_id, player_id):
+        return self.conn.execute(
+            'SELECT 1 FROM Players WHERE raid_id=? AND player_id=? AND unavailable=0',
+            (raid_id, player_id),
+        ).fetchone() is not None
+
+    async def follow_thread(self, channel, user):
+        if getattr(channel, 'type', None) not in (
+                discord.ChannelType.public_thread,
+                discord.ChannelType.private_thread,
+                discord.ChannelType.news_thread):
+            return
+        try:
+            message = await channel.send(
+                user.mention, silent=True,
+                allowed_mentions=discord.AllowedMentions(users=[user], everyone=False, roles=False))
+            await message.delete()
+        except discord.HTTPException:
+            logger.warning('Could not add %s to thread %s', user.id, getattr(channel, 'id', None))
 
     async def update_raid_post(self, raid_id, channel, delay=assign_delay):
         raid_id = self.resolve_raid_id(raid_id)
@@ -912,10 +954,13 @@ class RaidView(discord.ui.View):
             if signed_up_classes == 1:
                 await self.sign_up_cancel(i)
                 return
+        new_signup = not self.raid_cog.already_available(raid_id, i.user.id)
         upsert(self.conn, 'Players', ['byname', 'timestamp', 'unavailable', class_name],
                [byname, timestamp, False, sign_up], ['player_id', 'raid_id'], [i.user.id, raid_id])
         self.conn.commit()
         await i.response.send_message(msg, ephemeral=True, delete_after=sign_up_delay)
+        if new_signup:
+            await self.raid_cog.follow_thread(i.channel, i.user)
         await self.raid_cog.update_raid_post(raid_id, i.channel, delay=sign_up_delay)
 
     async def sign_up_all(self, i):
@@ -952,12 +997,15 @@ class RaidView(discord.ui.View):
                 await i.response.send_message(err_msg, ephemeral=True)
                 return
 
+        new_signup = not self.raid_cog.already_available(raid_id, i.user.id)
         upsert(self.conn, 'Players', columns, values, ['player_id', 'raid_id'], [i.user.id, raid_id])
         self.conn.commit()
         if is_shared:
             await i.response.send_message('Signed up with your saved specializations. Your selection is shared across linked servers.', ephemeral=True, delete_after=sign_up_delay)
         else:
             await i.response.defer()
+        if new_signup:
+            await self.raid_cog.follow_thread(i.channel, i.user)
         await self.raid_cog.update_raid_post(raid_id, i.channel, delay=0)
 
     async def sign_up_cancel(self, i):
@@ -1012,11 +1060,14 @@ class CreepView(discord.ui.View):
         raid_id = self.raid_cog.resolve_raid_id(i.message.id)
         timestamp = int(time.time())
         byname = self.raid_cog.process_name(i.guild.id, i.user)
+        new_signup = not self.raid_cog.already_available(raid_id, i.user.id)
         upsert(self.conn, 'Players', ['byname', 'timestamp', 'unavailable', creep_name],
                [byname, timestamp, False, True], ['player_id', 'raid_id'], [i.user.id, raid_id])
         self.conn.commit()
         msg = _("Your sign up has been received and the raid post will be updated momentarily.")
         await i.response.send_message(msg, ephemeral=True, delete_after=sign_up_delay)
+        if new_signup:
+            await self.raid_cog.follow_thread(i.channel, i.user)
         await self.raid_cog.update_raid_post(raid_id, i.channel, delay=sign_up_delay)
 
     async def sign_up_cancel(self, i):

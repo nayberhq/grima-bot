@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import time
-from types import SimpleNamespace
 
 import discord
 from discord.ext import commands
@@ -19,7 +18,6 @@ SPEC_CHOICES = (
     ('Red, Blue and Yellow', 0b111),
     ('Clear specialization', 0b000),
 )
-SPEC_LABELS = {value: label for label, value in SPEC_CHOICES}
 
 
 def _manage_guild(interaction) -> bool:
@@ -77,140 +75,209 @@ async def _call(cog, name, *args):
         await method(*args)
 
 
+COLOR_CYCLE = (0, 0b001, 0b010, 0b100, 0b011, 0b110, 0b101, 0b111)
+TIER_CYCLE = ('T1', 'T2', 'T*')
+_ALL_TIERS = 1 + 8 + 64 + 512 + 4096
+
+
+def _tier_bits(value: int, which: str) -> int:
+    if which == 'T1':
+        return value & 0b111
+    if which == 'T2':
+        return (value // 8) & 0b111
+    masks = [(value // (8 ** tier)) & 0b111 for tier in range(5)]
+    return masks[0] if len(set(masks)) == 1 else 0
+
+
+def _write_bits(value: int, which: str, mask: int) -> int:
+    mask &= 0b111
+    if which == 'T*':
+        return mask * _ALL_TIERS
+    mult = 1 if which == 'T1' else 8
+    return (value & ~(mult * 0b111)) | (mult * mask)
+
+
+def _next_mask(mask: int, duo: bool) -> int:
+    cycle = [item for item in COLOR_CYCLE if not (duo and item & 0b100)]
+    mask &= 0b111
+    if mask not in cycle:
+        return cycle[0]
+    return cycle[(cycle.index(mask) + 1) % len(cycle)]
+
+
 class ProfileView(discord.ui.View):
     def __init__(self, cog, user_id: int, guild_id: int | None):
         super().__init__(timeout=900)
         self.cog = cog
         self.user_id = user_id
         self.guild_id = guild_id
-        names = list(cog.bot.role_names)
-        self.class_name = names[0] if names else ''
-        self.spec_value = 0b001
-        self.tier = 0
+        self.names = list(cog.bot.role_names)
+        self.values = {name: 0 for name in self.names}
+        self.tiers = {name: 'T1' for name in self.names}
+        self.timezone = ''
+        self.screen = 'grid'
+        self._load()
         self._build()
 
-    def _current_lines(self) -> str:
-        names = list(self.cog.bot.role_names)
-        row = select_one(self.cog.bot.conn, 'Specs', names, ['player_id'], [self.user_id]) if names else None
-        lines = []
-        if row is not None:
-            values = row if isinstance(row, tuple) else (row,)
-            for name, value in zip(names, values):
-                if not value:
-                    continue
-                lines.append(f'{name}: {SPEC_LABELS.get(value & 0b111, "set")}')
-        body = '\n'.join(lines) if lines else 'No specialization saved yet.'
+    def _load(self):
+        if self.names:
+            row = select_one(self.cog.bot.conn, 'Specs', self.names, ['player_id'], [self.user_id])
+            if row is not None:
+                values = row if isinstance(row, tuple) else (row,)
+                for name, value in zip(self.names, values):
+                    self.values[name] = int(value or 0)
         personal = select_one(self.cog.bot.conn, 'Timezone', ['timezone'], ['player_id'], [self.user_id])
-        zone = personal[0] if personal and personal[0] else 'server timezone'
-        return f'{body}\n\nPersonal timezone: {zone}'
+        self.timezone = personal if isinstance(personal, str) else ''
+
+    def _visible_mask(self, name: str) -> int:
+        return _tier_bits(self.values.get(name, 0), self.tiers.get(name, 'T1'))
 
     def embed(self) -> discord.Embed:
+        zone = self.timezone or 'server timezone'
+        if self.screen == 'zone':
+            body = 'Choose how times you type are read, then save.'
+        else:
+            body = (
+                'The first buttons cycle each class’s colors. '
+                'The second set cycles T1, T2, and T* on the plain class icon. '
+                'Nothing is stored until you save.'
+            )
         return discord.Embed(
             title='Profile',
-            description=(
-                'Set the class specialization used when you sign up. '
-                'Tier **All** writes every tier. The timezone is how times you type are read.\n\n'
-                + self._current_lines()
-            )[:4096],
+            description=f'{body}\n\nPersonal timezone: {zone}'[:4096],
             colour=discord.Colour(0x3498db),
         )
 
+    def _emoji(self, key: str):
+        raids = self.cog.bot.get_cog('RaidCog')
+        icons = getattr(raids, 'emojis_dict', None) or {}
+        text = icons.get(key)
+        if isinstance(text, str) and text.startswith('<') and text.endswith('>'):
+            return discord.PartialEmoji.from_str(text)
+        return None
+
+    def _spec_emoji(self, name: str):
+        mask = self._visible_mask(name)
+        raids = self.cog.bot.get_cog('RaidCog')
+        specs = getattr(raids, 'specs', None)
+        if mask and specs and mask < len(specs) and specs[mask]:
+            emoji = self._emoji(f'{name}_{specs[mask]}')
+            if emoji:
+                return emoji
+        return self._emoji(name)
+
+    def _add_button(self, index: int, custom_id: str, callback, *, emoji=None, label=None, style=discord.ButtonStyle.secondary):
+        kwargs = {'style': style, 'custom_id': custom_id, 'row': index // 5}
+        if emoji is not None:
+            kwargs['emoji'] = emoji
+        else:
+            kwargs['label'] = label
+        button = discord.ui.Button(**kwargs)
+        button.callback = callback
+        self.add_item(button)
+
     def _build(self):
         self.clear_items()
-        names = list(self.cog.bot.role_names)
-        class_select = discord.ui.Select(
-            row=0,
-            placeholder='Class (required)',
-            options=[discord.SelectOption(label=name, value=name, default=name == self.class_name) for name in names[:25]],
-        )
+        if self.screen == 'zone':
+            self._build_timezone()
+            return
+        from raid_cog import duo_spec
+        duo = set(duo_spec or ())
 
-        async def pick_class(interaction: discord.Interaction):
-            self.class_name = class_select.values[0]
+        def cycle_spec(name):
+            async def click(interaction: discord.Interaction):
+                which = self.tiers[name]
+                mask = _next_mask(_tier_bits(self.values[name], which), name in duo)
+                self.values[name] = _write_bits(self.values[name], which, mask)
+                self._build()
+                await interaction.response.edit_message(embed=self.embed(), view=self)
+            return click
+
+        def cycle_tier(name):
+            async def click(interaction: discord.Interaction):
+                current = self.tiers[name]
+                self.tiers[name] = TIER_CYCLE[(TIER_CYCLE.index(current) + 1) % len(TIER_CYCLE)]
+                self._build()
+                await interaction.response.edit_message(embed=self.embed(), view=self)
+            return click
+
+        buttons = []
+        for name in self.names:
+            buttons.append((self._spec_emoji(name), name, f'profile:spec:{name}', cycle_spec(name)))
+        for name in self.names:
+            which = self.tiers[name]
+            suffix = {'T1': 'T1', 'T2': 'T2', 'T*': 'Tstar'}[which]
+            buttons.append((self._emoji(f'{name}_{suffix}'), which, f'profile:tier:{name}', cycle_tier(name)))
+
+        async def open_timezone(interaction: discord.Interaction):
+            self.screen = 'zone'
             self._build()
             await interaction.response.edit_message(embed=self.embed(), view=self)
 
-        class_select.callback = pick_class
-        self.add_item(class_select)
-
-        spec_select = discord.ui.Select(
-            row=1,
-            placeholder='Specialization (required)',
-            options=[
-                discord.SelectOption(label=label, value=str(value), default=value == self.spec_value)
-                for label, value in SPEC_CHOICES
-            ],
+        for index, (emoji, label, custom_id, callback) in enumerate(buttons):
+            self._add_button(index, custom_id, callback, emoji=emoji, label=label)
+        self._add_button(
+            len(buttons), 'profile:save', open_timezone,
+            label='Save', style=discord.ButtonStyle.success,
         )
 
-        async def pick_spec(interaction: discord.Interaction):
-            self.spec_value = int(spec_select.values[0])
-            self._build()
-            await interaction.response.edit_message(embed=self.embed(), view=self)
-
-        spec_select.callback = pick_spec
-        self.add_item(spec_select)
-
-        tier_select = discord.ui.Select(
-            row=2,
-            placeholder='Tier (optional)',
-            options=[discord.SelectOption(label='All tiers', value='0', default=self.tier == 0)] + [
-                discord.SelectOption(label=f'T{n}', value=str(n), default=self.tier == n) for n in range(1, 6)
-            ],
-        )
-
-        async def pick_tier(interaction: discord.Interaction):
-            self.tier = int(tier_select.values[0])
-            self._build()
-            await interaction.response.edit_message(embed=self.embed(), view=self)
-
-        tier_select.callback = pick_tier
-        self.add_item(tier_select)
-
+    def _build_timezone(self):
         from events_cog import COMMON_TIMEZONES
-        personal = select_one(self.cog.bot.conn, 'Timezone', ['timezone'], ['player_id'], [self.user_id])
-        current = personal[0] if personal and personal[0] else ''
+        current = self.timezone
         zones = list(COMMON_TIMEZONES[:23])
         if current and current not in zones:
             zones = [current, *zones[:22]]
-        zone_options = [discord.SelectOption(label='Use server timezone', value='__server__', default=not current)]
-        zone_options.extend(discord.SelectOption(label=zone, value=zone, default=zone == current) for zone in zones)
-        zone_select = discord.ui.Select(row=3, placeholder='Personal timezone (optional)', options=zone_options[:25])
+        options = [discord.SelectOption(label='Use server timezone', value='__server__', default=not current)]
+        options.extend(discord.SelectOption(label=zone, value=zone, default=zone == current) for zone in zones)
+        zone_select = discord.ui.Select(row=0, placeholder='Personal timezone', options=options[:25])
 
         async def pick_zone(interaction: discord.Interaction):
-            from database import upsert
             value = zone_select.values[0]
-            tz = None if value == '__server__' else value
-            upsert(self.cog.bot.conn, 'Timezone', ['timezone'], [tz], ['player_id'], [self.user_id])
-            self.cog.bot.conn.commit()
+            self.timezone = '' if value == '__server__' else value
             self._build()
             await interaction.response.edit_message(embed=self.embed(), view=self)
 
+        async def go_back(interaction: discord.Interaction):
+            self.screen = 'grid'
+            self._build()
+            await interaction.response.edit_message(embed=self.embed(), view=self)
+
+        async def save_all(interaction: discord.Interaction):
+            from database import upsert
+            for name, value in self.values.items():
+                upsert(self.cog.bot.conn, 'Specs', [name], [value], ['player_id'], [self.user_id])
+            upsert(
+                self.cog.bot.conn, 'Timezone', ['timezone'],
+                [self.timezone or None], ['player_id'], [self.user_id],
+            )
+            self.cog.bot.conn.commit()
+            await self._refresh_events()
+            self.screen = 'grid'
+            self._build()
+            await interaction.response.edit_message(content='Saved.', embed=self.embed(), view=self)
+
         zone_select.callback = pick_zone
         self.add_item(zone_select)
+        self._add_button(5, 'profile:back', go_back, label='Back')
+        self._add_button(6, 'profile:zone-save', save_all, label='Save', style=discord.ButtonStyle.success)
 
-        save = discord.ui.Button(label='Save specialization', style=discord.ButtonStyle.success, row=4)
-        clear = discord.ui.Button(label='Clear class roles', style=discord.ButtonStyle.danger, row=4)
-
-        async def save_spec(interaction: discord.Interaction):
-            from raid_cog import Classes
-            raids = self.cog.bot.get_cog('RaidCog')
-            try:
-                classes = Classes[self.class_name]
-            except KeyError:
-                await interaction.response.send_message('Pick a class first.', ephemeral=True)
-                return
-            try:
-                await _call(raids, 'specs_respond', interaction, classes, SimpleNamespace(value=self.spec_value), self.tier)
-            except Exception as exc:
-                await _oops(interaction, exc)
-
-        async def clear_roles(interaction: discord.Interaction):
-            raids = self.cog.bot.get_cog('RaidCog')
-            await _call(raids, 'roles_respond', interaction)
-
-        save.callback = save_spec
-        clear.callback = clear_roles
-        self.add_item(save)
-        self.add_item(clear)
+    async def _refresh_events(self):
+        raids = self.cog.bot.get_cog('RaidCog')
+        events = self.cog.bot.get_cog('EventsCog')
+        store = getattr(raids, 'event_store', None)
+        if not events or not store:
+            return
+        import sqlite3
+        try:
+            rows = self.cog.bot.conn.execute(
+                'SELECT raid_id FROM Players WHERE player_id=? AND unavailable=0', (self.user_id,),
+            ).fetchall()
+        except sqlite3.Error:
+            return
+        for (raid_id,) in rows:
+            if store.event(raid_id):
+                store.touch(raid_id)
+                await events.refresh(raid_id)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
@@ -284,7 +351,7 @@ class CommandPanel(commands.Cog):
                 return items
         return ()
 
-    @discord.app_commands.command(name='profile', description='Set your class specialization, optional tier, and personal timezone.')
+    @discord.app_commands.command(name='profile', description='Set your class colors, tier, and personal timezone.')
     @discord.app_commands.guild_only()
     async def profile_command(self, interaction: discord.Interaction):
         view = ProfileView(self, interaction.user.id, interaction.guild_id)

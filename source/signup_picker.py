@@ -36,6 +36,7 @@ class SignupPicker(discord.ui.View):
         if blocked or not event or self.raids.event_store.ended(event,time.time()):
             await i.response.send_message('This event has ended or was removed.',ephemeral=True);return
         tier=int(''.join(filter(str.isdigit,event['tier'] or '')) or 1)
+        new_signup=not self.raids.already_available(self.raid_id,i.user.id)
         prior=select_one(self.raids.conn,'Specs',[self.class_name],['player_id'],[i.user.id]) or 0
         if prior:
             shift=(tier-1)*3
@@ -46,5 +47,7 @@ class SignupPicker(discord.ui.View):
         upsert(self.raids.conn,'Players',['byname','timestamp','unavailable',self.class_name],[self.raids.process_name(i.guild.id,i.user),int(time.time()),False,True],['player_id','raid_id'],[i.user.id,self.raid_id])
         self.raids.conn.commit()
         await i.response.edit_message(content='Signed up. Your selection is shared across every linked server.',view=None)
+        if new_signup:
+            await self.raids.follow_thread(i.channel,i.user)
         await self.raids.update_raid_post(self.raid_id,i.channel,delay=0)
         self.stop()

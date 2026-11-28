@@ -10,6 +10,7 @@ raid_db*
 bot-env
 .deploy-venv/
 __pycache__/
+emojis/tier-preview/
 *.py[cod]
 messages.mo
 
